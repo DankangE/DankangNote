@@ -1,0 +1,12 @@
+/* Astryx Design System — order matters: reset → components → theme tokens */
+@import '@astryxdesign/core/reset.css';
+@import '@astryxdesign/core/astryx.css';
+@import '@astryxdesign/theme-neutral/theme.css';
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+}
