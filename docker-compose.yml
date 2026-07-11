@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: dankangnote-db
+    environment:
+      POSTGRES_USER: dankang
+      POSTGRES_PASSWORD: dankang
+      POSTGRES_DB: dankangnote
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+volumes:
+  db-data:
