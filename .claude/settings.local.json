@@ -6,5 +6,8 @@
       "Bash(yarn -v)",
       "Bash(npx --version)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "atlassian"
+  ]
 }
