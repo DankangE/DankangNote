@@ -1,5 +1,13 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import {
+  ClerkProvider,
+  OrganizationSwitcher,
+  Show,
+  SignInButton,
+  SignUpButton,
+  UserButton,
+} from "@clerk/nextjs";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -28,7 +36,32 @@ export default function RootLayout({
       data-astryx-theme="neutral"
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        <ClerkProvider>
+          <header
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 16,
+              padding: "12px 24px",
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>DankangNote</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Show when="signed-out">
+                <SignInButton />
+                <SignUpButton />
+              </Show>
+              <Show when="signed-in">
+                <OrganizationSwitcher />
+                <UserButton />
+              </Show>
+            </div>
+          </header>
+          {children}
+        </ClerkProvider>
+      </body>
     </html>
   );
 }
