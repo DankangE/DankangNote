@@ -10,40 +10,79 @@ import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
 import type { Note } from '@/features/notes/types';
+import { FormError } from './FormError';
+
+const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
+
+// 타임존을 명시적으로 고정 — 서버/클라 동일 결과라 hydration이 안전하고,
+// UTC 슬라이스와 달리 KST 사용자에게 올바른 날짜를 보여준다.
+const dateFormat = new Intl.DateTimeFormat('ko-KR', {
+  timeZone: 'Asia/Seoul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
 
 export function NoteCard({ note }: { note: Note }) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  // UTC 고정 포맷 — 서버/클라 타임존 차이로 인한 hydration 불일치를 피한다.
-  const updatedAt = new Date(note.updatedAt).toISOString().slice(0, 10);
+  const updatedAt = dateFormat.format(new Date(note.updatedAt));
 
-  async function handleSave() {
-    setError(null);
-    const result = await updateNoteAction(note.id, { title, content });
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
-    setIsEditing(false);
-  }
-
-  async function handleDelete() {
-    setError(null);
-    const result = await deleteNoteAction(note.id);
-    if (!result.ok) {
-      setError(result.error);
-    }
-    // 성공 시 revalidatePath('/notes')로 목록에서 사라진다.
-  }
-
-  function handleCancel() {
+  // 편집 진입 시 최신 prop으로 버퍼를 다시 seed한다. mount 시점 값에 머물면
+  // 그 사이 갱신된 노트를 오래된 값으로 덮어쓰는 lost update가 생긴다.
+  // 이전 액션의 에러도 함께 리셋한다.
+  function startEditing() {
     setTitle(note.title);
     setContent(note.content);
     setError(null);
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setError(null);
     setIsEditing(false);
+  }
+
+  async function handleSave() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await updateNoteAction(note.id, { title, content });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setIsEditing(false);
+    } catch {
+      setError(GENERIC_ERROR);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await deleteNoteAction(note.id);
+      if (!result.ok) {
+        setError(result.error);
+        setConfirmingDelete(false);
+      }
+      // 성공 시 revalidatePath('/notes')로 목록에서 사라진다.
+    } catch {
+      setError(GENERIC_ERROR);
+      setConfirmingDelete(false);
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -64,18 +103,34 @@ export function NoteCard({ note }: { note: Note }) {
           </>
         )}
 
-        {error ? <Text style={{ color: '#c0453c' }}>{error}</Text> : null}
+        <FormError message={error} />
 
-        <Stack direction="horizontal" gap={2} justify="end">
+        <Stack direction="horizontal" gap={2} vAlign="center" justify="end">
           {isEditing ? (
             <>
-              <Button label="취소" variant="ghost" onClick={handleCancel} />
-              <Button label="저장" variant="primary" clickAction={handleSave} />
+              <Button label="취소" variant="ghost" isDisabled={busy} onClick={cancelEditing} />
+              <Button label="저장" variant="primary" isDisabled={busy} clickAction={handleSave} />
+            </>
+          ) : confirmingDelete ? (
+            <>
+              <Text color="secondary">삭제할까요?</Text>
+              <Button
+                label="취소"
+                variant="ghost"
+                isDisabled={busy}
+                onClick={() => setConfirmingDelete(false)}
+              />
+              <Button
+                label="삭제 확정"
+                variant="destructive"
+                isDisabled={busy}
+                clickAction={handleDelete}
+              />
             </>
           ) : (
             <>
-              <Button label="편집" variant="secondary" onClick={() => setIsEditing(true)} />
-              <Button label="삭제" variant="destructive" clickAction={handleDelete} />
+              <Button label="편집" variant="secondary" onClick={startEditing} />
+              <Button label="삭제" variant="destructive" onClick={() => setConfirmingDelete(true)} />
             </>
           )}
         </Stack>

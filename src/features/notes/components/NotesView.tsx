@@ -12,7 +12,9 @@ export function NotesView({ notes }: { notes: Note[] }) {
     <Stack
       direction="vertical"
       gap={5}
-      style={{ maxWidth: 720, margin: '0 auto', padding: 24 }}
+      maxWidth={720}
+      padding={6}
+      style={{ margin: '0 auto' }}
     >
       <Stack direction="vertical" gap={1}>
         <Heading level={1}>노트</Heading>
