@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { prisma } from '@/server/db';
+import { Prisma } from '@/server/generated/prisma/client';
 import type { Note } from '@/server/generated/prisma/client';
 
 export interface NoteInput {
@@ -23,19 +24,26 @@ export function createNote(orgId: string, input: NoteInput): Promise<Note> {
   return prisma.note.create({ data: { ...input, orgId } });
 }
 
-// update/delete는 id가 유니크라도 orgId 스코프를 강제하기 위해
-// *Many 변형을 쓴다 — 단건 update({ where: { id } })는 타 워크스페이스 접근을 못 막는다.
+// update/delete 모두 where에 orgId를 포함해 타 워크스페이스 접근을 막는다.
+// update는 확장 where-unique({ id, orgId })로 단건 원자 실행 — updateMany 후
+// 재조회하면 그 사이 삭제와 경합해 성공한 수정을 실패로 보고할 수 있다.
 export async function updateNote(
   orgId: string,
   id: string,
   input: Partial<NoteInput>,
 ): Promise<Note | null> {
-  const { count } = await prisma.note.updateMany({
-    where: { id, orgId },
-    data: input,
-  });
-  if (count === 0) return null;
-  return getNote(orgId, id);
+  try {
+    return await prisma.note.update({
+      where: { id, orgId },
+      data: input,
+    });
+  } catch (error) {
+    // P2025: 조건에 맞는 레코드 없음 (미존재 또는 타 org 소유)
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function deleteNote(orgId: string, id: string): Promise<boolean> {
