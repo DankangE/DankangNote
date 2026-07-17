@@ -10,6 +10,6 @@ export default async function NotesPage() {
     return <NoOrganization />;
   }
 
-  const notes = await fetchNotes(orgId);
+  const notes = await fetchNotes();
   return <NotesView notes={notes} />;
 }
