@@ -13,8 +13,9 @@ const noteInputSchema = z.object({
 
 const noteIdSchema = z.string().min(1, '노트 id가 필요합니다.');
 
-// DB 장애 등 예상 못 한 예외가 액션 밖으로 던져지면 클라이언트는 digest만 담긴
-// 불투명한 에러를 받는다 — ActionResult 계약은 이 래퍼 한 곳에서 강제한다.
+// DB 장애나 인증/조직 확인 실패 등 예상 못 한 예외가 액션 밖으로 던져지면
+// 클라이언트는 digest만 담긴 불투명한 에러를 받는다 — ActionResult 계약은 이 래퍼
+// 한 곳에서 강제한다. requireOrgId도 이 안에서 호출해 orgId 부재 예외까지 포섭한다.
 async function guarded<T>(
   action: string,
   fn: () => Promise<ActionResult<T>>,
@@ -38,18 +39,18 @@ function revalidateNotes(action: string): void {
 }
 
 // Server Action은 클라이언트가 직접 POST할 수 있는 공개 엔드포인트다.
-// 따라서 모든 액션은 진입부에서 requireOrgId + zod 검증을 거친다.
-// requireOrgId는 guarded 밖에 둔다 — 인증 실패의 redirect는 잡으면 안 되는 제어 흐름이다.
+// 진입부에서 zod로 입력을 검증하고(검증 실패는 필드별 메시지), 인증·조직 확인과
+// 서비스 호출은 guarded 안에서 수행한다 — orgId 부재(조직 미선택 등) 예외도
+// ActionResult 실패로 안전하게 변환된다.
 
 export async function createNoteAction(input: unknown): Promise<ActionResult<Note>> {
-  const orgId = await requireOrgId();
-
   const parsed = noteInputSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0].message };
   }
 
   return guarded('createNote', async () => {
+    const orgId = await requireOrgId();
     const note = await notesService.createNote(orgId, parsed.data);
     revalidateNotes('createNote');
     return { ok: true, data: note };
@@ -60,8 +61,6 @@ export async function updateNoteAction(
   id: unknown,
   input: unknown,
 ): Promise<ActionResult<Note>> {
-  const orgId = await requireOrgId();
-
   const parsedId = noteIdSchema.safeParse(id);
   const parsedInput = noteInputSchema.partial().safeParse(input);
   if (!parsedId.success) {
@@ -72,6 +71,7 @@ export async function updateNoteAction(
   }
 
   return guarded('updateNote', async () => {
+    const orgId = await requireOrgId();
     const note = await notesService.updateNote(orgId, parsedId.data, parsedInput.data);
     if (!note) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
@@ -83,14 +83,13 @@ export async function updateNoteAction(
 }
 
 export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: string }>> {
-  const orgId = await requireOrgId();
-
   const parsedId = noteIdSchema.safeParse(id);
   if (!parsedId.success) {
     return { ok: false, error: parsedId.error.issues[0].message };
   }
 
   return guarded('deleteNote', async () => {
+    const orgId = await requireOrgId();
     const deleted = await notesService.deleteNote(orgId, parsedId.data);
     if (!deleted) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };

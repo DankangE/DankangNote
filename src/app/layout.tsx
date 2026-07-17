@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { koKR } from "@clerk/localizations";
 import {
   ClerkProvider,
   OrganizationSwitcher,
@@ -8,6 +9,8 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
+import { Stack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -37,18 +40,19 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable}`}
     >
       <body>
-        <ClerkProvider>
-          <header
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              gap: 16,
-              padding: "12px 24px",
-            }}
+        {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
+        <ClerkProvider localization={koKR}>
+          <Stack
+            as="header"
+            direction="horizontal"
+            justify="between"
+            vAlign="center"
+            gap={4}
+            paddingInline={6}
+            paddingBlock={3}
           >
-            <span style={{ fontWeight: 600 }}>DankangNote</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <Text weight="semibold">DankangNote</Text>
+            <Stack direction="horizontal" gap={3} vAlign="center">
               <Show when="signed-out">
                 <SignInButton />
                 <SignUpButton />
@@ -57,8 +61,8 @@ export default function RootLayout({
                 <OrganizationSwitcher />
                 <UserButton />
               </Show>
-            </div>
-          </header>
+            </Stack>
+          </Stack>
           {children}
         </ClerkProvider>
       </body>
