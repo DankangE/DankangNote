@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from '@/lib/zod';
-import { requireOrgId } from '@/server/auth';
+import { getAuthState, NO_ORG_ERROR } from '@/server/auth';
 import * as notesService from '@/server/services/notes';
 import type { ActionResult, Note } from '@/features/notes/types';
 
@@ -12,6 +12,8 @@ const noteInputSchema = z.object({
 });
 
 const noteIdSchema = z.string().min(1, '노트 id가 필요합니다.');
+
+const NOT_SIGNED_IN_ERROR = '로그인이 필요합니다. 다시 로그인해 주세요.';
 
 // DB 장애 등 예상 못 한 예외가 액션 밖으로 던져지면 클라이언트는 digest만 담긴
 // 불투명한 에러를 받는다 — ActionResult 계약은 이 래퍼 한 곳에서 강제한다.
@@ -27,6 +29,19 @@ async function guarded<T>(
   }
 }
 
+// 액션 진입부의 인증·조직 게이트. 미인증('로그인 필요')과 조직 없음(워크스페이스
+// 안내)을 구분해 사용자에게 맞는 메시지를 준다.
+async function resolveOrg(): Promise<{ orgId: string } | { error: string }> {
+  const { userId, orgId } = await getAuthState();
+  if (!userId) {
+    return { error: NOT_SIGNED_IN_ERROR };
+  }
+  if (!orgId) {
+    return { error: NO_ORG_ERROR };
+  }
+  return { orgId };
+}
+
 // 쓰기 커밋 이후의 revalidate 실패는 뮤테이션 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 생성/유령 삭제를 만든다. 로그만 남기고 성공으로 처리한다.
 function revalidateNotes(action: string): void {
@@ -38,11 +53,13 @@ function revalidateNotes(action: string): void {
 }
 
 // Server Action은 클라이언트가 직접 POST할 수 있는 공개 엔드포인트다.
-// 따라서 모든 액션은 진입부에서 requireOrgId + zod 검증을 거친다.
-// requireOrgId는 guarded 밖에 둔다 — 인증 실패의 redirect는 잡으면 안 되는 제어 흐름이다.
+// 진입부에서 인증·조직 확인을 zod 검증보다 먼저 수행한다(backend.md: 진입부 auth).
 
 export async function createNoteAction(input: unknown): Promise<ActionResult<Note>> {
-  const orgId = await requireOrgId();
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
 
   const parsed = noteInputSchema.safeParse(input);
   if (!parsed.success) {
@@ -50,7 +67,7 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
   }
 
   return guarded('createNote', async () => {
-    const note = await notesService.createNote(orgId, parsed.data);
+    const note = await notesService.createNote(org.orgId, parsed.data);
     revalidateNotes('createNote');
     return { ok: true, data: note };
   });
@@ -60,7 +77,10 @@ export async function updateNoteAction(
   id: unknown,
   input: unknown,
 ): Promise<ActionResult<Note>> {
-  const orgId = await requireOrgId();
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
 
   const parsedId = noteIdSchema.safeParse(id);
   const parsedInput = noteInputSchema.partial().safeParse(input);
@@ -72,7 +92,7 @@ export async function updateNoteAction(
   }
 
   return guarded('updateNote', async () => {
-    const note = await notesService.updateNote(orgId, parsedId.data, parsedInput.data);
+    const note = await notesService.updateNote(org.orgId, parsedId.data, parsedInput.data);
     if (!note) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
     }
@@ -83,7 +103,10 @@ export async function updateNoteAction(
 }
 
 export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: string }>> {
-  const orgId = await requireOrgId();
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
 
   const parsedId = noteIdSchema.safeParse(id);
   if (!parsedId.success) {
@@ -91,7 +114,7 @@ export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: 
   }
 
   return guarded('deleteNote', async () => {
-    const deleted = await notesService.deleteNote(orgId, parsedId.data);
+    const deleted = await notesService.deleteNote(org.orgId, parsedId.data);
     if (!deleted) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
     }

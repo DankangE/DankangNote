@@ -5,7 +5,8 @@ import * as notesService from '@/server/services/notes';
 import type { Note } from '@/features/notes/types';
 
 // 서버 컴포넌트에서 직접 호출하는 조회 헬퍼.
-// 페이지가 orgId를 몰라도 되도록 여기서 스코프를 붙인다.
+// 각 함수가 orgId 스코프를 스스로 붙여, 호출부가 조직을 착각해도 타 워크스페이스가
+// 새지 않는다(자기 스코프 보장).
 
 export async function fetchNotes(): Promise<Note[]> {
   const orgId = await requireOrgId();
