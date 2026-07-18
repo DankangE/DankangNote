@@ -4,7 +4,25 @@
       "Bash(npm -v)",
       "Bash(pnpm -v)",
       "Bash(yarn -v)",
-      "Bash(npx --version)"
+      "Bash(npx --version)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(~/.local/bin/gh pr *)",
+      "mcp__atlassian__getTransitionsForJiraIssue",
+      "mcp__atlassian__transitionJiraIssue",
+      "Skill(code-review)",
+      "Workflow(code-review)",
+      "Bash(mkdir -p /tmp/claude-1000/-mnt-d-Github-DankangNote/688e4f32-3101-43e7-bcd8-4d8e7ed09585/scratchpad/noenv)",
+      "Bash(env -u DATABASE_URL /mnt/d/Github/DankangNote/node_modules/.bin/prisma generate --config /mnt/d/Github/DankangNote/prisma.config.ts)",
+      "Bash(mkdir -p /tmp/claude-1000/-mnt-d-Github-DankangNote/688e4f32-3101-43e7-bcd8-4d8e7ed09585/scratchpad/freshclone/src/server)",
+      "Bash(cp /mnt/d/Github/DankangNote/package.json /mnt/d/Github/DankangNote/prisma.config.ts /mnt/d/Github/DankangNote/tsconfig.json /tmp/claude-1000/-mnt-d-Github-DankangNote/688e4f32-3101-43e7-bcd8-4d8e7ed09585/scratchpad/freshclone/)",
+      "Bash(cp -r /mnt/d/Github/DankangNote/prisma /tmp/claude-1000/-mnt-d-Github-DankangNote/688e4f32-3101-43e7-bcd8-4d8e7ed09585/scratchpad/freshclone/prisma)",
+      "Bash(ln -sfn /mnt/d/Github/DankangNote/node_modules /tmp/claude-1000/-mnt-d-Github-DankangNote/688e4f32-3101-43e7-bcd8-4d8e7ed09585/scratchpad/freshclone/node_modules)",
+      "Bash(env -u DATABASE_URL ./node_modules/.bin/prisma generate)",
+      "Read(//home/ekffy/.claude/**)",
+      "Bash(FNM_DIR=/home/ekffy/.local/share/fnm ~/.local/share/fnm/fnm exec --using 22 -- pnpm exec tsc --noEmit -p tsconfig.json)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   },
   "enabledMcpjsonServers": [
