@@ -38,6 +38,9 @@ model User {
   firstName String?
   lastName  String?
   imageUrl  String?
+  // Clerk 원본 updated_at — 이보다 오래된 이벤트는 무시하는 순서 역전 가드(KAN-12).
+  // webhook을 거치지 않은 스켈레톤 행은 null.
+  clerkUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -51,6 +54,8 @@ model Organization {
   name      String
   slug      String?
   imageUrl  String?
+  // Clerk 원본 updated_at — 순서 역전 가드(KAN-12). 스켈레톤 행은 null.
+  clerkUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -78,6 +83,9 @@ model Membership {
   userId    String
   // Clerk 역할 문자열 (예: 'org:admin', 'org:member').
   role      String
+  // Clerk 원본 updated_at — 순서 역전 가드(KAN-12). 삭제→재초대 사이클을 가로질러
+  // 지연 도착한 옛 id 이벤트가 행을 되돌리는 유령 멤버십 경로를 막는다.
+  clerkUpdatedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -86,4 +94,12 @@ model Membership {
 
   @@unique([orgId, userId])
   @@index([userId])
+}
+
+/// Clerk가 삭제를 통보한 id의 영구 기록(KAN-12) — 지연 재전송된 upsert 이벤트나
+/// stale 세션의 스켈레톤 생성이 삭제된 미러를 부활시키지 못하게 한다.
+/// Clerk id는 재사용되지 않으므로 만료·정리가 필요 없다.
+model ClerkTombstone {
+  id        String   @id
+  deletedAt DateTime @default(now())
 }
