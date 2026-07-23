@@ -2,7 +2,7 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { Stack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
 import type { Note } from '@/features/notes/types';
-import { CenteredPage } from './CenteredPage';
+import { CenteredPage } from '@/lib/components/CenteredPage';
 import { NotesBoard } from './NotesBoard';
 
 // 노트 화면 조합. 서버 컴포넌트 — 정적 헤더만 두고, 상호작용과 낙관적 목록은

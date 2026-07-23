@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import { koKR } from "@clerk/localizations";
 import {
@@ -51,7 +52,19 @@ export default function RootLayout({
             paddingInline={6}
             paddingBlock={3}
           >
-            <Text weight="semibold">DankangNote</Text>
+            <Stack direction="horizontal" gap={5} vAlign="center">
+              <Text weight="semibold">DankangNote</Text>
+              <Show when="signed-in">
+                <Stack direction="horizontal" gap={4} vAlign="center">
+                  <Link href="/notes">
+                    <Text color="secondary">노트</Text>
+                  </Link>
+                  <Link href="/members">
+                    <Text color="secondary">멤버</Text>
+                  </Link>
+                </Stack>
+              </Show>
+            </Stack>
             <Stack direction="horizontal" gap={3} vAlign="center">
               <Show when="signed-out">
                 <SignInButton />
