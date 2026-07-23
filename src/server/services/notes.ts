@@ -31,25 +31,28 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
   });
 }
 
-// 생성은 org/작성자 스켈레톤 upsert(create-if-absent)와 한 트랜잭션 — webhook이 아직
+// 생성은 org/작성자 스켈레톤 생성(create-if-absent)과 한 트랜잭션 — webhook이 아직
 // 미러를 채우기 전이어도 FK가 성립한다(부트스트랩 경합 회피, KAN-11 멤버십과 동일 패턴).
 // 스켈레톤의 실제 값(name·이메일 등)은 webhook 이벤트가 나중에 채운다.
+// upsert가 아닌 createMany+skipDuplicates인 이유: Prisma 7 쿼리 컴파일러는 upsert를
+// SELECT→INSERT로 에뮬레이션해 동시 생성 시 P2002로 죽지만, 이 형태는 네이티브
+// INSERT ... ON CONFLICT DO NOTHING으로 컴파일된다.
+// 잔여 한계: user/org 삭제 직후 stale 세션(토큰 만료 전)의 생성이 스켈레톤을 부활시킬
+// 수 있다 — webhook 부활 경로와 함께 KAN-12에서 다룬다.
 export async function createNote(
   orgId: string,
   authorId: string,
   input: NoteInput,
 ): Promise<NoteWithAuthor> {
   const [, , note] = await prisma.$transaction([
-    prisma.organization.upsert({
-      where: { id: orgId },
+    prisma.organization.createMany({
       // name은 세션에서 알 수 없다 — 임시로 orgId를 쓰고 organization.* webhook이 교정.
-      create: { id: orgId, name: orgId },
-      update: {},
+      data: [{ id: orgId, name: orgId }],
+      skipDuplicates: true,
     }),
-    prisma.user.upsert({
-      where: { id: authorId },
-      create: { id: authorId },
-      update: {},
+    prisma.user.createMany({
+      data: [{ id: authorId }],
+      skipDuplicates: true,
     }),
     prisma.note.create({
       data: { ...input, orgId, authorId },

@@ -1,3 +1,7 @@
+-- Prisma 네이티브 스키마 엔진은 문장별 자동커밋한다 — 중간 실패 시 비멱등 반쪽 상태가
+-- 남지 않도록 전체를 한 트랜잭션으로 감싼다 (백필↔FK 제약 사이 틈도 함께 닫힘).
+BEGIN;
+
 -- AlterTable
 ALTER TABLE "Note" ADD COLUMN     "authorId" TEXT;
 
@@ -18,3 +22,5 @@ ALTER TABLE "Note" ADD CONSTRAINT "Note_orgId_fkey" FOREIGN KEY ("orgId") REFERE
 
 -- AddForeignKey
 ALTER TABLE "Note" ADD CONSTRAINT "Note_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+COMMIT;

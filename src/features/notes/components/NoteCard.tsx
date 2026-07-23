@@ -129,8 +129,10 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
           <>
             <Heading level={3}>{note.title}</Heading>
             {note.content ? <Text>{note.content}</Text> : null}
-            <Text size="sm" color="secondary">
-              {author ? `${author} · ` : ''}
+            {/* 작성자는 생성자 고정(수정자 아님) — '작성'을 명시해 편집자로 오독되지 않게 한다.
+                maxLines: 긴 이메일 등 무공백 토큰이 카드 밖으로 넘치지 않게 말줄임. */}
+            <Text size="sm" color="secondary" maxLines={1}>
+              {author ? `${author} 작성 · ` : ''}
               {updatedAt} 수정
             </Text>
           </>
