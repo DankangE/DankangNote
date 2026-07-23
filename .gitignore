@@ -41,3 +41,6 @@ yarn-error.log*
 next-env.d.ts
 
 /src/server/generated/prisma
+
+# Claude Code 개인 로컬 설정 (머신 종속 권한 목록 — 공용 설정은 .claude/settings.json)
+.claude/settings.local.json
