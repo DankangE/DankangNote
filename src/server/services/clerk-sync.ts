@@ -100,8 +100,8 @@ export async function deleteUser(id: string): Promise<void> {
   await prisma.user.deleteMany({ where: { id } });
 }
 
-// 같은 orgId의 Note는 의도적으로 남긴다 — Note.orgId는 FK가 아니고(스키마 주석 참고),
-// 테넌트 데이터 보존/파기 정책은 소급 FK와 함께 KAN-12에서 다룬다.
+// 조직 삭제 시 같은 orgId의 Note는 FK Cascade로 함께 파기된다 (KAN-14에서 결정된
+// 테넌트 데이터 수명 정책 — KAN-12 항목 2 해소).
 export async function deleteOrganization(id: string): Promise<void> {
   await prisma.organization.deleteMany({ where: { id } });
 }
