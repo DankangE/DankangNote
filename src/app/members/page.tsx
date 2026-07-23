@@ -1,15 +1,15 @@
 import { auth } from '@clerk/nextjs/server';
-import { fetchNotes } from '@/features/notes/api/queries';
+import { fetchMembers } from '@/features/workspace/api/queries';
+import { MembersView } from '@/features/workspace/components/MembersView';
 import { NoOrganization } from '@/lib/components/NoOrganization';
-import { NotesView } from '@/features/notes/components/NotesView';
 
-export default async function NotesPage() {
+export default async function MembersPage() {
   // auth.protect()는 미인증이면 sign-in으로 redirect하고, 인증되면 auth 객체를 반환한다.
   const { orgId } = await auth.protect();
   if (!orgId) {
     return <NoOrganization />;
   }
 
-  const notes = await fetchNotes();
-  return <NotesView notes={notes} />;
+  const members = await fetchMembers();
+  return <MembersView members={members} />;
 }

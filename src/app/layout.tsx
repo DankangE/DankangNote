@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import NextLink from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import { koKR } from "@clerk/localizations";
 import {
@@ -9,6 +10,7 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
+import { Link } from "@astryxdesign/core/Link";
 import { Stack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import "./globals.css";
@@ -51,7 +53,21 @@ export default function RootLayout({
             paddingInline={6}
             paddingBlock={3}
           >
-            <Text weight="semibold">DankangNote</Text>
+            <Stack direction="horizontal" gap={5} vAlign="center">
+              <Text weight="semibold">DankangNote</Text>
+              <Show when="signed-in">
+                {/* Astryx Link + as={NextLink} — reset.css가 앵커 기본 스타일을 제거하므로
+                    hover/focus 어포던스는 Astryx Link가 제공한다. */}
+                <Stack as="nav" direction="horizontal" gap={4} vAlign="center">
+                  <Link as={NextLink} href="/notes" color="secondary" isStandalone>
+                    노트
+                  </Link>
+                  <Link as={NextLink} href="/members" color="secondary" isStandalone>
+                    멤버
+                  </Link>
+                </Stack>
+              </Show>
+            </Stack>
             <Stack direction="horizontal" gap={3} vAlign="center">
               <Show when="signed-out">
                 <SignInButton />
