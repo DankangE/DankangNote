@@ -20,6 +20,8 @@
     "@prisma/client": "^7.8.0",
     "@stylexjs/stylex": "^0.19.0",
     "next": "16.2.10",
+    "pusher": "^5.3.4",
+    "pusher-js": "^8.6.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "server-only": "^0.0.1",
