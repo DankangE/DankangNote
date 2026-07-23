@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useTransition } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Heading } from '@astryxdesign/core/Heading';
@@ -9,7 +9,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
-import type { Note } from '@/features/notes/types';
+import type { NotesAction, OptimisticNote } from '@/features/notes/hooks/useOptimisticNotes';
 import { FormError } from './FormError';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
@@ -23,13 +23,19 @@ const dateFormat = new Intl.DateTimeFormat('ko-KR', {
   day: '2-digit',
 });
 
-export function NoteCard({ note }: { note: Note }) {
+type NoteCardProps = {
+  note: OptimisticNote;
+  dispatch: (action: NotesAction) => void;
+  onDeleted: (id: string) => void;
+};
+
+export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   const updatedAt = dateFormat.format(new Date(note.updatedAt));
 
@@ -48,41 +54,58 @@ export function NoteCard({ note }: { note: Note }) {
     setIsEditing(false);
   }
 
-  async function handleSave() {
-    if (busy) return;
-    setBusy(true);
+  function handleSave() {
+    if (isPending) return;
     setError(null);
-    try {
-      const result = await updateNoteAction(note.id, { title, content });
-      if (!result.ok) {
-        setError(result.error);
-        return;
+    startTransition(async () => {
+      // 유효한 입력이면 저장 즉시 낙관적 값으로 뷰 모드 전환 — revalidated RSC를
+      // 기다리는 동안 옛 값이 깜빡이지 않는다. 서버 정렬(updatedAt desc)에 맞춰
+      // reducer가 카드를 맨 앞으로 옮긴다.
+      const trimmedTitle = title.trim();
+      if (trimmedTitle) {
+        dispatch({
+          type: 'update',
+          id: note.id,
+          patch: { title: trimmedTitle, content, updatedAt: new Date() },
+        });
+        setIsEditing(false);
       }
-      setIsEditing(false);
-    } catch {
-      setError(GENERIC_ERROR);
-    } finally {
-      setBusy(false);
-    }
+      try {
+        const result = await updateNoteAction(note.id, { title, content });
+        if (!result.ok) {
+          // 낙관적 값은 트랜지션 종료와 함께 자동 롤백된다. 편집 모드로
+          // 복귀해 입력 버퍼(title/content)를 보존한다.
+          setError(result.error);
+          setIsEditing(true);
+        }
+      } catch {
+        setError(GENERIC_ERROR);
+        setIsEditing(true);
+      }
+    });
   }
 
-  async function handleDelete() {
-    if (busy) return;
-    setBusy(true);
+  function handleDelete() {
+    if (isPending) return;
     setError(null);
-    try {
-      const result = await deleteNoteAction(note.id);
-      if (!result.ok) {
-        setError(result.error);
+    startTransition(async () => {
+      // 카드를 목록에서 즉시 제거. 실패하면 트랜지션 종료 시 자동 복원된다.
+      dispatch({ type: 'delete', id: note.id });
+      try {
+        const result = await deleteNoteAction(note.id);
+        if (result.ok) {
+          // 서버가 삭제를 확정 — revalidate가 실패해 stale prop이 다시 와도
+          // ghost card가 되살아나지 않도록 상위 오버레이에 기록한다.
+          onDeleted(note.id);
+        } else {
+          setError(result.error);
+          setConfirmingDelete(false);
+        }
+      } catch {
+        setError(GENERIC_ERROR);
         setConfirmingDelete(false);
       }
-      // 성공 시 revalidatePath('/notes')로 목록에서 사라진다.
-    } catch {
-      setError(GENERIC_ERROR);
-      setConfirmingDelete(false);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   return (
@@ -106,10 +129,15 @@ export function NoteCard({ note }: { note: Note }) {
         <FormError message={error} />
 
         <Stack direction="horizontal" gap={2} vAlign="center" justify="end">
-          {isEditing ? (
+          {note.pending ? (
+            // 생성 낙관 카드 — 실제 id가 아직 없어 편집·삭제할 수 없다.
+            <Text size="sm" color="secondary">
+              저장 중…
+            </Text>
+          ) : isEditing ? (
             <>
-              <Button label="취소" variant="ghost" isDisabled={busy} onClick={cancelEditing} />
-              <Button label="저장" variant="primary" isDisabled={busy} clickAction={handleSave} />
+              <Button label="취소" variant="ghost" isDisabled={isPending} onClick={cancelEditing} />
+              <Button label="저장" variant="primary" isDisabled={isPending} clickAction={handleSave} />
             </>
           ) : confirmingDelete ? (
             <>
@@ -117,13 +145,13 @@ export function NoteCard({ note }: { note: Note }) {
               <Button
                 label="취소"
                 variant="ghost"
-                isDisabled={busy}
+                isDisabled={isPending}
                 onClick={() => setConfirmingDelete(false)}
               />
               <Button
                 label="삭제 확정"
                 variant="destructive"
-                isDisabled={busy}
+                isDisabled={isPending}
                 clickAction={handleDelete}
               />
             </>
