@@ -28,9 +28,14 @@ export async function POST(req: NextRequest) {
     return new Response('webhook not configured', { status: 500 });
   }
 
-  // Svix는 항상 content-length를 보낸다 — 없거나(chunked 우회) 상한 초과면 버퍼링 전에 거절.
+  // Svix는 항상 content-length를 보낸다 — 부재(chunked 우회)는 411, 상한 초과는 413으로
+  // 버퍼링 전에 거절. 비교를 부정형(!(n <= MAX))으로 쓴 것은 비숫자 CL(NaN)이 상한을
+  // 통과해 새지 않게 하기 위함 (Node llhttp가 걸러주지만 런타임 가정을 두지 않는다).
   const contentLength = req.headers.get('content-length');
-  if (!contentLength || Number(contentLength) > MAX_BODY_BYTES) {
+  if (!contentLength) {
+    return new Response('length required', { status: 411 });
+  }
+  if (!(Number(contentLength) <= MAX_BODY_BYTES)) {
     return new Response('payload too large', { status: 413 });
   }
 

@@ -84,6 +84,9 @@ export async function upsertMembership(data: MembershipData): Promise<void> {
     // 새 orgmem_ id가 오는데, deleted 유실·지연 시 id 키 upsert는 (orgId,userId) 유니크
     // 제약(P2002)으로 영구 실패 루프에 빠진다. 자연 키면 기존 행을 새 id·role로 덮어써
     // 자가 치유되고, 뒤늦게 온 옛 id의 deleted는 행을 못 찾아 no-op이 된다.
+    // 잔여 한계: 삭제→재초대 사이클을 가로질러 지연된 옛 id의 created/updated가 도착하면
+    // id·role이 옛값으로 되돌아가 이후 deleted(새 id)가 no-op이 될 수 있다 — updated_at
+    // stale-write 가드와 함께 KAN-12에서 다룬다.
     prisma.membership.upsert({
       where: { orgId_userId: { orgId: org.id, userId } },
       create: { id: data.id, orgId: org.id, userId, role: data.role },
