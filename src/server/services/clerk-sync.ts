@@ -56,6 +56,8 @@ export async function upsertOrganization(data: OrganizationData): Promise<void> 
 // 멤버십 payload는 organization·public_user_data를 임베드한다. org·user를 함께 upsert해
 // webhook 배달 순서(멤버십이 org/user 이벤트보다 먼저 도착)와 무관하게 FK가 성립하도록
 // 세 upsert를 한 트랜잭션으로 묶는다.
+// 임베드된 org/user 값은 이벤트 생성 시점의 스냅샷이라, 이미 반영된 더 새로운
+// organization.*/user.* 값을 되돌릴 수 있다 — FK 성립용 create에만 쓰고 update는 하지 않는다.
 export async function upsertMembership(data: MembershipData): Promise<void> {
   const org = data.organization;
   const pud = data.public_user_data;
@@ -65,7 +67,7 @@ export async function upsertMembership(data: MembershipData): Promise<void> {
     prisma.organization.upsert({
       where: { id: org.id },
       create: { id: org.id, name: org.name, slug: org.slug, imageUrl: org.image_url ?? null },
-      update: { name: org.name, slug: org.slug, imageUrl: org.image_url ?? null },
+      update: {},
     }),
     prisma.user.upsert({
       where: { id: userId },
@@ -76,17 +78,16 @@ export async function upsertMembership(data: MembershipData): Promise<void> {
         lastName: pud.last_name,
         imageUrl: pud.image_url,
       },
-      // 이메일 등 상세는 user.* 이벤트가 채운다 — 멤버십 이벤트가 그 값을 덮어쓰지 않도록 update는 최소화.
-      update: {
-        firstName: pud.first_name,
-        lastName: pud.last_name,
-        imageUrl: pud.image_url,
-      },
+      update: {},
     }),
+    // Clerk id가 아닌 (orgId, userId) 자연 키로 upsert한다 — 제거 후 재초대되면 같은 쌍에
+    // 새 orgmem_ id가 오는데, deleted 유실·지연 시 id 키 upsert는 (orgId,userId) 유니크
+    // 제약(P2002)으로 영구 실패 루프에 빠진다. 자연 키면 기존 행을 새 id·role로 덮어써
+    // 자가 치유되고, 뒤늦게 온 옛 id의 deleted는 행을 못 찾아 no-op이 된다.
     prisma.membership.upsert({
-      where: { id: data.id },
+      where: { orgId_userId: { orgId: org.id, userId } },
       create: { id: data.id, orgId: org.id, userId, role: data.role },
-      update: { orgId: org.id, userId, role: data.role },
+      update: { id: data.id, role: data.role },
     }),
   ]);
 }
@@ -96,6 +97,8 @@ export async function deleteUser(id: string): Promise<void> {
   await prisma.user.deleteMany({ where: { id } });
 }
 
+// 같은 orgId의 Note는 의도적으로 남긴다 — Note.orgId는 FK가 아니고(스키마 주석 참고),
+// 테넌트 데이터 보존/파기 정책은 소급 FK와 함께 KAN-12에서 다룬다.
 export async function deleteOrganization(id: string): Promise<void> {
   await prisma.organization.deleteMany({ where: { id } });
 }
