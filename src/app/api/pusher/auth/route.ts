@@ -10,7 +10,13 @@ export async function POST(request: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const form = await request.formData();
+  // 폼이 아닌 바디는 formData()가 throw한다 — 클라이언트 입력 문제는 400으로.
+  let form: FormData;
+  try {
+    form = await request.formData();
+  } catch {
+    return new Response('Bad Request', { status: 400 });
+  }
   const socketId = form.get('socket_id');
   const channelName = form.get('channel_name');
   if (typeof socketId !== 'string' || typeof channelName !== 'string') {
@@ -27,5 +33,10 @@ export async function POST(request: Request) {
     return new Response('Pusher not configured', { status: 503 });
   }
 
-  return Response.json(pusherServer.authorizeChannel(socketId, channelName));
+  // socket_id 형식(\d+\.\d+)이 아니면 pusher 라이브러리가 throw — 역시 입력 문제다.
+  try {
+    return Response.json(pusherServer.authorizeChannel(socketId, channelName));
+  } catch {
+    return new Response('Bad Request', { status: 400 });
+  }
 }
