@@ -1,39 +1,11 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { getAuthState, NO_ORG_ERROR } from '@/server/auth';
+import { guarded, parseOrError } from '@/lib/action-result';
+import { resolveOrg } from '@/server/auth';
 import * as notesService from '@/server/services/notes';
 import type { ActionResult, Note } from '@/features/notes/types';
-import { noteIdSchema, noteInputSchema, parseOrError } from './validation';
-
-const NOT_SIGNED_IN_ERROR = '로그인이 필요합니다. 다시 로그인해 주세요.';
-
-// DB 장애 등 예상 못 한 예외가 액션 밖으로 던져지면 클라이언트는 digest만 담긴
-// 불투명한 에러를 받는다 — ActionResult 계약은 이 래퍼 한 곳에서 강제한다.
-async function guarded<T>(
-  action: string,
-  fn: () => Promise<ActionResult<T>>,
-): Promise<ActionResult<T>> {
-  try {
-    return await fn();
-  } catch (error) {
-    console.error(`[notes] ${action} failed:`, error);
-    return { ok: false, error: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.' };
-  }
-}
-
-// 액션 진입부의 인증·조직 게이트. 미인증('로그인 필요')과 조직 없음(워크스페이스
-// 안내)을 구분해 사용자에게 맞는 메시지를 준다.
-async function resolveOrg(): Promise<{ orgId: string } | { error: string }> {
-  const { userId, orgId } = await getAuthState();
-  if (!userId) {
-    return { error: NOT_SIGNED_IN_ERROR };
-  }
-  if (!orgId) {
-    return { error: NO_ORG_ERROR };
-  }
-  return { orgId };
-}
+import { noteIdSchema, noteInputSchema } from './validation';
 
 // 쓰기 커밋 이후의 revalidate 실패는 뮤테이션 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 생성/유령 삭제를 만든다. 로그만 남기고 성공으로 처리한다.
@@ -59,7 +31,7 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
     return parsed;
   }
 
-  return guarded('createNote', async () => {
+  return guarded('notes.createNote', async () => {
     const note = await notesService.createNote(org.orgId, parsed.data);
     revalidateNotes('createNote');
     return { ok: true, data: note };
@@ -84,7 +56,7 @@ export async function updateNoteAction(
     return parsedInput;
   }
 
-  return guarded('updateNote', async () => {
+  return guarded('notes.updateNote', async () => {
     const note = await notesService.updateNote(org.orgId, parsedId.data, parsedInput.data);
     if (!note) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
@@ -106,7 +78,7 @@ export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: 
     return parsedId;
   }
 
-  return guarded('deleteNote', async () => {
+  return guarded('notes.deleteNote', async () => {
     const deleted = await notesService.deleteNote(org.orgId, parsedId.data);
     if (!deleted) {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };

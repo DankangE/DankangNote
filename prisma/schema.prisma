@@ -49,6 +49,19 @@ model Organization {
   memberships Membership[]
 }
 
+/// 워크스페이스 채팅 메시지 (워크스페이스당 방 1개, KAN-15).
+/// authorId는 Clerk user id — Note.orgId와 같은 이유로 FK를 두지 않는다
+/// (메시지 전송이 User 미러의 webhook 동기화 순서에 묶이면 안 됨). 표시용 조인은 서비스에서.
+model ChatMessage {
+  id        String   @id @default(cuid())
+  orgId     String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([orgId, createdAt])
+}
+
 /// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.
 model Membership {
   id        String   @id
