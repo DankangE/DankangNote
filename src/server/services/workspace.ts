@@ -11,6 +11,7 @@ export function listMembers(orgId: string): Promise<WorkspaceMember[]> {
   return prisma.membership.findMany({
     where: { orgId },
     include: { user: true },
-    orderBy: { createdAt: 'asc' },
+    // createdAt은 동기화 시각이라 동시 upsert로 값이 겹칠 수 있다 — id 타이브레이커로 순서 고정.
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
 }

@@ -43,19 +43,18 @@ export function MembersView({ members }: { members: WorkspaceMember[] }) {
           <Stack direction="vertical" gap={3}>
             {members.map((member, index) => {
               const role = roleBadge(member.role);
+              const name = displayName(member);
+              // 이름이 없어 이메일이 이름 자리에 쓰였으면 보조 줄에 중복 표시하지 않는다.
+              const email = member.user.email !== name ? member.user.email : null;
               return (
                 <Fragment key={member.id}>
                   {index > 0 && <Divider />}
                   <Stack direction="horizontal" gap={3} vAlign="center" justify="between">
                     <Stack direction="horizontal" gap={3} vAlign="center">
-                      <Avatar
-                        src={member.user.imageUrl ?? undefined}
-                        name={displayName(member)}
-                        size="medium"
-                      />
+                      <Avatar src={member.user.imageUrl ?? undefined} name={name} size="medium" />
                       <Stack direction="vertical" gap={1}>
-                        <Text weight="semibold">{displayName(member)}</Text>
-                        {member.user.email && <Text color="secondary">{member.user.email}</Text>}
+                        <Text weight="semibold">{name}</Text>
+                        {email && <Text color="secondary">{email}</Text>}
                       </Stack>
                     </Stack>
                     <Badge variant={role.variant} label={role.label} />
