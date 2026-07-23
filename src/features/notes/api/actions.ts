@@ -23,8 +23,8 @@ async function guarded<T>(
 }
 
 // 액션 진입부의 인증·조직 게이트. 미인증('로그인 필요')과 조직 없음(워크스페이스
-// 안내)을 구분해 사용자에게 맞는 메시지를 준다.
-async function resolveOrg(): Promise<{ orgId: string } | { error: string }> {
+// 안내)을 구분해 사용자에게 맞는 메시지를 준다. userId는 작성자 귀속에 쓰인다.
+async function resolveOrg(): Promise<{ orgId: string; userId: string } | { error: string }> {
   const { userId, orgId } = await getAuthState();
   if (!userId) {
     return { error: NOT_SIGNED_IN_ERROR };
@@ -32,7 +32,7 @@ async function resolveOrg(): Promise<{ orgId: string } | { error: string }> {
   if (!orgId) {
     return { error: NO_ORG_ERROR };
   }
-  return { orgId };
+  return { orgId, userId };
 }
 
 // 쓰기 커밋 이후의 revalidate 실패는 뮤테이션 실패가 아니다 — 실패로 오보고하면
@@ -60,7 +60,7 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
   }
 
   return guarded('createNote', async () => {
-    const note = await notesService.createNote(org.orgId, parsed.data);
+    const note = await notesService.createNote(org.orgId, org.userId, parsed.data);
     revalidateNotes('createNote');
     return { ok: true, data: note };
   });

@@ -9,6 +9,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
+import type { NoteAuthor } from '@/features/notes/types';
 import type { NotesAction, OptimisticNote } from '@/features/notes/hooks/useOptimisticNotes';
 import { FormError } from './FormError';
 
@@ -22,6 +23,13 @@ const dateFormat = new Intl.DateTimeFormat('ko-KR', {
   month: '2-digit',
   day: '2-digit',
 });
+
+// 작성자 표시명 — 이름이 없으면 이메일, 그것도 없으면(스켈레톤 유저) 표시하지 않는다.
+// user_... 원시 id는 사용자에게 무의미해서 fallback으로 쓰지 않는다.
+function authorLabel(author: NoteAuthor | null): string | null {
+  if (!author) return null;
+  return [author.firstName, author.lastName].filter(Boolean).join(' ') || author.email || null;
+}
 
 type NoteCardProps = {
   note: OptimisticNote;
@@ -38,6 +46,7 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
   const [isPending, startTransition] = useTransition();
 
   const updatedAt = dateFormat.format(new Date(note.updatedAt));
+  const author = authorLabel(note.author);
 
   // 편집 진입 시 최신 prop으로 버퍼를 다시 seed한다. mount 시점 값에 머물면
   // 그 사이 갱신된 노트를 오래된 값으로 덮어쓰는 lost update가 생긴다.
@@ -120,7 +129,10 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
           <>
             <Heading level={3}>{note.title}</Heading>
             {note.content ? <Text>{note.content}</Text> : null}
-            <Text size="sm" color="secondary">
+            {/* 작성자는 생성자 고정(수정자 아님) — '작성'을 명시해 편집자로 오독되지 않게 한다.
+                maxLines: 긴 이메일 등 무공백 토큰이 카드 밖으로 넘치지 않게 말줄임. */}
+            <Text size="sm" color="secondary" maxLines={1}>
+              {author ? `${author} 작성 · ` : ''}
               {updatedAt} 수정
             </Text>
           </>
