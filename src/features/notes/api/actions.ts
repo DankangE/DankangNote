@@ -1,17 +1,10 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { z } from '@/lib/zod';
 import { getAuthState, NO_ORG_ERROR } from '@/server/auth';
 import * as notesService from '@/server/services/notes';
 import type { ActionResult, Note } from '@/features/notes/types';
-
-const noteInputSchema = z.object({
-  title: z.string().trim().min(1, '제목을 입력하세요.').max(200, '제목은 200자 이하여야 합니다.'),
-  content: z.string().max(50_000, '본문이 너무 깁니다.').optional(),
-});
-
-const noteIdSchema = z.string().min(1, '노트 id가 필요합니다.');
+import { noteIdSchema, noteInputSchema, parseOrError } from './validation';
 
 const NOT_SIGNED_IN_ERROR = '로그인이 필요합니다. 다시 로그인해 주세요.';
 
@@ -61,9 +54,9 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
     return { ok: false, error: org.error };
   }
 
-  const parsed = noteInputSchema.safeParse(input);
-  if (!parsed.success) {
-    return { ok: false, error: parsed.error.issues[0].message };
+  const parsed = parseOrError(noteInputSchema, input);
+  if (!parsed.ok) {
+    return parsed;
   }
 
   return guarded('createNote', async () => {
@@ -82,13 +75,13 @@ export async function updateNoteAction(
     return { ok: false, error: org.error };
   }
 
-  const parsedId = noteIdSchema.safeParse(id);
-  const parsedInput = noteInputSchema.partial().safeParse(input);
-  if (!parsedId.success) {
-    return { ok: false, error: parsedId.error.issues[0].message };
+  const parsedId = parseOrError(noteIdSchema, id);
+  if (!parsedId.ok) {
+    return parsedId;
   }
-  if (!parsedInput.success) {
-    return { ok: false, error: parsedInput.error.issues[0].message };
+  const parsedInput = parseOrError(noteInputSchema.partial(), input);
+  if (!parsedInput.ok) {
+    return parsedInput;
   }
 
   return guarded('updateNote', async () => {
@@ -108,9 +101,9 @@ export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: 
     return { ok: false, error: org.error };
   }
 
-  const parsedId = noteIdSchema.safeParse(id);
-  if (!parsedId.success) {
-    return { ok: false, error: parsedId.error.issues[0].message };
+  const parsedId = parseOrError(noteIdSchema, id);
+  if (!parsedId.ok) {
+    return parsedId;
   }
 
   return guarded('deleteNote', async () => {

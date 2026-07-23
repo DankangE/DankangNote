@@ -2,3 +2,8 @@ onlyBuiltDependencies:
   - "@prisma/client"
   - "@prisma/engines"
   - prisma
+
+# 빌드 스크립트가 불필요한 전이 의존성 — 설치 때마다 뜨는 ignored-build-scripts 경고 억제
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver
