@@ -10,5 +10,9 @@ export const config = {
   // 제외하고 나머지(Server Action POST 포함)에서 proxy가 돈다.
   matcher: [
     '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
+    // API 라우트는 경로에 점(.json 등)이 있어도 위 확장자 제외 패턴에 걸리지 않도록 항상 포함.
+    // 웹훅 같은 공개 라우트도 통과하지만, clerkMiddleware는 기본적으로 아무것도 보호하지
+    // 않으므로(resource-based) 차단되지 않는다.
+    '/(api|trpc)(.*)',
   ],
 };

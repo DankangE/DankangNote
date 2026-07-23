@@ -13,13 +13,60 @@ datasource db {
 }
 
 model Note {
-  id        String   @id @default(cuid())
-  // 워크스페이스(테넌트) 스코프. Clerk 도입 전까지는 서버 헬퍼가 임시 org를 넣는다.
-  orgId     String
+  id    String @id @default(cuid())
+  // 워크스페이스(테넌트) 스코프 = Clerk orgId. FK가 아닌 문자열로 둔다 — 노트 생성이
+  // Organization webhook 동기화 순서에 묶이지 않게(부트스트랩 경합 회피). 소급 FK는 후속.
+  orgId String
+
   title     String
   content   String   @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([orgId])
+}
+
+// 아래 세 모델은 Clerk의 사용자/조직/소속을 DB에 미러링한 것 — webhook으로만 채워진다.
+// createdAt/updatedAt은 Clerk 원본 시각이 아니라 '이 행을 동기화한 시각'이다.
+
+/// Clerk 사용자 미러. id는 Clerk user id(user_...). user.* 이벤트로 동기화.
+model User {
+  id        String   @id
+  email     String?
+  firstName String?
+  lastName  String?
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+}
+
+/// Clerk 조직(=워크스페이스) 미러. id는 Clerk org id(org_...). organization.* 이벤트로 동기화.
+model Organization {
+  id        String   @id
+  name      String
+  slug      String?
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+}
+
+/// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.
+model Membership {
+  id        String   @id
+  orgId     String
+  userId    String
+  // Clerk 역할 문자열 (예: 'org:admin', 'org:member').
+  role      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
 }

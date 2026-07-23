@@ -19,7 +19,7 @@ API, Server Action, Prisma, 인증, 멀티테넌시 작업 시 적용.
 
 - Prisma 클라이언트는 `src/server/`에 싱글턴으로 두고, 클라이언트 컴포넌트에서 import되지 않게 `server-only`로 막는다.
 - 변이(mutation)는 Server Action 우선, 외부 노출이나 웹훅이 필요한 경우만 Route Handler를 쓴다.
-- 모든 외부 입력(폼, 파라미터, 웹훅 페이로드)은 서버에서 zod 등으로 검증한 후 사용한다.
+- 모든 외부 입력(폼, 파라미터, 웹훅 페이로드)은 서버에서 zod 등으로 검증한 후 사용한다. 서명 검증되는 웹훅(Clerk/Svix 등)은 서명 검증 + 제공 SDK 타입으로 갈음할 수 있다.
 
 ## 멀티테넌시 (가장 중요)
 
