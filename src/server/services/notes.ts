@@ -3,6 +3,7 @@ import 'server-only';
 import { prisma } from '@/server/db';
 import { Prisma } from '@/server/generated/prisma/client';
 import type { Note, User } from '@/server/generated/prisma/client';
+import { findTombstoned } from '@/server/services/clerk-tombstone';
 
 export interface NoteInput {
   title: string;
@@ -37,13 +38,20 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
 // upsert가 아닌 createMany+skipDuplicates인 이유: Prisma 7 쿼리 컴파일러는 upsert를
 // SELECT→INSERT로 에뮬레이션해 동시 생성 시 P2002로 죽지만, 이 형태는 네이티브
 // INSERT ... ON CONFLICT DO NOTHING으로 컴파일된다.
-// 잔여 한계: user/org 삭제 직후 stale 세션(토큰 만료 전)의 생성이 스켈레톤을 부활시킬
-// 수 있다 — webhook 부활 경로와 함께 KAN-12에서 다룬다.
 export async function createNote(
   orgId: string,
   authorId: string,
   input: NoteInput,
 ): Promise<NoteWithAuthor> {
+  // 삭제된 워크스페이스/사용자를 stale 세션(토큰 만료 전)이 스켈레톤으로 부활시키지
+  // 않도록 tombstone을 확인한다(KAN-12). 걸리면 throw — 액션의 guarded()가 일반
+  // 오류로 변환하고, 세션은 곧 만료된다. tombstone이 확인과 쓰기 사이에 커밋되는
+  // 초협소 경합은 org 행 삭제의 cascade가 노트까지 정리하므로 잔여물이 없다.
+  const tombstoned = await findTombstoned([orgId, authorId]);
+  if (tombstoned.length > 0) {
+    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${tombstoned.join(', ')}`);
+  }
+
   const [, , note] = await prisma.$transaction([
     prisma.organization.createMany({
       // name은 세션에서 알 수 없다 — 임시로 orgId를 쓰고 organization.* webhook이 교정.
