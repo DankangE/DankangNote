@@ -22,6 +22,13 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  // 실패 시 제출했던 입력을 폼에 되돌린다 — 단, 사용자가 그 사이 새로 타이핑을
+  // 시작했으면(필드가 비어 있지 않으면) 덮어쓰지 않는다.
+  function restoreDraft(submittedTitle: string, submittedContent: string) {
+    setTitle((current) => (current === '' ? submittedTitle : current));
+    setContent((current) => (current === '' ? submittedContent : current));
+  }
+
   function handleCreate() {
     if (isPending) return; // onEnter·버튼 동시 발사로 인한 중복 생성 방지
     setError(null);
@@ -50,17 +57,11 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
         const result = await createNoteAction({ title, content });
         if (result.ok) return;
         setError(result.error);
-        if (optimistic) {
-          setTitle(title);
-          setContent(content);
-        }
+        if (optimistic) restoreDraft(title, content);
       } catch {
         // 액션이 {ok:false} 대신 reject되는 경우(전송 실패 등)도 UI에 표시한다.
         setError(GENERIC_ERROR);
-        if (optimistic) {
-          setTitle(title);
-          setContent(content);
-        }
+        if (optimistic) restoreDraft(title, content);
       }
     });
   }
