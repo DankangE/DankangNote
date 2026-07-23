@@ -43,6 +43,9 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
           note: {
             id: `optimistic-${crypto.randomUUID()}`,
             orgId: '', // 화면에 쓰이지 않는 필드 — 서버 확정 시 실제 값으로 교체된다
+            // 작성자는 서버 확정 시 채워진다 — 임시 카드는 '저장 중'이라 표시 생략 허용.
+            authorId: null,
+            author: null,
             title: trimmedTitle,
             content,
             createdAt: new Date(),

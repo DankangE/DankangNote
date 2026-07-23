@@ -32,7 +32,7 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
   }
 
   return guarded('notes.createNote', async () => {
-    const note = await notesService.createNote(org.orgId, parsed.data);
+    const note = await notesService.createNote(org.orgId, org.userId, parsed.data);
     revalidateNotes('createNote');
     return { ok: true, data: note };
   });

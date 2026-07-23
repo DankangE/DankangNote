@@ -9,16 +9,23 @@ datasource db {
 
 model Note {
   id    String @id @default(cuid())
-  // 워크스페이스(테넌트) 스코프 = Clerk orgId. FK가 아닌 문자열로 둔다 — 노트 생성이
-  // Organization webhook 동기화 순서에 묶이지 않게(부트스트랩 경합 회피). 소급 FK는 후속.
+  // 워크스페이스(테넌트) 스코프 = Clerk orgId. KAN-14에서 FK 소급 — webhook 동기화
+  // 순서 경합은 생성 트랜잭션의 스켈레톤 upsert가 흡수한다(services/notes.ts).
+  // 조직 삭제 시 노트는 함께 파기된다(Cascade — KAN-14에서 결정, KAN-12 항목 2 해소).
   orgId String
+  // 작성자 Clerk user id. FK 소급 이전 노트는 null, 작성자 탈퇴 시에도 null로 남는다.
+  authorId String?
 
   title     String
   content   String   @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  author       User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
   @@index([orgId])
+  @@index([authorId])
 }
 
 // 아래 세 모델은 Clerk의 사용자/조직/소속을 DB에 미러링한 것 — webhook으로만 채워진다.
@@ -35,6 +42,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   memberships Membership[]
+  notes       Note[]
 }
 
 /// Clerk 조직(=워크스페이스) 미러. id는 Clerk org id(org_...). organization.* 이벤트로 동기화.
@@ -47,6 +55,7 @@ model Organization {
   updatedAt DateTime @updatedAt
 
   memberships Membership[]
+  notes       Note[]
 }
 
 /// 워크스페이스 채팅 메시지 (워크스페이스당 방 1개, KAN-15).
