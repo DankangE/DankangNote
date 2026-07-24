@@ -1,6 +1,3 @@
-import { Heading } from '@astryxdesign/core/Heading';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
 import type { Note, NoteViewer } from '@/features/notes/types';
 import { CenteredPage } from '@/lib/components/CenteredPage';
 import { NotesBoard } from './NotesBoard';
@@ -10,10 +7,10 @@ import { NotesBoard } from './NotesBoard';
 export function NotesView({ notes, viewer }: { notes: Note[]; viewer: NoteViewer | null }) {
   return (
     <CenteredPage>
-      <Stack direction="vertical" gap={1}>
-        <Heading level={1}>노트</Heading>
-        <Text color="secondary">워크스페이스의 모든 노트</Text>
-      </Stack>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold">노트</h1>
+        <p className="text-muted-foreground">워크스페이스의 모든 노트</p>
+      </div>
 
       <NotesBoard notes={notes} viewer={viewer} />
     </CenteredPage>

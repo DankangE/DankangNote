@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import type { JSONContent } from '@tiptap/core';
 import { renderToReactElement } from '@tiptap/static-renderer/pm/react';
-import { Text } from '@astryxdesign/core/Text';
 import { noteEditorExtensions } from '@/features/notes/editor';
 import { docToPlainText } from '@/features/notes/content';
 
@@ -19,7 +18,8 @@ export function NoteContent({ doc }: { doc: JSONContent }) {
   }, [doc]);
 
   if (rendered === null) {
-    return <Text>{docToPlainText(doc)}</Text>;
+    return <p className="whitespace-pre-wrap">{docToPlainText(doc)}</p>;
   }
-  return <>{rendered}</>;
+  // prose로 Tiptap 렌더 콘텐츠(h1/ul 등)에 서식 부여 — Tailwind preflight가 리셋한 걸 복원.
+  return <div className="prose prose-sm dark:prose-invert max-w-none">{rendered}</div>;
 }

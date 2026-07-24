@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@plugin "@tailwindcss/typography";
 
 /* Astryx Design System — order matters: reset → components → theme tokens */
 @import '@astryxdesign/core/reset.css';
