@@ -1,5 +1,5 @@
 import { arrayMove } from '@dnd-kit/sortable';
-import type { BoardColumnView } from '@/features/board/types';
+import type { BoardCardView, BoardColumnView } from '@/features/board/types';
 
 // 카드 이동의 순수 계산 로직(컴포넌트에서 분리). id는 카드 id 또는 컬럼 id일 수 있다.
 
@@ -42,5 +42,53 @@ export function computeMove(
   const overIndex = dest.cards.findIndex((card) => card.id === overId);
   const insertIndex = overIndex >= 0 ? overIndex : dest.cards.length;
   dest.cards.splice(insertIndex, 0, { ...card, columnId: to });
+  return next;
+}
+
+// 아래는 낙관적 변이 실패 시의 '타깃 롤백'용 — 전체 스냅샷 복원과 달리 해당 항목만 되돌려
+// 그 사이 성공한 다른 변이를 보존한다(자체 리뷰 Finding 2). 모두 순수 함수.
+
+export type CardLocation = { card: BoardCardView; columnId: string; index: number };
+
+export function findCardLocation(columns: BoardColumnView[], cardId: string): CardLocation | null {
+  for (const column of columns) {
+    const index = column.cards.findIndex((card) => card.id === cardId);
+    if (index >= 0) return { card: column.cards[index], columnId: column.id, index };
+  }
+  return null;
+}
+
+export function removeCard(columns: BoardColumnView[], cardId: string): BoardColumnView[] {
+  return columns.map((column) => ({
+    ...column,
+    cards: column.cards.filter((card) => card.id !== cardId),
+  }));
+}
+
+export function insertCardAt(
+  columns: BoardColumnView[],
+  card: BoardCardView,
+  columnId: string,
+  index: number,
+): BoardColumnView[] {
+  if (columns.some((column) => column.cards.some((existing) => existing.id === card.id))) {
+    return columns; // 이미 있으면 no-op(중복 방지)
+  }
+  return columns.map((column) => {
+    if (column.id !== columnId) return column;
+    const cards = [...column.cards];
+    cards.splice(Math.min(index, cards.length), 0, card);
+    return { ...column, cards };
+  });
+}
+
+export function insertColumnAt(
+  columns: BoardColumnView[],
+  column: BoardColumnView,
+  index: number,
+): BoardColumnView[] {
+  if (columns.some((existing) => existing.id === column.id)) return columns;
+  const next = [...columns];
+  next.splice(Math.min(index, next.length), 0, column);
   return next;
 }

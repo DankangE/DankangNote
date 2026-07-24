@@ -4,7 +4,7 @@ import { guarded, parseOrError } from '@/lib/action-result';
 import { resolveOrg } from '@/server/auth';
 import * as boardService from '@/server/services/board';
 import type { ActionResult } from '@/lib/action-result';
-import type { BoardCardView, BoardColumnView, BoardView } from '@/features/board/types';
+import type { BoardCardView, BoardColumnView } from '@/features/board/types';
 import {
   cardRefSchema,
   columnRefSchema,
@@ -17,20 +17,6 @@ import {
 // Server Action은 클라이언트가 직접 POST할 수 있는 공개 엔드포인트다. 진입부에서
 // 인증·조직 확인을 zod 검증보다 먼저 수행한다(backend.md: 진입부 auth). 보드 상태는
 // 클라이언트가 로드 후 자체 관리하므로 revalidatePath 없이 영속화만 한다(KAN-17).
-
-// 낙관적 변이 실패 시 클라이언트가 서버 진실로 되돌리기 위한 재조회. 전체 스냅샷 복원은
-// 그 사이 성공한 다른 변이를 덮어쓰므로, 실패 경로는 이걸로 재동기화한다(KAN-17 자체 리뷰).
-export async function refreshBoardAction(): Promise<ActionResult<BoardView>> {
-  const org = await resolveOrg();
-  if ('error' in org) {
-    return { ok: false, error: org.error };
-  }
-
-  return guarded('board.refresh', async () => {
-    const board = await boardService.listBoard(org.orgId);
-    return { ok: true, data: board };
-  });
-}
 
 export async function createColumnAction(input: unknown): Promise<ActionResult<BoardColumnView>> {
   const org = await resolveOrg();
