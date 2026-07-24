@@ -16,21 +16,42 @@ type UserData = Exclude<UserWebhookEvent, { type: 'user.deleted' }>['data'];
 type OrganizationData = Exclude<OrganizationWebhookEvent, { type: 'organization.deleted' }>['data'];
 type MembershipData = OrganizationMembershipWebhookEvent['data'];
 
-// ---------- 순서 역전 가드 (KAN-12) ----------
-// Svix는 at-least-once·무순서 배달이라 '삭제 후 지연 재전송된 upsert'가 행을 부활시키고,
-// '오래된 updated'가 최신 값을 되돌릴 수 있다. 가드 2겹으로 막는다:
-// 1) tombstone — 삭제 통보된 id는 영구 기록. upsert는 pre-check로 무시하고, 쓰기와
-//    삭제가 겹치면 post-check가 자가 삭제한다. 삭제 핸들러가 tombstone 기록+행 삭제를
-//    원자 커밋하므로 어떤 인터리빙에서도 (기록 전 쓰기→행 삭제에 휩쓸림 / 기록 후
-//    쓰기→post-check가 정리) 부활 없이 수렴한다.
+// 순서 역전 가드 (KAN-12). Svix는 at-least-once·무순서 배달이라 '삭제 후 지연 재전송된
+// upsert'가 행을 부활시키고, '오래된 updated'가 최신 값을 되돌릴 수 있다. 가드 2겹:
+// 1) tombstone — 삭제 통보된 id는 영구 기록. 부활 없는 수렴은 세 단계가 서로의 빈틈을
+//    받아내며 성립한다 (READ COMMITTED 기준):
+//    - upsert의 post-check가 tombstone 커밋 뒤에 실행되면 → post-check가 자가 삭제.
+//    - post-check가 tombstone 커밋보다 앞서면 upsert의 쓰기 커밋은 그보다 더 앞이므로
+//      → 삭제 핸들러의 커밋 후 sweep이 그 행을 반드시 보고 지운다.
+//    - upsert가 쓰기 후·post-check 전에 실패하면 5xx → Svix 재전송 → pre-check가
+//      정리를 겸하므로 재전송이 치유한다.
 // 2) clerkUpdatedAt — payload의 updated_at보다 오래된 이벤트는 updateMany 조건
 //    불충족 + createMany 중복 스킵으로 걸러진다. upsert 대신 updateMany→createMany를
 //    쓰는 이유: 조건부 갱신 표현 + 네이티브 ON CONFLICT(Prisma 7의 upsert는
 //    SELECT→INSERT 에뮬레이션이라 동시 실행 시 P2002 — KAN-14에서 실증).
+//    insert 경합에서 진 쪽이 더 새로운 이벤트일 수 있어 createMany 스킵(count 0) 시
+//    updateMany를 한 번 더 시도한다 — 상대 커밋이 끝난 뒤라 가드가 정확히 판정한다.
 
-// 저장된 clerkUpdatedAt이 이벤트보다 오래된(또는 스켈레톤이라 null인) 행만 갱신 대상.
+// 저장된 clerkUpdatedAt이 이벤트보다 새로운 행만 보호한다(스켈레톤 null은 갱신 대상).
+// lte인 이유: lt는 같은 ms의 서로 다른 이벤트(생성 직후 즉시 갱신)를 정순 배달에서도
+// 영구 드롭한다. lte는 동률을 '마지막 도착 승리'로 바꾼다 — 동률 역순 배달이라는 반대
+// 경계가 열리지만 정순 배달이 지배적이라 순개선이고, 동일 이벤트 재전송은 같은 값
+// 재기록이라 무해.
 function staleGuard(eventAt: Date) {
-  return { OR: [{ clerkUpdatedAt: null }, { clerkUpdatedAt: { lt: eventAt } }] };
+  return { OR: [{ clerkUpdatedAt: null }, { clerkUpdatedAt: { lte: eventAt } }] };
+}
+
+// 세 미러 공통 쓰기 패턴: 가드된 updateMany → 행이 없으면 createMany(skip) →
+// insert 경합으로 스킵됐으면 updateMany 재판정 1회(상단 2번 논증). 재시도는 1회다 —
+// 그 사이 제3의 핸들러가 행을 또 바꾸는 다중 경합은 이 호출 단독으로는 못 닫고,
+// 그 이벤트 자신의 가드/post-check와 다음 이벤트 사이클에서 수렴한다.
+async function guardedMirrorWrite(ops: {
+  update: () => Promise<{ count: number }>;
+  create: () => Promise<{ count: number }>;
+}): Promise<void> {
+  if ((await ops.update()).count > 0) return;
+  if ((await ops.create()).count > 0) return;
+  await ops.update();
 }
 
 // UserJSON의 대표 이메일: primary가 있으면 그것, 없으면 첫 이메일, 그것도 없으면 null.
@@ -45,7 +66,11 @@ function emailFromIdentifier(identifier: string): string | null {
 }
 
 export async function upsertUser(data: UserData): Promise<void> {
-  if ((await findTombstoned([data.id])).length > 0) return;
+  // pre-check는 정리를 겸한다(상단 수렴 논증) — 이전 배달의 부활 잔여 행을 재전송이 치운다.
+  if ((await findTombstoned([data.id])).length > 0) {
+    await prisma.user.deleteMany({ where: { id: data.id } });
+    return;
+  }
 
   const eventAt = new Date(data.updated_at);
   const fields = {
@@ -55,13 +80,12 @@ export async function upsertUser(data: UserData): Promise<void> {
     imageUrl: data.image_url,
     clerkUpdatedAt: eventAt,
   };
-  const { count } = await prisma.user.updateMany({
-    where: { id: data.id, ...staleGuard(eventAt) },
-    data: fields,
+  await guardedMirrorWrite({
+    update: () =>
+      prisma.user.updateMany({ where: { id: data.id, ...staleGuard(eventAt) }, data: fields }),
+    create: () =>
+      prisma.user.createMany({ data: [{ id: data.id, ...fields }], skipDuplicates: true }),
   });
-  if (count === 0) {
-    await prisma.user.createMany({ data: [{ id: data.id, ...fields }], skipDuplicates: true });
-  }
 
   if ((await findTombstoned([data.id])).length > 0) {
     await prisma.user.deleteMany({ where: { id: data.id } });
@@ -69,7 +93,11 @@ export async function upsertUser(data: UserData): Promise<void> {
 }
 
 export async function upsertOrganization(data: OrganizationData): Promise<void> {
-  if ((await findTombstoned([data.id])).length > 0) return;
+  // pre-check는 정리를 겸한다(상단 수렴 논증).
+  if ((await findTombstoned([data.id])).length > 0) {
+    await prisma.organization.deleteMany({ where: { id: data.id } });
+    return;
+  }
 
   const eventAt = new Date(data.updated_at);
   const fields = {
@@ -78,19 +106,35 @@ export async function upsertOrganization(data: OrganizationData): Promise<void> 
     imageUrl: data.image_url ?? null,
     clerkUpdatedAt: eventAt,
   };
-  const { count } = await prisma.organization.updateMany({
-    where: { id: data.id, ...staleGuard(eventAt) },
-    data: fields,
+  await guardedMirrorWrite({
+    update: () =>
+      prisma.organization.updateMany({
+        where: { id: data.id, ...staleGuard(eventAt) },
+        data: fields,
+      }),
+    create: () =>
+      prisma.organization.createMany({ data: [{ id: data.id, ...fields }], skipDuplicates: true }),
   });
-  if (count === 0) {
-    await prisma.organization.createMany({
-      data: [{ id: data.id, ...fields }],
-      skipDuplicates: true,
-    });
-  }
 
   if ((await findTombstoned([data.id])).length > 0) {
     await prisma.organization.deleteMany({ where: { id: data.id } });
+  }
+}
+
+// 멤버십 upsert의 pre/post-check 공용 정리 — tombstone에 걸린 대상만 지운다
+// (org 삭제는 membership을 cascade).
+async function removeTombstonedMembershipRows(
+  tombstoned: string[],
+  ids: { membershipId: string; orgId: string; userId: string },
+): Promise<void> {
+  if (tombstoned.includes(ids.orgId)) {
+    await prisma.organization.deleteMany({ where: { id: ids.orgId } });
+  }
+  if (tombstoned.includes(ids.userId)) {
+    await prisma.user.deleteMany({ where: { id: ids.userId } });
+  }
+  if (tombstoned.includes(ids.membershipId)) {
+    await prisma.membership.deleteMany({ where: { id: ids.membershipId } });
   }
 }
 
@@ -104,8 +148,14 @@ export async function upsertMembership(data: MembershipData): Promise<void> {
   const org = data.organization;
   const pud = data.public_user_data;
   const userId = pud.user_id;
+  const ids = { membershipId: data.id, orgId: org.id, userId };
 
-  if ((await findTombstoned([data.id, org.id, userId])).length > 0) return;
+  // pre-check는 정리를 겸한다(상단 수렴 논증).
+  const pre = await findTombstoned([data.id, org.id, userId]);
+  if (pre.length > 0) {
+    await removeTombstonedMembershipRows(pre, ids);
+    return;
+  }
 
   const eventAt = new Date(data.updated_at);
   await prisma.$transaction([
@@ -127,34 +177,32 @@ export async function upsertMembership(data: MembershipData): Promise<void> {
     }),
   ]);
 
-  const { count } = await prisma.membership.updateMany({
-    where: { orgId: org.id, userId, ...staleGuard(eventAt) },
-    data: { id: data.id, role: data.role, clerkUpdatedAt: eventAt },
+  const membershipFields = { id: data.id, role: data.role, clerkUpdatedAt: eventAt };
+  await guardedMirrorWrite({
+    update: () =>
+      prisma.membership.updateMany({
+        where: { orgId: org.id, userId, ...staleGuard(eventAt) },
+        data: membershipFields,
+      }),
+    create: () =>
+      prisma.membership.createMany({
+        data: [{ orgId: org.id, userId, ...membershipFields }],
+        skipDuplicates: true,
+      }),
   });
-  if (count === 0) {
-    await prisma.membership.createMany({
-      data: [{ id: data.id, orgId: org.id, userId, role: data.role, clerkUpdatedAt: eventAt }],
-      skipDuplicates: true,
-    });
-  }
 
-  const tombstoned = await findTombstoned([data.id, org.id, userId]);
-  if (tombstoned.length > 0) {
-    // 쓰는 사이 삭제가 커밋된 경우 — 방금 만든 행을 자가 정리(org 삭제는 membership을 cascade).
-    if (tombstoned.includes(org.id)) {
-      await prisma.organization.deleteMany({ where: { id: org.id } });
-    }
-    if (tombstoned.includes(userId)) {
-      await prisma.user.deleteMany({ where: { id: userId } });
-    }
-    if (tombstoned.includes(data.id)) {
-      await prisma.membership.deleteMany({ where: { id: data.id } });
-    }
+  // 쓰는 사이 삭제가 커밋된 경우 — 방금 만든 행을 자가 정리.
+  const post = await findTombstoned([data.id, org.id, userId]);
+  if (post.length > 0) {
+    await removeTombstonedMembershipRows(post, ids);
   }
 }
 
-// 삭제는 tombstone 기록과 행 삭제를 원자 커밋한다 — 위 upsert들의 post-check와 만나
-// 어떤 인터리빙에서도 부활이 남지 않는다. createMany skip + deleteMany라 중복 배달도 멱등.
+// 삭제는 tombstone 기록과 행 삭제를 원자 커밋하고, 커밋 후 sweep으로 한 번 더 지운다.
+// sweep이 필요한 이유: 트랜잭션의 DELETE(그 시점엔 행 없음)와 커밋 사이에 upsert의
+// 쓰기·post-check가 통째로 끼어들 수 있다 — 그 경우 upsert의 쓰기 커밋은 반드시 sweep보다
+// 앞서므로 sweep이 부활 행을 본다(상단 수렴 논증). createMany skip + deleteMany라 중복
+// 배달도 멱등.
 
 export async function deleteUser(id: string): Promise<void> {
   await prisma.$transaction([
@@ -162,6 +210,7 @@ export async function deleteUser(id: string): Promise<void> {
     // membership은 onDelete: Cascade, Note.authorId는 SetNull로 함께 처리된다.
     prisma.user.deleteMany({ where: { id } }),
   ]);
+  await prisma.user.deleteMany({ where: { id } });
 }
 
 // 조직 삭제 시 같은 orgId의 Note는 FK Cascade로 함께 파기된다 (KAN-14에서 결정된
@@ -171,6 +220,7 @@ export async function deleteOrganization(id: string): Promise<void> {
     prisma.clerkTombstone.createMany({ data: [{ id }], skipDuplicates: true }),
     prisma.organization.deleteMany({ where: { id } }),
   ]);
+  await prisma.organization.deleteMany({ where: { id } });
 }
 
 export async function deleteMembership(id: string): Promise<void> {
@@ -178,4 +228,5 @@ export async function deleteMembership(id: string): Promise<void> {
     prisma.clerkTombstone.createMany({ data: [{ id }], skipDuplicates: true }),
     prisma.membership.deleteMany({ where: { id } }),
   ]);
+  await prisma.membership.deleteMany({ where: { id } });
 }

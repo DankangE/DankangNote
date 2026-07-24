@@ -44,12 +44,22 @@ export async function createNote(
   input: NoteInput,
 ): Promise<NoteWithAuthor> {
   // 삭제된 워크스페이스/사용자를 stale 세션(토큰 만료 전)이 스켈레톤으로 부활시키지
-  // 않도록 tombstone을 확인한다(KAN-12). 걸리면 throw — 액션의 guarded()가 일반
-  // 오류로 변환하고, 세션은 곧 만료된다. tombstone이 확인과 쓰기 사이에 커밋되는
-  // 초협소 경합은 org 행 삭제의 cascade가 노트까지 정리하므로 잔여물이 없다.
-  const tombstoned = await findTombstoned([orgId, authorId]);
-  if (tombstoned.length > 0) {
-    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${tombstoned.join(', ')}`);
+  // 않도록 tombstone을 pre/post 이중 확인한다(KAN-12, clerk-sync upsert와 같은 패턴).
+  // pre-check만으로는 부족하다 — 확인과 쓰기 사이에 삭제가 커밋되면 cascade는 이미 끝난
+  // 뒤라 아래 트랜잭션이 스켈레톤과 노트를 되살린다. 걸리면 throw — 액션의 guarded()가
+  // 일반 오류로 변환하고, 세션은 곧 만료된다.
+  // pre-check도 정리를 겸한다(clerk-sync와 동일) — 이전 시도가 post-check 전에 죽어 남긴
+  // 부활 잔재를 다음 시도가 치운다. Server Action은 웹훅과 달리 재전송이 없어 이 경로가
+  // 크래시 잔재의 확정적 치유 기회다. org 삭제는 cascade로 노트까지 정리한다.
+  const pre = await findTombstoned([orgId, authorId]);
+  if (pre.length > 0) {
+    if (pre.includes(orgId)) {
+      await prisma.organization.deleteMany({ where: { id: orgId } });
+    }
+    if (pre.includes(authorId)) {
+      await prisma.user.deleteMany({ where: { id: authorId } });
+    }
+    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${pre.join(', ')}`);
   }
 
   const [, , note] = await prisma.$transaction([
@@ -67,6 +77,22 @@ export async function createNote(
       include: { author: { select: AUTHOR_SELECT } },
     }),
   ]);
+
+  // post-check — 방금 되살렸을 수 있는 것들을 자가 정리(org 삭제는 cascade로 노트까지).
+  // post-check가 tombstone 커밋보다 앞서는 문장 단위 인터리빙은 delete 핸들러의 커밋 후
+  // sweep이 이어받는다 — clerk-sync 상단 수렴 논증 참조.
+  const post = await findTombstoned([orgId, authorId]);
+  if (post.length > 0) {
+    if (post.includes(orgId)) {
+      await prisma.organization.deleteMany({ where: { id: orgId } });
+    }
+    if (post.includes(authorId)) {
+      await prisma.note.deleteMany({ where: { id: note.id } });
+      await prisma.user.deleteMany({ where: { id: authorId } });
+    }
+    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${post.join(', ')}`);
+  }
+
   return note;
 }
 
