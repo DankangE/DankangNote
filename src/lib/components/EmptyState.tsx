@@ -14,7 +14,7 @@ export function EmptyState({
   return (
     <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed p-10 text-center">
       <div className="flex size-11 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        <Inbox className="size-5" />
+        <Inbox aria-hidden className="size-5" />
       </div>
       <p className="font-medium">{title}</p>
       {description ? <p className="max-w-sm text-sm text-muted-foreground">{description}</p> : null}

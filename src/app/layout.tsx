@@ -10,8 +10,8 @@ import {
   UserButton,
 } from "@clerk/nextjs";
 import { NotebookPen } from "lucide-react";
-import { ThemeProvider } from "@/components/theme-provider";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { ThemeProvider } from "@/lib/components/theme-provider";
+import { ThemeToggle } from "@/lib/components/theme-toggle";
 import { NavLink } from "@/lib/components/NavLink";
 import "./globals.css";
 
@@ -42,11 +42,11 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
           <ClerkProvider localization={koKR}>
-            <header className="sticky top-0 z-50 flex items-center justify-between gap-4 border-b bg-background/70 px-6 py-3 backdrop-blur-md">
+            <header className="sticky top-0 z-50 flex items-center justify-between gap-4 border-b bg-background/80 px-6 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
               <div className="flex items-center gap-6">
                 <span className="flex items-center gap-2 font-semibold">
                   <span className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                    <NotebookPen className="size-3.5" />
+                    <NotebookPen aria-hidden className="size-3.5" />
                   </span>
                   DankangNote
                 </span>
