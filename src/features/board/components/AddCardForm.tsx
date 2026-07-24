@@ -35,7 +35,8 @@ export function AddCardForm({ onCreate, isBusy }: AddCardFormProps) {
         placeholder="카드 내용"
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') submit();
+          // 한글 IME 조합 확정 Enter는 무시.
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing) submit();
         }}
       />
       <Button variant="secondary" size="sm" disabled={isBusy} onClick={submit}>
