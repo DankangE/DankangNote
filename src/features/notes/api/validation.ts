@@ -61,6 +61,9 @@ function isContentWithinLimits(value: unknown): boolean {
     if ((count += 1) > MAX_NODES) return false;
     if (node && typeof node === 'object' && Array.isArray((node as { content?: unknown }).content)) {
       for (const child of (node as { content: unknown[] }).content) {
+        // frontier도 제한 — 단일 노드의 거대한 content 배열이 push 도중 스택을
+        // 부풀리지 못하게 한다(상류 body 제한에 의존하지 않음).
+        if (stack.length > MAX_NODES) return false;
         stack.push({ node: child, depth: depth + 1 });
       }
     }
