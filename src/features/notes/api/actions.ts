@@ -69,13 +69,19 @@ export async function updateNoteAction(
   }
 
   return guarded('notes.updateNote', async () => {
-    const note = await notesService.updateNote(org.orgId, parsedId.data, patch);
-    if (!note) {
+    const outcome = await notesService.updateNote(org.orgId, parsedId.data, patch, {
+      userId: org.userId,
+      isAdmin: org.isAdmin,
+    });
+    if (outcome.status === 'forbidden') {
+      return { ok: false, error: '이 노트를 수정할 권한이 없습니다. 작성자 또는 관리자만 수정할 수 있습니다.' };
+    }
+    if (outcome.status === 'notfound') {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
     }
 
     revalidateNotes('updateNote');
-    return { ok: true, data: note };
+    return { ok: true, data: outcome.note };
   });
 }
 
@@ -91,8 +97,14 @@ export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: 
   }
 
   return guarded('notes.deleteNote', async () => {
-    const deleted = await notesService.deleteNote(org.orgId, parsedId.data);
-    if (!deleted) {
+    const outcome = await notesService.deleteNote(org.orgId, parsedId.data, {
+      userId: org.userId,
+      isAdmin: org.isAdmin,
+    });
+    if (outcome === 'forbidden') {
+      return { ok: false, error: '이 노트를 삭제할 권한이 없습니다. 작성자 또는 관리자만 삭제할 수 있습니다.' };
+    }
+    if (outcome === 'notfound') {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
     }
 

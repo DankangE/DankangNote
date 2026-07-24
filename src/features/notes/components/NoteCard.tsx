@@ -10,7 +10,7 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import type { JSONContent } from '@tiptap/core';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
 import { EMPTY_DOC, parseNoteContent, serializeNoteContent } from '@/features/notes/content';
-import type { NoteAuthor } from '@/features/notes/types';
+import type { NoteAuthor, NoteViewer } from '@/features/notes/types';
 import type { NotesAction, OptimisticNote } from '@/features/notes/hooks/useOptimisticNotes';
 import { NoteContent } from './NoteContent';
 import { NoteEditor } from './NoteEditor';
@@ -36,11 +36,12 @@ function authorLabel(author: NoteAuthor | null): string | null {
 
 type NoteCardProps = {
   note: OptimisticNote;
+  viewer: NoteViewer | null;
   dispatch: (action: NotesAction) => void;
   onDeleted: (id: string) => void;
 };
 
-export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
+export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(note.title);
   const [doc, setDoc] = useState<JSONContent>(EMPTY_DOC);
@@ -50,6 +51,9 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
 
   const updatedAt = dateFormat.format(new Date(note.updatedAt));
   const author = authorLabel(note.author);
+  // 편집·삭제 버튼 노출 판단(편의). 서버 강제가 본선이라 이 판단이 틀려도 액션이 거부한다.
+  // admin은 전체, 그 외엔 본인 노트만. authorId가 null인 소급 이전 노트는 admin만.
+  const canModify = viewer ? viewer.isAdmin || note.authorId === viewer.userId : false;
   // 뷰 모드 렌더용 doc — 저장 문자열(직렬화 doc 또는 legacy plain)을 파싱한다.
   const viewDoc = useMemo(() => parseNoteContent(note.content), [note.content]);
 
@@ -172,12 +176,12 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
                 clickAction={handleDelete}
               />
             </>
-          ) : (
+          ) : canModify ? (
             <>
               <Button label="편집" variant="secondary" onClick={startEditing} />
               <Button label="삭제" variant="destructive" onClick={() => setConfirmingDelete(true)} />
             </>
-          )}
+          ) : null}
         </Stack>
       </Stack>
     </Card>
