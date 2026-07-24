@@ -1,16 +1,19 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Stack } from '@astryxdesign/core/Stack';
 import { Text } from '@astryxdesign/core/Text';
-import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import type { JSONContent } from '@tiptap/core';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
+import { EMPTY_DOC, parseNoteContent, serializeNoteContent } from '@/features/notes/content';
 import type { NoteAuthor } from '@/features/notes/types';
 import type { NotesAction, OptimisticNote } from '@/features/notes/hooks/useOptimisticNotes';
+import { NoteContent } from './NoteContent';
+import { NoteEditor } from './NoteEditor';
 import { FormError } from './FormError';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
@@ -40,20 +43,22 @@ type NoteCardProps = {
 export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(note.title);
-  const [content, setContent] = useState(note.content);
+  const [doc, setDoc] = useState<JSONContent>(EMPTY_DOC);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const updatedAt = dateFormat.format(new Date(note.updatedAt));
   const author = authorLabel(note.author);
+  // 뷰 모드 렌더용 doc — 저장 문자열(직렬화 doc 또는 legacy plain)을 파싱한다.
+  const viewDoc = useMemo(() => parseNoteContent(note.content), [note.content]);
 
   // 편집 진입 시 최신 prop으로 버퍼를 다시 seed한다. mount 시점 값에 머물면
   // 그 사이 갱신된 노트를 오래된 값으로 덮어쓰는 lost update가 생긴다.
   // 이전 액션의 에러도 함께 리셋한다.
   function startEditing() {
     setTitle(note.title);
-    setContent(note.content);
+    setDoc(parseNoteContent(note.content));
     setError(null);
     setIsEditing(true);
   }
@@ -75,15 +80,15 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
         dispatch({
           type: 'update',
           id: note.id,
-          patch: { title: trimmedTitle, content, updatedAt: new Date() },
+          patch: { title: trimmedTitle, content: serializeNoteContent(doc), updatedAt: new Date() },
         });
         setIsEditing(false);
       }
       try {
-        const result = await updateNoteAction(note.id, { title, content });
+        const result = await updateNoteAction(note.id, { title, content: doc });
         if (!result.ok) {
           // 낙관적 값은 트랜지션 종료와 함께 자동 롤백된다. 편집 모드로
-          // 복귀해 입력 버퍼(title/content)를 보존한다.
+          // 복귀해 입력 버퍼(title/doc)를 보존한다.
           setError(result.error);
           setIsEditing(true);
         }
@@ -123,12 +128,12 @@ export function NoteCard({ note, dispatch, onDeleted }: NoteCardProps) {
         {isEditing ? (
           <>
             <TextInput label="제목" value={title} onChange={setTitle} />
-            <TextArea label="내용" value={content} rows={3} onChange={setContent} />
+            <NoteEditor doc={doc} onChange={setDoc} ariaLabel="노트 내용 편집" />
           </>
         ) : (
           <>
             <Heading level={3}>{note.title}</Heading>
-            {note.content ? <Text>{note.content}</Text> : null}
+            {note.content ? <NoteContent doc={viewDoc} /> : null}
             {/* 작성자는 생성자 고정(수정자 아님) — '작성'을 명시해 편집자로 오독되지 않게 한다.
                 maxLines: 긴 이메일 등 무공백 토큰이 카드 밖으로 넘치지 않게 말줄임. */}
             <Text size="sm" color="secondary" maxLines={1}>

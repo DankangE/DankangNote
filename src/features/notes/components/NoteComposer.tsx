@@ -1,32 +1,53 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useRef, useState, useTransition } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 import { Card } from '@astryxdesign/core/Card';
 import { Stack } from '@astryxdesign/core/Stack';
-import { TextArea } from '@astryxdesign/core/TextArea';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import type { JSONContent } from '@tiptap/core';
 import { createNoteAction } from '@/features/notes/api/actions';
+import { EMPTY_DOC, isDocEmpty, serializeNoteContent } from '@/features/notes/content';
 import type { NotesAction } from '@/features/notes/hooks/useOptimisticNotes';
+import { NoteEditor } from './NoteEditor';
 import { FormError } from './FormError';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
 
-// 노트 생성 폼. Astryx 입력은 제어형(value 필수)이라 클라이언트 컴포넌트다.
-// 제출 즉시 임시 카드(pending)를 목록에 낙관적으로 추가하고 폼을 비운다.
-// 성공하면 revalidated RSC의 실제 노트로 교체되고, 실패하면 카드는 자동
-// 롤백되므로 입력을 폼에 복원한다.
+// 노트 생성 폼. 본문은 Tiptap 에디터(NoteEditor). 제출 즉시 임시 카드(pending)를 목록에
+// 낙관적으로 추가하고 폼을 비운다. 성공하면 revalidated RSC의 실제 노트로 교체되고,
+// 실패하면 카드는 자동 롤백되므로 제목·본문 입력을 복원한다.
 export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => void }) {
   const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
+  const [doc, setDoc] = useState<JSONContent>(EMPTY_DOC);
+  // 에디터 content는 마운트 시 seed되므로, 리셋·복원은 key 교체로 리마운트해 반영한다.
+  const [editorKey, setEditorKey] = useState(0);
+  // 최신 doc을 트랜지션 클로저·복원 시점에 stale 없이 읽기 위한 참조(state는 async).
+  const docRef = useRef<JSONContent>(EMPTY_DOC);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // 실패 시 제출했던 입력을 폼에 되돌린다 — 단, 사용자가 그 사이 새로 타이핑을
-  // 시작했으면(필드가 비어 있지 않으면) 덮어쓰지 않는다.
-  function restoreDraft(submittedTitle: string, submittedContent: string) {
+  function handleDocChange(next: JSONContent) {
+    docRef.current = next;
+    setDoc(next);
+  }
+
+  function resetForm() {
+    setTitle('');
+    docRef.current = EMPTY_DOC;
+    setDoc(EMPTY_DOC);
+    setEditorKey((key) => key + 1);
+  }
+
+  // 실패 시 제출했던 입력을 되돌린다 — 단, 사용자가 그 사이 새로 입력한 필드(제목이
+  // 비어있지 않거나 본문이 비어있지 않으면)는 덮어쓰지 않는다.
+  function restoreDraft(submittedTitle: string, submittedDoc: JSONContent) {
     setTitle((current) => (current === '' ? submittedTitle : current));
-    setContent((current) => (current === '' ? submittedContent : current));
+    if (isDocEmpty(docRef.current)) {
+      docRef.current = submittedDoc;
+      setDoc(submittedDoc);
+      setEditorKey((key) => key + 1); // 에디터를 제출본으로 리마운트해 본문 복원
+    }
   }
 
   function handleCreate() {
@@ -36,6 +57,7 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
       // 서버 검증에서 거부될 게 확실한 입력(빈 제목)은 임시 카드를 만들지 않는다 —
       // 나타났다 사라지는 깜빡임 방지. 에러 문구는 서버 검증 결과를 그대로 쓴다.
       const trimmedTitle = title.trim();
+      const submittedDoc = docRef.current;
       const optimistic = trimmedTitle.length > 0;
       if (optimistic) {
         dispatch({
@@ -43,28 +65,26 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
           note: {
             id: `optimistic-${crypto.randomUUID()}`,
             orgId: '', // 화면에 쓰이지 않는 필드 — 서버 확정 시 실제 값으로 교체된다
-            // 작성자는 서버 확정 시 채워진다 — 임시 카드는 '저장 중'이라 표시 생략 허용.
             authorId: null,
             author: null,
             title: trimmedTitle,
-            content,
+            content: serializeNoteContent(submittedDoc),
             createdAt: new Date(),
             updatedAt: new Date(),
             pending: true,
           },
         });
-        setTitle('');
-        setContent('');
+        resetForm();
       }
       try {
-        const result = await createNoteAction({ title, content });
+        const result = await createNoteAction({ title, content: submittedDoc });
         if (result.ok) return;
         setError(result.error);
-        if (optimistic) restoreDraft(title, content);
+        if (optimistic) restoreDraft(title, submittedDoc);
       } catch {
         // 액션이 {ok:false} 대신 reject되는 경우(전송 실패 등)도 UI에 표시한다.
         setError(GENERIC_ERROR);
-        if (optimistic) restoreDraft(title, content);
+        if (optimistic) restoreDraft(title, submittedDoc);
       }
     });
   }
@@ -79,13 +99,7 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
           onChange={setTitle}
           onEnter={handleCreate}
         />
-        <TextArea
-          label="내용"
-          value={content}
-          placeholder="내용 (선택)"
-          rows={3}
-          onChange={setContent}
-        />
+        <NoteEditor key={editorKey} doc={doc} onChange={handleDocChange} ariaLabel="새 노트 내용" />
         <FormError message={error} />
         <Stack direction="horizontal" justify="end">
           <Button
