@@ -1,13 +1,10 @@
 'use client';
 
 import { useMemo, useState, useTransition } from 'react';
-import { Button } from '@astryxdesign/core/Button';
-import { Card } from '@astryxdesign/core/Card';
-import { Heading } from '@astryxdesign/core/Heading';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
-import { TextInput } from '@astryxdesign/core/TextInput';
 import type { JSONContent } from '@tiptap/core';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { deleteNoteAction, updateNoteAction } from '@/features/notes/api/actions';
 import { EMPTY_DOC, parseNoteContent, serializeNoteContent } from '@/features/notes/content';
 import type { NoteAuthor, NoteViewer } from '@/features/notes/types';
@@ -51,15 +48,14 @@ export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
 
   const updatedAt = dateFormat.format(new Date(note.updatedAt));
   const author = authorLabel(note.author);
+  // 뷰 모드 렌더용 doc — 저장 문자열(직렬화 doc 또는 legacy plain)을 파싱한다.
+  const viewDoc = useMemo(() => parseNoteContent(note.content), [note.content]);
   // 편집·삭제 버튼 노출 판단(편의). 서버 강제가 본선이라 이 판단이 틀려도 액션이 거부한다.
   // admin은 전체, 그 외엔 본인 노트만. authorId가 null인 소급 이전 노트는 admin만.
   const canModify = viewer ? viewer.isAdmin || note.authorId === viewer.userId : false;
-  // 뷰 모드 렌더용 doc — 저장 문자열(직렬화 doc 또는 legacy plain)을 파싱한다.
-  const viewDoc = useMemo(() => parseNoteContent(note.content), [note.content]);
 
   // 편집 진입 시 최신 prop으로 버퍼를 다시 seed한다. mount 시점 값에 머물면
   // 그 사이 갱신된 노트를 오래된 값으로 덮어쓰는 lost update가 생긴다.
-  // 이전 액션의 에러도 함께 리셋한다.
   function startEditing() {
     setTitle(note.title);
     setDoc(parseNoteContent(note.content));
@@ -77,8 +73,7 @@ export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
     setError(null);
     startTransition(async () => {
       // 유효한 입력이면 저장 즉시 낙관적 값으로 뷰 모드 전환 — revalidated RSC를
-      // 기다리는 동안 옛 값이 깜빡이지 않는다. 서버 정렬(updatedAt desc)에 맞춰
-      // reducer가 카드를 맨 앞으로 옮긴다.
+      // 기다리는 동안 옛 값이 깜빡이지 않는다.
       const trimmedTitle = title.trim();
       if (trimmedTitle) {
         dispatch({
@@ -91,8 +86,7 @@ export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
       try {
         const result = await updateNoteAction(note.id, { title, content: doc });
         if (!result.ok) {
-          // 낙관적 값은 트랜지션 종료와 함께 자동 롤백된다. 편집 모드로
-          // 복귀해 입력 버퍼(title/doc)를 보존한다.
+          // 낙관적 값은 트랜지션 종료와 함께 자동 롤백된다. 편집 모드로 복귀해 버퍼 보존.
           setError(result.error);
           setIsEditing(true);
         }
@@ -127,63 +121,67 @@ export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
   }
 
   return (
-    <Card padding={4}>
-      <Stack direction="vertical" gap={2}>
-        {isEditing ? (
-          <>
-            <TextInput label="제목" value={title} onChange={setTitle} />
-            <NoteEditor doc={doc} onChange={setDoc} ariaLabel="노트 내용 편집" />
-          </>
-        ) : (
-          <>
-            <Heading level={3}>{note.title}</Heading>
-            {note.content ? <NoteContent doc={viewDoc} /> : null}
-            {/* 작성자는 생성자 고정(수정자 아님) — '작성'을 명시해 편집자로 오독되지 않게 한다.
-                maxLines: 긴 이메일 등 무공백 토큰이 카드 밖으로 넘치지 않게 말줄임. */}
-            <Text size="sm" color="secondary" maxLines={1}>
-              {author ? `${author} 작성 · ` : ''}
-              {updatedAt} 수정
-            </Text>
-          </>
-        )}
+    <div className="flex flex-col gap-2 rounded-xl border bg-card p-4">
+      {isEditing ? (
+        <>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={`note-title-${note.id}`}>제목</Label>
+            <Input
+              id={`note-title-${note.id}`}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </div>
+          <NoteEditor doc={doc} onChange={setDoc} ariaLabel="노트 내용 편집" />
+        </>
+      ) : (
+        <>
+          <h3 className="text-lg font-semibold">{note.title}</h3>
+          {note.content ? <NoteContent doc={viewDoc} /> : null}
+          {/* 작성자는 생성자 고정(수정자 아님) — '작성'을 명시해 편집자로 오독되지 않게 한다. */}
+          <p className="truncate text-sm text-muted-foreground">
+            {author ? `${author} 작성 · ` : ''}
+            {updatedAt} 수정
+          </p>
+        </>
+      )}
 
-        <FormError message={error} />
+      <FormError message={error} />
 
-        <Stack direction="horizontal" gap={2} vAlign="center" justify="end">
-          {note.pending ? (
-            // 생성 낙관 카드 — 실제 id가 아직 없어 편집·삭제할 수 없다.
-            <Text size="sm" color="secondary">
-              저장 중…
-            </Text>
-          ) : isEditing ? (
-            <>
-              <Button label="취소" variant="ghost" isDisabled={isPending} onClick={cancelEditing} />
-              <Button label="저장" variant="primary" isDisabled={isPending} clickAction={handleSave} />
-            </>
-          ) : confirmingDelete ? (
-            <>
-              <Text color="secondary">삭제할까요?</Text>
-              <Button
-                label="취소"
-                variant="ghost"
-                isDisabled={isPending}
-                onClick={() => setConfirmingDelete(false)}
-              />
-              <Button
-                label="삭제 확정"
-                variant="destructive"
-                isDisabled={isPending}
-                clickAction={handleDelete}
-              />
-            </>
-          ) : canModify ? (
-            <>
-              <Button label="편집" variant="secondary" onClick={startEditing} />
-              <Button label="삭제" variant="destructive" onClick={() => setConfirmingDelete(true)} />
-            </>
-          ) : null}
-        </Stack>
-      </Stack>
-    </Card>
+      <div className="flex items-center justify-end gap-2">
+        {note.pending ? (
+          // 생성 낙관 카드 — 실제 id가 아직 없어 편집·삭제할 수 없다.
+          <span className="text-sm text-muted-foreground">저장 중…</span>
+        ) : isEditing ? (
+          <>
+            <Button variant="ghost" disabled={isPending} onClick={cancelEditing}>
+              취소
+            </Button>
+            <Button variant="default" disabled={isPending} onClick={handleSave}>
+              저장
+            </Button>
+          </>
+        ) : confirmingDelete ? (
+          <>
+            <span className="text-muted-foreground">삭제할까요?</span>
+            <Button variant="ghost" disabled={isPending} onClick={() => setConfirmingDelete(false)}>
+              취소
+            </Button>
+            <Button variant="destructive" disabled={isPending} onClick={handleDelete}>
+              삭제 확정
+            </Button>
+          </>
+        ) : canModify ? (
+          <>
+            <Button variant="secondary" onClick={startEditing}>
+              편집
+            </Button>
+            <Button variant="destructive" onClick={() => setConfirmingDelete(true)}>
+              삭제
+            </Button>
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }

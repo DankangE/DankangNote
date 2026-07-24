@@ -13,10 +13,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
-import { Card } from '@astryxdesign/core/Card';
-import { EmptyState } from '@astryxdesign/core/EmptyState';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
+import { EmptyState } from '@/lib/components/EmptyState';
 import type { BoardCardView, BoardView } from '@/features/board/types';
 import { useBoardState } from '@/features/board/hooks/useBoardState';
 import { Column } from './Column';
@@ -56,14 +53,14 @@ export function BoardClient({ initialBoard }: { initialBoard: BoardView }) {
   }
 
   return (
-    <Stack direction="vertical" gap={3}>
-      {error ? <Text>{`⚠ ${error}`}</Text> : null}
+    <div className="flex flex-col gap-3">
+      {error ? <p className="text-sm text-destructive">{`⚠ ${error}`}</p> : null}
 
       {columns.length === 0 ? (
-        <Stack direction="vertical" gap={4}>
+        <div className="flex flex-col gap-4">
           <EmptyState title="아직 컬럼이 없어요" description="첫 컬럼을 추가해 보드를 시작하세요." />
           <AddColumnForm onCreate={createColumn} isBusy={isBusy} />
-        </Stack>
+        </div>
       ) : (
         <DndContext
           sensors={sensors}
@@ -72,7 +69,7 @@ export function BoardClient({ initialBoard }: { initialBoard: BoardView }) {
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveCard(null)}
         >
-          <Stack direction="horizontal" gap={4} vAlign="start" isScrollable>
+          <div className="flex items-start gap-4 overflow-x-auto pb-2">
             {columns.map((column) => (
               <Column
                 key={column.id}
@@ -85,17 +82,17 @@ export function BoardClient({ initialBoard }: { initialBoard: BoardView }) {
               />
             ))}
             <AddColumnForm onCreate={createColumn} isBusy={isBusy} />
-          </Stack>
+          </div>
 
           <DragOverlay>
             {activeCard ? (
-              <Card padding={3}>
-                <Text>{activeCard.text}</Text>
-              </Card>
+              <div className="w-68 rounded-lg border bg-card p-3 shadow-lg">
+                <p className="text-sm">{activeCard.text}</p>
+              </div>
             ) : null}
           </DragOverlay>
         </DndContext>
       )}
-    </Stack>
+    </div>
   );
 }

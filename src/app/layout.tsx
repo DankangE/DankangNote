@@ -9,8 +9,6 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
-import { Stack } from "@astryxdesign/core/Stack";
-import { Text } from "@astryxdesign/core/Text";
 import { NavLink } from "@/lib/components/NavLink";
 import "./globals.css";
 
@@ -35,35 +33,23 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="ko"
-      data-astryx-theme="neutral"
-      className={`${geistSans.variable} ${geistMono.variable}`}
-    >
+    <html lang="ko" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>
         {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
         <ClerkProvider localization={koKR}>
-          <Stack
-            as="header"
-            direction="horizontal"
-            justify="between"
-            vAlign="center"
-            gap={4}
-            paddingInline={6}
-            paddingBlock={3}
-          >
-            <Stack direction="horizontal" gap={5} vAlign="center">
-              <Text weight="semibold">DankangNote</Text>
+          <header className="flex items-center justify-between gap-4 border-b px-6 py-3">
+            <div className="flex items-center gap-5">
+              <span className="font-semibold">DankangNote</span>
               <Show when="signed-in">
-                <Stack as="nav" direction="horizontal" gap={4} vAlign="center">
+                <nav className="flex items-center gap-4">
                   <NavLink href="/notes">노트</NavLink>
                   <NavLink href="/chat">채팅</NavLink>
                   <NavLink href="/board">보드</NavLink>
                   <NavLink href="/members">멤버</NavLink>
-                </Stack>
+                </nav>
               </Show>
-            </Stack>
-            <Stack direction="horizontal" gap={3} vAlign="center">
+            </div>
+            <div className="flex items-center gap-3">
               <Show when="signed-out">
                 <SignInButton />
                 <SignUpButton />
@@ -72,8 +58,8 @@ export default function RootLayout({
                 <OrganizationSwitcher />
                 <UserButton />
               </Show>
-            </Stack>
-          </Stack>
+            </div>
+          </header>
           {children}
         </ClerkProvider>
       </body>

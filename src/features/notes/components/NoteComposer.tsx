@@ -1,11 +1,10 @@
 'use client';
 
 import { useRef, useState, useTransition } from 'react';
-import { Button } from '@astryxdesign/core/Button';
-import { Card } from '@astryxdesign/core/Card';
-import { Stack } from '@astryxdesign/core/Stack';
-import { TextInput } from '@astryxdesign/core/TextInput';
 import type { JSONContent } from '@tiptap/core';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { createNoteAction } from '@/features/notes/api/actions';
 import { EMPTY_DOC, isDocEmpty, serializeNoteContent } from '@/features/notes/content';
 import type { NotesAction } from '@/features/notes/hooks/useOptimisticNotes';
@@ -90,26 +89,27 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
   }
 
   return (
-    <Card padding={4}>
-      <Stack direction="vertical" gap={3}>
-        <TextInput
-          label="제목"
+    <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="note-title">제목</Label>
+        <Input
+          id="note-title"
           value={title}
           placeholder="새 노트 제목"
-          onChange={setTitle}
-          onEnter={handleCreate}
+          onChange={(event) => setTitle(event.target.value)}
+          onKeyDown={(event) => {
+            // 한글 IME 조합 확정 Enter는 무시 — 조기 제출·자모 유실 방지.
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) handleCreate();
+          }}
         />
-        <NoteEditor key={editorKey} doc={doc} onChange={handleDocChange} ariaLabel="새 노트 내용" />
-        <FormError message={error} />
-        <Stack direction="horizontal" justify="end">
-          <Button
-            label="노트 추가"
-            variant="primary"
-            isDisabled={isPending}
-            clickAction={handleCreate}
-          />
-        </Stack>
-      </Stack>
-    </Card>
+      </div>
+      <NoteEditor key={editorKey} doc={doc} onChange={handleDocChange} ariaLabel="새 노트 내용" />
+      <FormError message={error} />
+      <div className="flex justify-end">
+        <Button variant="default" disabled={isPending} onClick={handleCreate}>
+          노트 추가
+        </Button>
+      </div>
+    </div>
   );
 }

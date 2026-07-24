@@ -1,9 +1,8 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Button } from '@astryxdesign/core/Button';
-import { Stack } from '@astryxdesign/core/Stack';
-import { TextInput } from '@astryxdesign/core/TextInput';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 type AddCardFormProps = {
   onCreate: (text: string) => Promise<boolean>;
@@ -29,15 +28,20 @@ export function AddCardForm({ onCreate, isBusy }: AddCardFormProps) {
   }
 
   return (
-    <Stack direction="vertical" gap={2}>
-      <TextInput
-        label="새 카드"
+    <div className="flex flex-col gap-2">
+      <Input
+        aria-label="새 카드"
         value={text}
         placeholder="카드 내용"
-        onChange={setText}
-        onEnter={submit}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          // 한글 IME 조합 확정 Enter는 무시.
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing) submit();
+        }}
       />
-      <Button label="카드 추가" variant="secondary" size="sm" isDisabled={isBusy} clickAction={submit} />
-    </Stack>
+      <Button variant="secondary" size="sm" disabled={isBusy} onClick={submit}>
+        카드 추가
+      </Button>
+    </div>
   );
 }

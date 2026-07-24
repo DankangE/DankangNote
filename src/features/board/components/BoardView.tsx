@@ -1,6 +1,3 @@
-import { Heading } from '@astryxdesign/core/Heading';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
 import type { BoardView as BoardData } from '@/features/board/types';
 import { BoardClient } from './BoardClient';
 
@@ -8,12 +5,12 @@ import { BoardClient } from './BoardClient';
 // 보드는 컬럼 가로 스크롤이 필요해 노트처럼 좁게 가운데 정렬(CenteredPage)하지 않는다.
 export function BoardView({ board }: { board: BoardData }) {
   return (
-    <Stack direction="vertical" gap={4} paddingInline={6} paddingBlock={4}>
-      <Stack direction="vertical" gap={1}>
-        <Heading level={1}>보드</Heading>
-        <Text color="secondary">워크스페이스의 칸반 보드</Text>
-      </Stack>
+    <div className="flex flex-col gap-4 px-6 py-4">
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold">보드</h1>
+        <p className="text-muted-foreground">워크스페이스의 칸반 보드</p>
+      </div>
       <BoardClient initialBoard={board} />
-    </Stack>
+    </div>
   );
 }
