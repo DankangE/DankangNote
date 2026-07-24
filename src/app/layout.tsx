@@ -10,7 +10,7 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
-import { NavLink } from "@/lib/components/NavLink";
+import { AppSidebar } from "@/lib/components/AppSidebar";
 import { ThemeToggle } from "@/lib/components/ThemeToggle";
 import "./globals.css";
 
@@ -52,40 +52,46 @@ export default function RootLayout({
       <body>
         {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
         <ClerkProvider localization={koKR}>
-          <header className="sticky top-0 z-40 flex items-center justify-between gap-4 border-b bg-background/80 px-6 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-            <div className="flex items-center gap-5">
-              <NextLink href="/notes" className="flex items-center gap-2">
-                {/* 브랜드 마크 — 바이올렛 스퀘어 모노그램 */}
-                <span
-                  aria-hidden
-                  className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground"
-                >
-                  D
-                </span>
-                <span className="font-semibold tracking-tight">DankangNote</span>
-              </NextLink>
-              <Show when="signed-in">
-                <nav className="flex items-center gap-4">
-                  <NavLink href="/notes">노트</NavLink>
-                  <NavLink href="/chat">채팅</NavLink>
-                  <NavLink href="/board">보드</NavLink>
-                  <NavLink href="/members">멤버</NavLink>
-                </nav>
-              </Show>
+          {/* 로그인 시: 슬랙형 셸(딥바이올렛 사이드바 + 상단바 + 스크롤 메인).
+              h-svh + overflow-hidden으로 셸이 뷰포트를 채우고, 스크롤은 main·채팅이 각자 관리. */}
+          <Show when="signed-in">
+            <div className="flex h-svh overflow-hidden">
+              <AppSidebar />
+              <div className="flex min-w-0 flex-1 flex-col">
+                <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-4">
+                  <OrganizationSwitcher />
+                  <div className="flex items-center gap-2">
+                    <ThemeToggle />
+                    <UserButton />
+                  </div>
+                </header>
+                <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <ThemeToggle />
-              <Show when="signed-out">
-                <SignInButton />
-                <SignUpButton />
-              </Show>
-              <Show when="signed-in">
-                <OrganizationSwitcher />
-                <UserButton />
-              </Show>
+          </Show>
+
+          {/* 로그아웃 시: 사이드바 없이 브랜드 헤더 + 콘텐츠(대개 sign-in으로 redirect됨). */}
+          <Show when="signed-out">
+            <div className="flex min-h-svh flex-col">
+              <header className="flex h-14 items-center justify-between border-b px-6">
+                <NextLink href="/" className="flex items-center gap-2">
+                  <span
+                    aria-hidden
+                    className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground"
+                  >
+                    D
+                  </span>
+                  <span className="font-semibold tracking-tight">DankangNote</span>
+                </NextLink>
+                <div className="flex items-center gap-2">
+                  <ThemeToggle />
+                  <SignInButton />
+                  <SignUpButton />
+                </div>
+              </header>
+              <main className="flex-1">{children}</main>
             </div>
-          </header>
-          {children}
+          </Show>
         </ClerkProvider>
       </body>
     </html>

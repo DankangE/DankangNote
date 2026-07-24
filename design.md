@@ -23,11 +23,20 @@
 
 - **주색: 바이올렛** (oklch hue **296**). 모던·창의·개성 — 노션/리니어 계열의 감각.
 - **성격**: 차분한 무채색 표면 위에 선명한 바이올렛 포인트. 화려함보다 "집중을 방해하지 않는 도구".
-- **브랜드 마크**: 바이올렛 라운드 스퀘어에 모노그램 `D` + 워드마크 `DankangNote`. 헤더 좌상단, `/notes`로 링크.
+- **브랜드 마크**: 바이올렛 라운드 스퀘어에 모노그램 `D` + 워드마크 `DankangNote`. 사이드바 상단, `/chat`으로 링크.
+- **앱 셸(슬랙형)**: 좌측 **딥바이올렛 사이드바**(aubergine 감각) 아이콘 내비 + 상단 얇은 바(워크스페이스·테마·유저) + 스크롤 메인. 채팅을 기본 착지점으로 앞세운다. 색을 절제하되 사이드바만은 과감히 브랜드색으로 칠해 협업 툴 정체성을 준다.
 
 ```
-[D] DankangNote      노트  채팅  보드  멤버              ☾  org  user
- └ bg-primary          └ 활성 탭은 text-primary(바이올렛)
++----+---------------------------+
+|=D  | [org ▾]        ☾  [user]  |
+| 채팅| # 일반                     |
+| 노트|  (지) 지현  오후 2:31       |
+| 보드|      메시지…               |
+| 멤버|  (민) 민수  …              |
+|    | [ 메시지 입력…        > ]   |
++----+---------------------------+
+ 딥바이올렛     메인(채팅=슬랙 채널)
+ 활성=sidebar-accent
 ```
 
 ---
@@ -52,7 +61,9 @@
 | `destructive` / `-foreground` | 파괴적 액션·오류 | 레드 | 레드 |
 | `success` `warning` `info` (+ `-foreground`) | 상태(성공·주의·정보) | green·amber·blue | 밝은 변형 |
 | `chart-1…5` | 카테고리형 데이터 시각화 | 바이올렛·teal·amber·rose·blue | 밝은 변형 |
+| `sidebar` / `-foreground` `-accent` `-accent-foreground` | 앱 셸 사이드바(딥바이올렛) / 밝은 글씨 · 활성·hover 오버레이 | `0.3 0.085 296` (라이트/다크 공통 진보라) | `0.28 0.08 296` |
 
+> 사이드바는 **라이트·다크 공통으로 딥바이올렛**을 유지한다(Slack·Discord처럼 색 사이드바가 앱 정체성). 그 외 표면만 테마를 따른다.
 > 다크 `primary`는 밝은 바이올렛이라 **버튼 글씨를 어둡게**(vibrant 버튼) 둬 대비를 확보한다. 라이트는 흰 글씨. 이 비대칭은 의도된 것.
 
 ### primary는 언제 쓰나
@@ -113,7 +124,7 @@
 - **4px 베이스** (Tailwind 기본 스케일). 컴포넌트 내부 간격은 `gap-1.5`(6px)·`gap-2`(8px)·`gap-3`(12px), 섹션 간은 `gap-6`(24px).
 - **콘텐츠 컨테이너**: `CenteredPage` = `mx-auto w-full max-w-3xl flex-col gap-6 p-6`. 읽기 폭을 3xl(48rem)로 제한.
 - **페이지 헤더 패턴**: 제목(h1) + 한 줄 설명(`text-muted-foreground`)을 `flex-col gap-1`로.
-- **앱 셸 헤더**: `sticky top-0 z-40` + `bg-background/80 backdrop-blur` (스크롤 시 반투명 유리). 하단 `border-b`.
+- **앱 셸(슬랙형)**: `<html>` → `flex h-svh overflow-hidden`. 좌측 `AppSidebar`(딥바이올렛, 모바일 `w-16` 아이콘 레일 → `md:w-60` 풀) + 우측 `flex-col`(상단바 `h-14` + `main min-h-0 flex-1 overflow-y-auto`). 스크롤은 각 페이지가 관리하고, 채팅은 `h-full`로 채워 메시지만 내부 스크롤.
 
 ---
 
@@ -190,9 +201,13 @@ size: `sm`·`default`·`lg`·`icon`(정사각). 파괴적 흐름은 **확인 단
 
 - `rounded-xl border border-dashed p-8 text-center`. 제목 + 설명 + (선택) 액션. 점선 테두리로 "여기에 채워질 자리"를 암시.
 
-### 내비게이션 (`NavLink`)
+### 내비게이션 (`AppSidebar`)
 
-- 비활성 `text-muted-foreground hover:text-foreground`, **활성 `font-medium text-primary`** + `aria-current="page"`. 하위 경로도 활성으로 매칭.
+- 사이드바 아이콘 내비(lucide + 라벨). 비활성 `text-sidebar-foreground/80 hover:bg-sidebar-accent/50`, **활성 `bg-sidebar-accent text-sidebar-accent-foreground font-medium`** + `aria-current="page"`. `usePathname` 접두사 매칭이라 하위 경로도 활성.
+
+### 채팅 (슬랙 채널식)
+
+- 메인 영역 전체 높이. `# 채널` 헤더 + 좌측정렬 메시지 행(아바타+이름+시각) + 하단 컴포저. 같은 작성자 5분 내 연속 메시지는 아바타·이름을 접고(그룹), 접힌 행은 hover 시 거터에 시각 표시. 말풍선 대신 플랫 행 + `hover:bg-accent/40`.
 
 ### 배지·상태 표시
 

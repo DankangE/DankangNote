@@ -114,14 +114,16 @@ body {
   --chart-4: oklch(0.58 0.2 350);
   --chart-5: oklch(0.58 0.16 250);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0.004 296);
-  --sidebar-foreground: oklch(0.21 0.02 296);
-  --sidebar-primary: oklch(0.55 0.22 296);
+  /* 사이드바 — Slack aubergine 감각의 딥바이올렛. 라이트/다크 공통으로 항상 진한
+     보라를 유지해(콜라보 앱 관례) 셸이 한눈에 트렌디하게 읽히게 한다. */
+  --sidebar: oklch(0.3 0.085 296);
+  --sidebar-foreground: oklch(0.9 0.03 296);
+  --sidebar-primary: oklch(0.65 0.2 296);
   --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.966 0.01 296);
-  --sidebar-accent-foreground: oklch(0.21 0.02 296);
-  --sidebar-border: oklch(0.922 0.006 296);
-  --sidebar-ring: oklch(0.55 0.22 296);
+  --sidebar-accent: oklch(0.4 0.11 296);
+  --sidebar-accent-foreground: oklch(0.98 0.01 296);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.72 0.16 296);
 }
 
 /* ── 다크 테마 ────────────────────────────────────────────────────────────────
@@ -158,14 +160,15 @@ body {
   --chart-3: oklch(0.77 0.15 70);
   --chart-4: oklch(0.65 0.2 350);
   --chart-5: oklch(0.66 0.16 250);
-  --sidebar: oklch(0.21 0.012 296);
-  --sidebar-foreground: oklch(0.97 0.005 296);
-  --sidebar-primary: oklch(0.64 0.19 296);
-  --sidebar-primary-foreground: oklch(0.16 0.02 296);
-  --sidebar-accent: oklch(0.29 0.02 296);
-  --sidebar-accent-foreground: oklch(0.97 0.005 296);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.64 0.19 296);
+  /* 사이드바는 라이트와 동일한 딥바이올렛 유지(다크에서도 aubergine 셸). */
+  --sidebar: oklch(0.28 0.08 296);
+  --sidebar-foreground: oklch(0.9 0.03 296);
+  --sidebar-primary: oklch(0.65 0.2 296);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.38 0.11 296);
+  --sidebar-accent-foreground: oklch(0.98 0.01 296);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.72 0.16 296);
 }
 
 @layer base {
