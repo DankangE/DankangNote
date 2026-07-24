@@ -16,7 +16,9 @@ import "./globals.css";
 
 // 하이드레이션 전에 저장된 테마를 <html>에 적용해 다크모드 깜빡임(FOUC)을 막는다.
 // 저장값이 없으면 OS 설정을 따른다. ThemeToggle이 이후 클래스·localStorage를 갱신.
-const noFlashTheme = `try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}`;
+// IIFE로 전역 누출을 막고, localStorage 접근이 예외를 던져도(일부 프라이버시 모드)
+// OS 감지 분기는 살아남도록 try를 분리한다.
+const noFlashTheme = `(function(){try{var t=localStorage.getItem('theme');if(t==='dark'){document.documentElement.classList.add('dark');return}if(t==='light'){return}}catch(e){}try{if(matchMedia('(prefers-color-scheme:dark)').matches)document.documentElement.classList.add('dark')}catch(e){}})()`;
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

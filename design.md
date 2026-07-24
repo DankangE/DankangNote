@@ -83,7 +83,8 @@
 | primary / background (링크) | 5.4 | 5.3 |
 | destructive·success·info / background (텍스트) | 4.8·5.2·5.5 | 6.6·8.2·7.8 |
 
-모든 브랜드/상태 색은 sRGB gamut 안에 있다(clamp로 인한 색 변형 없음).
+브랜드·상태·차트 색은 sRGB gamut 안에 맞췄다(clamp 색 변형 없음). 예외는 `destructive`
+레드뿐인데 shadcn 기본값이라 유지하며, 색역 경계에 미세하게 걸칠 뿐 시각 차이는 없다.
 
 ---
 
@@ -122,8 +123,8 @@
 
 | 토큰 | 값(≈) | 용도 |
 | --- | --- | --- |
-| `rounded-md` | 8px | 버튼·입력·작은 요소 |
-| `rounded-lg` | 10px | 기본 |
+| `rounded-md` | 8px | 작은 요소·아이콘 버튼·브랜드 마크 |
+| `rounded-lg` | 10px | 기본 — 버튼·입력(shadcn 프리미티브 기준) |
 | `rounded-xl` | 14px | 카드·패널 |
 | `rounded-full` | — | 아바타·pill 배지·상태 도트 |
 
