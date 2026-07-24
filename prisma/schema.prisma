@@ -8,11 +8,11 @@ datasource db {
 }
 
 model Note {
-  id    String @id @default(cuid())
+  id       String  @id @default(cuid())
   // 워크스페이스(테넌트) 스코프 = Clerk orgId. KAN-14에서 FK 소급 — webhook 동기화
   // 순서 경합은 생성 트랜잭션의 스켈레톤 upsert가 흡수한다(services/notes.ts).
   // 조직 삭제 시 노트는 함께 파기된다(Cascade — KAN-14에서 결정, KAN-12 항목 2 해소).
-  orgId String
+  orgId    String
   // 작성자 Clerk user id. FK 소급 이전 노트는 null, 작성자 탈퇴 시에도 null로 남는다.
   authorId String?
 
@@ -33,13 +33,16 @@ model Note {
 
 /// Clerk 사용자 미러. id는 Clerk user id(user_...). user.* 이벤트로 동기화.
 model User {
-  id        String   @id
-  email     String?
-  firstName String?
-  lastName  String?
-  imageUrl  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String    @id
+  email          String?
+  firstName      String?
+  lastName       String?
+  imageUrl       String?
+  // Clerk 원본 updated_at — 이보다 오래된 이벤트는 무시하는 순서 역전 가드(KAN-12).
+  // webhook을 거치지 않은 스켈레톤 행은 null.
+  clerkUpdatedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   memberships Membership[]
   notes       Note[]
@@ -47,12 +50,14 @@ model User {
 
 /// Clerk 조직(=워크스페이스) 미러. id는 Clerk org id(org_...). organization.* 이벤트로 동기화.
 model Organization {
-  id        String   @id
-  name      String
-  slug      String?
-  imageUrl  String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String    @id
+  name           String
+  slug           String?
+  imageUrl       String?
+  // Clerk 원본 updated_at — 순서 역전 가드(KAN-12). 스켈레톤 행은 null.
+  clerkUpdatedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   memberships Membership[]
   notes       Note[]
@@ -73,17 +78,28 @@ model ChatMessage {
 
 /// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.
 model Membership {
-  id        String   @id
-  orgId     String
-  userId    String
+  id             String    @id
+  orgId          String
+  userId         String
   // Clerk 역할 문자열 (예: 'org:admin', 'org:member').
-  role      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  role           String
+  // Clerk 원본 updated_at — 순서 역전 가드(KAN-12). 삭제→재초대 사이클을 가로질러
+  // 지연 도착한 옛 id 이벤트가 행을 되돌리는 유령 멤버십 경로를 막는다.
+  clerkUpdatedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, userId])
   @@index([userId])
+}
+
+/// Clerk가 삭제를 통보한 id의 영구 기록(KAN-12) — 지연 재전송된 upsert 이벤트나
+/// stale 세션의 스켈레톤 생성이 삭제된 미러를 부활시키지 못하게 한다.
+/// Clerk id는 재사용되지 않으므로 만료·정리가 필요 없다.
+model ClerkTombstone {
+  id        String   @id
+  deletedAt DateTime @default(now())
 }
