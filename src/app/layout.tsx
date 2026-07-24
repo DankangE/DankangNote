@@ -58,6 +58,7 @@ export default function RootLayout({
                 <Stack as="nav" direction="horizontal" gap={4} vAlign="center">
                   <NavLink href="/notes">노트</NavLink>
                   <NavLink href="/chat">채팅</NavLink>
+                  <NavLink href="/board">보드</NavLink>
                   <NavLink href="/members">멤버</NavLink>
                 </Stack>
               </Show>
