@@ -21,6 +21,7 @@ export function AppSidebar() {
     <aside className="flex h-full w-16 shrink-0 flex-col gap-1 bg-sidebar p-2 text-sidebar-foreground md:w-60 md:p-3">
       <NextLink
         href="/chat"
+        aria-label="DankangNote 홈"
         className="mb-2 flex items-center gap-2 rounded-lg px-1.5 py-2 md:px-2"
       >
         <span
@@ -48,8 +49,9 @@ export function AppSidebar() {
                   : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
               )}
             >
-              <Icon className="size-5 shrink-0 md:size-4" />
-              <span className="hidden md:inline">{label}</span>
+              <Icon className="size-5 shrink-0 md:size-4" aria-hidden />
+              {/* 모바일(아이콘 레일)에서도 스크린리더엔 라벨을 노출 — sr-only */}
+              <span className="sr-only md:not-sr-only">{label}</span>
             </NextLink>
           );
         })}

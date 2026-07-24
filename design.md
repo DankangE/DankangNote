@@ -61,7 +61,7 @@
 | `destructive` / `-foreground` | 파괴적 액션·오류 | 레드 | 레드 |
 | `success` `warning` `info` (+ `-foreground`) | 상태(성공·주의·정보) | green·amber·blue | 밝은 변형 |
 | `chart-1…5` | 카테고리형 데이터 시각화 | 바이올렛·teal·amber·rose·blue | 밝은 변형 |
-| `sidebar` / `-foreground` `-accent` `-accent-foreground` | 앱 셸 사이드바(딥바이올렛) / 밝은 글씨 · 활성·hover 오버레이 | `0.3 0.085 296` (라이트/다크 공통 진보라) | `0.28 0.08 296` |
+| `sidebar` / `-foreground` `-accent` `-accent-foreground` | 앱 셸 사이드바(딥바이올렛) / 밝은 글씨 · 활성·hover 오버레이 | `0.3 0.085 296` | `0.28 0.08 296` |
 
 > 사이드바는 **라이트·다크 공통으로 딥바이올렛**을 유지한다(Slack·Discord처럼 색 사이드바가 앱 정체성). 그 외 표면만 테마를 따른다.
 > 다크 `primary`는 밝은 바이올렛이라 **버튼 글씨를 어둡게**(vibrant 버튼) 둬 대비를 확보한다. 라이트는 흰 글씨. 이 비대칭은 의도된 것.
@@ -124,7 +124,7 @@
 - **4px 베이스** (Tailwind 기본 스케일). 컴포넌트 내부 간격은 `gap-1.5`(6px)·`gap-2`(8px)·`gap-3`(12px), 섹션 간은 `gap-6`(24px).
 - **콘텐츠 컨테이너**: `CenteredPage` = `mx-auto w-full max-w-3xl flex-col gap-6 p-6`. 읽기 폭을 3xl(48rem)로 제한.
 - **페이지 헤더 패턴**: 제목(h1) + 한 줄 설명(`text-muted-foreground`)을 `flex-col gap-1`로.
-- **앱 셸(슬랙형)**: `<html>` → `flex h-svh overflow-hidden`. 좌측 `AppSidebar`(딥바이올렛, 모바일 `w-16` 아이콘 레일 → `md:w-60` 풀) + 우측 `flex-col`(상단바 `h-14` + `main min-h-0 flex-1 overflow-y-auto`). 스크롤은 각 페이지가 관리하고, 채팅은 `h-full`로 채워 메시지만 내부 스크롤.
+- **앱 셸(슬랙형)**: 로그인 시 셸 루트 `<div className="flex h-svh overflow-hidden">`. 좌측 `AppSidebar`(딥바이올렛, 모바일 `w-16` 아이콘 레일 → `md:w-60` 풀) + 우측 `flex-col`(상단바 `h-14` + `main min-h-0 flex-1 overflow-y-auto`). 스크롤은 각 페이지가 관리하고, 채팅은 `h-full`로 채워 메시지만 내부 스크롤. (로그아웃 시엔 사이드바 없이 `min-h-svh` 브랜드 헤더.)
 
 ---
 

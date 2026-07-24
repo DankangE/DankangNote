@@ -4,13 +4,13 @@ import { useEffect, useRef, useState } from 'react';
 import { SendHorizontal } from 'lucide-react';
 import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
 import { CHAT_MESSAGE_EVENT, orgChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
+import { ChatMessageRow } from './ChatMessageRow';
 
 // NEXT_PUBLIC_*은 빌드 시 인라인된다 — 없으면 실시간 구독 없이 동작(경고 표시).
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY;
@@ -20,15 +20,11 @@ const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시
 const REALTIME_OFF_NOTICE =
   '실시간 연결이 설정되지 않았어요. 다른 멤버의 새 메시지는 새로고침해야 보입니다.';
 
-// 타임존 고정 — 서버/클라 동일 결과라 hydration이 안전하다 (NoteCard와 같은 이유).
-const timeFormat = new Intl.DateTimeFormat('ko-KR', {
-  timeZone: 'Asia/Seoul',
-  hour: '2-digit',
-  minute: '2-digit',
-});
-
 // 같은 작성자의 연속 메시지를 한 묶음으로 접는(슬랙식) 시간 창.
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+// 하단에서 이 픽셀 이내면 "붙어있다"고 보고 새 메시지에 자동 스크롤한다.
+const STICK_THRESHOLD_PX = 120;
 
 type RoomMessage = ChatMessageView & { pending?: boolean };
 
@@ -56,10 +52,18 @@ export function ChatRoom({
   const [messages, setMessages] = useState<RoomMessage[]>(initialMessages);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
-  // 새 메시지가 오면 목록 하단으로 스크롤(슬랙식). 초기 마운트에도 최신이 보이게.
-  const bottomRef = useRef<HTMLDivElement>(null);
+  // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
+  // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  function handleListScroll() {
+    const el = listRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+  }
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: 'end' });
+    const el = listRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -96,6 +100,8 @@ export function ChatRoom({
     }
     setError(null);
     setDraft('');
+    // 내가 보낸 메시지는 항상 하단으로 스크롤해 보이게 한다.
+    stickToBottom.current = true;
 
     // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공 시 서버 확정본으로 교체한다.
     // 연속 전송은 각자 tempId를 가져 서로 간섭하지 않는다.
@@ -134,7 +140,11 @@ export function ChatRoom({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-4 md:px-4">
+      <div
+        ref={listRef}
+        onScroll={handleListScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-2 py-4 md:px-4"
+      >
         {messages.length === 0 ? (
           <div className="px-2">
             <EmptyState title="아직 메시지가 없어요" description="첫 메시지로 대화를 시작해 보세요." />
@@ -149,48 +159,10 @@ export function ChatRoom({
                 prev.authorId === message.authorId &&
                 new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() <
                   GROUP_WINDOW_MS;
-              const time = message.pending
-                ? '전송 중…'
-                : timeFormat.format(new Date(message.createdAt));
-
-              return (
-                <div
-                  key={message.id}
-                  className={cn(
-                    'group flex gap-3 rounded-md px-2 hover:bg-accent/40',
-                    grouped ? 'py-0.5' : 'mt-2 py-1 first:mt-0',
-                    message.pending && 'opacity-70',
-                  )}
-                >
-                  {grouped ? (
-                    // 접힌 행: 아바타 자리는 hover 시 시각을 보여주는 거터로.
-                    <span className="w-9 shrink-0 pt-0.5 text-right text-[10px] leading-5 text-muted-foreground opacity-0 tabular-nums group-hover:opacity-100">
-                      {message.pending ? '' : timeFormat.format(new Date(message.createdAt))}
-                    </span>
-                  ) : (
-                    <Avatar className="mt-0.5 size-9 shrink-0">
-                      <AvatarImage src={message.authorImageUrl ?? undefined} alt={message.authorName} />
-                      <AvatarFallback>
-                        {message.authorName.trim().charAt(0).toUpperCase() || '?'}
-                      </AvatarFallback>
-                    </Avatar>
-                  )}
-
-                  <div className="min-w-0 flex-1">
-                    {!grouped && (
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-sm font-semibold">{message.authorName}</span>
-                        <span className="text-xs text-muted-foreground">{time}</span>
-                      </div>
-                    )}
-                    <p className="text-sm break-words whitespace-pre-wrap">{message.body}</p>
-                  </div>
-                </div>
-              );
+              return <ChatMessageRow key={message.id} message={message} grouped={grouped} />;
             })}
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       <div className="shrink-0 px-2 pb-3 md:px-4">
