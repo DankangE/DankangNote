@@ -2,16 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import PusherClient from 'pusher-js';
-import { Avatar } from '@astryxdesign/core/Avatar';
-import {
-  ChatComposer,
-  ChatLayout,
-  ChatMessage,
-  ChatMessageBubble,
-  ChatMessageList,
-  ChatMessageMetadata,
-} from '@astryxdesign/core/Chat';
-import { EmptyState } from '@astryxdesign/core/EmptyState';
+import { cn } from '@/lib/utils';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
 import { CHAT_MESSAGE_EVENT, orgChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
@@ -85,8 +80,8 @@ export function ChatRoom({
     setDraft((current) => (current === '' ? body : current));
   }
 
-  async function handleSubmit(value: string) {
-    const body = value.trim();
+  async function handleSubmit() {
+    const body = draft.trim();
     if (!body) {
       return;
     }
@@ -126,57 +121,75 @@ export function ChatRoom({
     ? { type: 'error' as const, message: error }
     : realtimeOff
       ? { type: 'warning' as const, message: REALTIME_OFF_NOTICE }
-      : undefined;
+      : null;
 
   return (
-    <ChatLayout
-      composer={
-        <ChatComposer
-          value={draft}
-          onChange={setDraft}
-          onSubmit={handleSubmit}
-          placeholder="메시지를 입력하세요"
-          status={status}
-        />
-      }
-    >
-      <ChatMessageList
-        emptyState={
+    <div className="flex h-[60vh] flex-col overflow-hidden rounded-xl border">
+      <div className="flex-1 overflow-y-auto p-4">
+        {messages.length === 0 ? (
           <EmptyState title="아직 메시지가 없어요" description="첫 메시지로 대화를 시작해 보세요." />
-        }
-      >
-        {messages.map((message) => {
-          const mine = message.authorId === viewer.id;
-          return (
-            <ChatMessage
-              key={message.id}
-              sender={mine ? 'user' : 'assistant'}
-              avatar={
-                mine ? undefined : (
-                  <Avatar
-                    src={message.authorImageUrl ?? undefined}
-                    name={message.authorName}
-                    size="small"
-                  />
-                )
-              }
-            >
-              <ChatMessageBubble
-                name={mine ? undefined : message.authorName}
-                metadata={
-                  <ChatMessageMetadata
-                    timestamp={
-                      message.pending ? '전송 중…' : timeFormat.format(new Date(message.createdAt))
-                    }
-                  />
-                }
-              >
-                {message.body}
-              </ChatMessageBubble>
-            </ChatMessage>
-          );
-        })}
-      </ChatMessageList>
-    </ChatLayout>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {messages.map((message) => {
+              const mine = message.authorId === viewer.id;
+              return (
+                <div
+                  key={message.id}
+                  className={cn('flex items-end gap-2', mine ? 'flex-row-reverse' : 'flex-row')}
+                >
+                  {!mine && (
+                    <Avatar className="size-8 shrink-0">
+                      <AvatarImage src={message.authorImageUrl ?? undefined} alt={message.authorName} />
+                      <AvatarFallback>{message.authorName.trim().charAt(0).toUpperCase() || '?'}</AvatarFallback>
+                    </Avatar>
+                  )}
+                  <div className={cn('flex max-w-[70%] flex-col gap-0.5', mine ? 'items-end' : 'items-start')}>
+                    {!mine && (
+                      <span className="text-xs text-muted-foreground">{message.authorName}</span>
+                    )}
+                    <div
+                      className={cn(
+                        'rounded-lg px-3 py-2 text-sm break-words whitespace-pre-wrap',
+                        mine ? 'bg-primary text-primary-foreground' : 'bg-muted',
+                      )}
+                    >
+                      {message.body}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {message.pending ? '전송 중…' : timeFormat.format(new Date(message.createdAt))}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="border-t p-3">
+        {status && (
+          <p
+            className={cn(
+              'mb-2 text-sm',
+              status.type === 'error' ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            {status.message}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <Input
+            aria-label="메시지"
+            value={draft}
+            placeholder="메시지를 입력하세요"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleSubmit();
+            }}
+          />
+          <Button onClick={handleSubmit}>보내기</Button>
+        </div>
+      </div>
+    </div>
   );
 }

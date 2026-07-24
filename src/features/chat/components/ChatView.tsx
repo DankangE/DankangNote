@@ -1,6 +1,3 @@
-import { Heading } from '@astryxdesign/core/Heading';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
 import { CenteredPage } from '@/lib/components/CenteredPage';
 import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
 import { ChatRoom } from './ChatRoom';
@@ -17,10 +14,10 @@ export function ChatView({
 }) {
   return (
     <CenteredPage>
-      <Stack direction="vertical" gap={1}>
-        <Heading level={1}>채팅</Heading>
-        <Text color="secondary">워크스페이스 멤버들과의 실시간 대화</Text>
-      </Stack>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-2xl font-semibold">채팅</h1>
+        <p className="text-muted-foreground">워크스페이스 멤버들과의 실시간 대화</p>
+      </div>
 
       <ChatRoom initialMessages={messages} viewer={viewer} orgId={orgId} />
     </CenteredPage>

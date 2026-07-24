@@ -33,11 +33,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="ko"
-      data-astryx-theme="neutral"
-      className={`${geistSans.variable} ${geistMono.variable}`}
-    >
+    <html lang="ko" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>
         {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
         <ClerkProvider localization={koKR}>

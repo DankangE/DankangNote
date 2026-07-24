@@ -7,13 +7,9 @@
     "postinstall": "prisma generate",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "astryx": "astryx"
+    "lint": "eslint"
   },
   "dependencies": {
-    "@astryxdesign/cli": "^0.1.4",
-    "@astryxdesign/core": "^0.1.4",
-    "@astryxdesign/theme-neutral": "^0.1.4",
     "@base-ui/react": "^1.6.0",
     "@clerk/localizations": "^4.13.5",
     "@clerk/nextjs": "^7.5.20",
@@ -22,7 +18,6 @@
     "@dnd-kit/utilities": "3.2.2",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
-    "@stylexjs/stylex": "^0.19.0",
     "@tailwindcss/postcss": "4.3.3",
     "@tiptap/core": "3.28.0",
     "@tiptap/pm": "3.28.0",
