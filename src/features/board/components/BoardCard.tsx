@@ -3,10 +3,7 @@
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button } from '@astryxdesign/core/Button';
-import { Card } from '@astryxdesign/core/Card';
-import { Stack } from '@astryxdesign/core/Stack';
-import { Text } from '@astryxdesign/core/Text';
+import { Button } from '@/components/ui/button';
 import type { BoardCardView } from '@/features/board/types';
 
 type BoardCardProps = {
@@ -30,14 +27,14 @@ export function BoardCard({ card, onDelete }: BoardCardProps) {
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <Card padding={3}>
-        <Stack direction="horizontal" gap={2} justify="between" vAlign="start">
-          <Text>{card.text}</Text>
-          <span onPointerDown={(event) => event.stopPropagation()}>
-            <Button label="삭제" variant="ghost" size="sm" onClick={() => onDelete(card.id)} />
-          </span>
-        </Stack>
-      </Card>
+      <div className="flex items-start justify-between gap-2 rounded-lg border bg-card p-3">
+        <p className="text-sm">{card.text}</p>
+        <span onPointerDown={(event) => event.stopPropagation()}>
+          <Button variant="ghost" size="sm" onClick={() => onDelete(card.id)}>
+            삭제
+          </Button>
+        </span>
+      </div>
     </div>
   );
 }
