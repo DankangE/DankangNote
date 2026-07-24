@@ -8,7 +8,7 @@ export function NotesView({ notes, viewer }: { notes: Note[]; viewer: NoteViewer
   return (
     <CenteredPage>
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold">노트</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">노트</h1>
         <p className="text-muted-foreground">워크스페이스의 모든 노트</p>
       </div>
 

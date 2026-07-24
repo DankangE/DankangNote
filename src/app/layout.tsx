@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import NextLink from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import { koKR } from "@clerk/localizations";
 import {
@@ -10,7 +11,12 @@ import {
   UserButton,
 } from "@clerk/nextjs";
 import { NavLink } from "@/lib/components/NavLink";
+import { ThemeToggle } from "@/lib/components/ThemeToggle";
 import "./globals.css";
+
+// 하이드레이션 전에 저장된 테마를 <html>에 적용해 다크모드 깜빡임(FOUC)을 막는다.
+// 저장값이 없으면 OS 설정을 따른다. ThemeToggle이 이후 클래스·localStorage를 갱신.
+const noFlashTheme = `try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark')}catch(e){}`;
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,13 +39,29 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ko" className={`${geistSans.variable} ${geistMono.variable}`}>
+    <html
+      lang="ko"
+      className={`${geistSans.variable} ${geistMono.variable}`}
+      suppressHydrationWarning
+    >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: noFlashTheme }} />
+      </head>
       <body>
         {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
         <ClerkProvider localization={koKR}>
-          <header className="flex items-center justify-between gap-4 border-b px-6 py-3">
+          <header className="sticky top-0 z-40 flex items-center justify-between gap-4 border-b bg-background/80 px-6 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <div className="flex items-center gap-5">
-              <span className="font-semibold">DankangNote</span>
+              <NextLink href="/notes" className="flex items-center gap-2">
+                {/* 브랜드 마크 — 바이올렛 스퀘어 모노그램 */}
+                <span
+                  aria-hidden
+                  className="flex size-6 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground"
+                >
+                  D
+                </span>
+                <span className="font-semibold tracking-tight">DankangNote</span>
+              </NextLink>
               <Show when="signed-in">
                 <nav className="flex items-center gap-4">
                   <NavLink href="/notes">노트</NavLink>
@@ -49,7 +71,8 @@ export default function RootLayout({
                 </nav>
               </Show>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <ThemeToggle />
               <Show when="signed-out">
                 <SignInButton />
                 <SignUpButton />
