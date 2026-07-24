@@ -30,6 +30,13 @@ const orgSkeleton = (orgId: string) =>
 const userSkeleton = (userId: string) =>
   prisma.user.createMany({ data: [{ id: userId }], skipDuplicates: true });
 
+// 다음 append 위치 = max(position)+1. 행이 없으면 0.
+async function nextPosition(
+  aggregate: Promise<{ _max: { position: number | null } }>,
+): Promise<number> {
+  return ((await aggregate)._max.position ?? -1) + 1;
+}
+
 function toCardView(card: {
   id: string;
   columnId: string;
@@ -63,7 +70,9 @@ export async function listBoard(orgId: string): Promise<BoardView> {
 export async function createColumn(orgId: string, name: string): Promise<BoardColumnView> {
   // tombstone 이중 확인 — stale 세션이 삭제된 org를 스켈레톤으로 부활시키지 못하게(KAN-12).
   await assertNotTombstoned([orgId]);
-  const position = await prisma.boardColumn.count({ where: { orgId } });
+  // 맨 끝에 붙인다 = max(position)+1. count는 삭제·이동으로 position에 gap이 생기면
+  // 기존 행보다 작은 값이 나와 새 컬럼이 중간으로 끼는 버그가 있어 쓰지 않는다.
+  const position = await nextPosition(prisma.boardColumn.aggregate({ where: { orgId }, _max: { position: true } }));
   const [, column] = await prisma.$transaction([
     orgSkeleton(orgId),
     prisma.boardColumn.create({ data: { orgId, name, position } }),
@@ -101,7 +110,9 @@ export async function createCard(
   if (!column) return null;
 
   await assertNotTombstoned([orgId, authorId]);
-  const position = await prisma.boardCard.count({ where: { columnId, orgId } });
+  const position = await nextPosition(
+    prisma.boardCard.aggregate({ where: { columnId, orgId }, _max: { position: true } }),
+  );
   const [, , card] = await prisma.$transaction([
     orgSkeleton(orgId),
     userSkeleton(authorId),

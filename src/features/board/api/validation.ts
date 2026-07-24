@@ -3,7 +3,8 @@ import { z } from '@/lib/zod';
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.
 
-const idSchema = z.string().min(1, 'id가 필요합니다.');
+// cuid는 ~25자 — 넉넉한 상한만 둔다(비정상적으로 긴 입력이 쿼리에 닿지 않게).
+const idSchema = z.string().min(1, 'id가 필요합니다.').max(100, 'id가 유효하지 않습니다.');
 const columnName = z
   .string()
   .trim()
