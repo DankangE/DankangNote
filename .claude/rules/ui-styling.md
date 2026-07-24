@@ -9,6 +9,9 @@ paths:
 UI·스타일링 작업 시 적용. **2026-07-25: Astryx 디자인 시스템 + StyleX에서 shadcn/ui +
 Tailwind v4로 전환** (이유는 아래). 전환 중에는 두 스택이 잠시 공존한다.
 
+> 디자인 언어(브랜드·색 용법·타이포·엘리베이션·컴포넌트 규약)의 근거는 루트
+> [`design.md`](../../design.md)를 따른다. 이 파일은 그중 코드 작성 규칙만 요약한다.
+
 ## 스택
 
 - **UI 컴포넌트: shadcn/ui** (Base UI 기반, `src/components/ui/`에 소스가 복사돼 있음).
