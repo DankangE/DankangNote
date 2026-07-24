@@ -5,7 +5,7 @@ import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
 import { CHAT_MESSAGE_EVENT, orgChannel } from '@/features/chat/realtime';
@@ -177,14 +177,20 @@ export function ChatRoom({
             {status.message}
           </p>
         )}
-        <div className="flex gap-2">
-          <Input
+        <div className="flex items-end gap-2">
+          <Textarea
             aria-label="메시지"
             value={draft}
-            placeholder="메시지를 입력하세요"
+            placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"
+            rows={1}
+            className="max-h-32 min-h-9 resize-none"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') handleSubmit();
+              // Enter=전송, Shift+Enter=줄바꿈. 한글 IME 조합 확정 Enter는 무시.
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                handleSubmit();
+              }
             }}
           />
           <Button onClick={handleSubmit}>보내기</Button>

@@ -53,7 +53,8 @@ export function Column({
             value={name}
             onChange={(event) => setName(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter') saveRename();
+              // 한글 IME 조합 확정 Enter는 무시.
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) saveRename();
             }}
           />
           <Button variant="default" size="sm" disabled={isBusy} onClick={saveRename}>

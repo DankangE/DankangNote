@@ -98,7 +98,8 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
           placeholder="새 노트 제목"
           onChange={(event) => setTitle(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter') handleCreate();
+            // 한글 IME 조합 확정 Enter는 무시 — 조기 제출·자모 유실 방지.
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) handleCreate();
           }}
         />
       </div>

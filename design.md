@@ -184,7 +184,7 @@ size: `sm`·`default`·`lg`·`icon`(정사각). 파괴적 흐름은 **확인 단
 ### 카드·표면
 
 - 표준 레시피: `rounded-xl border bg-card p-4`. 융기 표면은 `shadow-xs` 추가(§7).
-- 복잡한 카드는 shadcn `Card`(`CardHeader/Title/Content/Footer`)를 쓴다.
+- 복잡한 카드가 필요하면 shadcn `Card`(`CardHeader/Title/Content/Footer`)를 `pnpm dlx shadcn add card`로 추가해 쓴다(현재는 미사용이라 미포함, KAN-20 정리).
 
 ### 빈 상태 (`EmptyState`)
 
