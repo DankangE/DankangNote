@@ -1,7 +1,9 @@
 import StarterKit from '@tiptap/starter-kit';
 import type { Extensions } from '@tiptap/core';
 
-// 노트 본문에서 허용하는 제목 레벨. zod 검증(api/validation.ts)의 화이트리스트와 맞춘다.
+// 노트 본문에서 허용하는 제목 레벨. api/validation.ts의 zod 화이트리스트(1|2|3)와 값이
+// 일치해야 한다 — validation은 isomorphic이라 여기(StarterKit 런타임 import)에 의존할 수
+// 없어 수동으로 동기화한다.
 export const HEADING_LEVELS = [1, 2, 3] as const;
 
 // 편집(에디터)과 뷰(정적 렌더)가 같은 스키마를 쓰도록 확장 목록을 한 곳에서 정의한다.

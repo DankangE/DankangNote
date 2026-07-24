@@ -35,7 +35,7 @@ export function parseNoteContent(raw: string): JSONContent {
   // 성공 시 raw가 아니라 zod 출력을 반환한다 — 저장 경로가 이미 새니타이즈하지만,
   // 만약 오염된 doc이 저장돼 있어도 읽기에서 화이트리스트 밖 키를 한 번 더 strip한다.
   const result = noteContentSchema.safeParse(parsed);
-  return result.success ? (result.data as JSONContent) : plainTextToDoc(raw);
+  return result.success ? result.data : plainTextToDoc(raw);
 }
 
 // legacy plain 텍스트를 문단 doc으로. 빈 줄 2개 이상을 문단 경계로 본다.

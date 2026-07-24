@@ -25,8 +25,10 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
         role: 'textbox',
         'aria-label': ariaLabel,
         'aria-multiline': 'true',
-        // StyleX 빌드 없이 최소 입력 어피던스·줄바꿈 보존만 인라인으로 준다.
-        style: 'white-space: pre-wrap; min-height: 6rem; outline: none;',
+        // Tiptap이 소유한 contenteditable이라 Astryx로 감쌀 수 없다. white-space:pre-wrap은
+        // ProseMirror 동작상 필수, min-height는 빈 상태 클릭 타겟 확보용. StyleX 직접 작성은
+        // Turbopack 플러그인 미설정 상태라 인라인으로 최소만 둔다(이관은 KAN-20).
+        style: 'white-space: pre-wrap; min-height: 6rem;',
       },
     },
     onUpdate: ({ editor }) => onChange(editor.getJSON()),
