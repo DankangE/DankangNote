@@ -74,7 +74,7 @@ export async function updateNoteAction(
       isAdmin: org.isAdmin,
     });
     if (outcome.status === 'forbidden') {
-      return { ok: false, error: '이 노트를 수정할 권한이 없습니다. 작성자 또는 관리자만 수정할 수 있어요.' };
+      return { ok: false, error: '이 노트를 수정할 권한이 없습니다. 작성자 또는 관리자만 수정할 수 있습니다.' };
     }
     if (outcome.status === 'notfound') {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };
@@ -102,7 +102,7 @@ export async function deleteNoteAction(id: unknown): Promise<ActionResult<{ id: 
       isAdmin: org.isAdmin,
     });
     if (outcome === 'forbidden') {
-      return { ok: false, error: '이 노트를 삭제할 권한이 없습니다. 작성자 또는 관리자만 삭제할 수 있어요.' };
+      return { ok: false, error: '이 노트를 삭제할 권한이 없습니다. 작성자 또는 관리자만 삭제할 수 있습니다.' };
     }
     if (outcome === 'notfound') {
       return { ok: false, error: '노트를 찾을 수 없습니다.' };

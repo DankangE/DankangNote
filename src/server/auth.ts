@@ -17,11 +17,11 @@ export async function getAuthState(): Promise<{
   orgId: string | null;
   isAdmin: boolean;
 }> {
-  const session = await auth();
+  const authObject = await auth();
   // 역할은 Clerk 세션 클레임(has)으로만 판단한다 — DB 미러 Membership.role은 웹훅 지연·순서
   // 역전으로 stale할 수 있어 authz에 쓰면 안 된다(KAN-18 원칙, KAN-12 참조). 미러 role은 표시용.
-  const isAdmin = session.userId ? session.has({ role: 'org:admin' }) : false;
-  return { userId: session.userId ?? null, orgId: session.orgId ?? null, isAdmin };
+  const isAdmin = authObject.userId ? authObject.has({ role: 'org:admin' }) : false;
+  return { userId: authObject.userId ?? null, orgId: authObject.orgId ?? null, isAdmin };
 }
 
 /**
