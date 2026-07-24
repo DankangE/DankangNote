@@ -27,7 +27,7 @@ export function BoardCard({ card, onDelete }: BoardCardProps) {
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <div className="flex items-start justify-between gap-2 rounded-lg border bg-card p-3">
+      <div className="flex cursor-grab items-start justify-between gap-2 rounded-lg border bg-card p-3 shadow-sm transition-colors hover:border-primary/40 active:cursor-grabbing">
         <p className="text-sm">{card.text}</p>
         <span onPointerDown={(event) => event.stopPropagation()}>
           <Button variant="ghost" size="sm" onClick={() => onDelete(card.id)}>

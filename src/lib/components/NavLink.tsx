@@ -1,12 +1,22 @@
-import NextLink from 'next/link';
-import type { ReactNode } from 'react';
+'use client';
 
-// 헤더 네비 링크 — next/link + Tailwind. 시맨틱 토큰으로 hover 대비를 준다.
+import NextLink from 'next/link';
+import { usePathname } from 'next/navigation';
+import type { ReactNode } from 'react';
+import { cn } from '@/lib/utils';
+
+// 헤더 네비 링크 — 현재 경로면 활성 스타일. next/link + Tailwind.
 export function NavLink({ href, children }: { href: string; children: ReactNode }) {
+  const pathname = usePathname();
+  const active = pathname === href || pathname.startsWith(`${href}/`);
   return (
     <NextLink
       href={href}
-      className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'text-sm font-medium transition-colors',
+        active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+      )}
     >
       {children}
     </NextLink>
