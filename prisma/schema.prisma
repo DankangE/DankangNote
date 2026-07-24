@@ -46,6 +46,7 @@ model User {
 
   memberships Membership[]
   notes       Note[]
+  boardCards  BoardCard[]
 }
 
 /// Clerk 조직(=워크스페이스) 미러. id는 Clerk org id(org_...). organization.* 이벤트로 동기화.
@@ -59,8 +60,10 @@ model Organization {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  memberships Membership[]
-  notes       Note[]
+  memberships  Membership[]
+  notes        Note[]
+  boardColumns BoardColumn[]
+  boardCards   BoardCard[]
 }
 
 /// 워크스페이스 채팅 메시지 (워크스페이스당 방 1개, KAN-15).
@@ -102,4 +105,42 @@ model Membership {
 model ClerkTombstone {
   id        String   @id
   deletedAt DateTime @default(now())
+}
+
+/// 칸반 보드 컬럼 (워크스페이스당 보드 1개, KAN-17). orgId는 Note와 같은 FK 패턴 —
+/// 조직 삭제 시 컬럼·카드까지 Cascade로 파기된다. position은 표시 순서(정수, 0부터).
+model BoardColumn {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  position  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  cards        BoardCard[]
+
+  @@index([orgId])
+}
+
+/// 칸반 보드 카드. columnId Cascade — 컬럼 삭제 시 카드도 파기. authorId는 Note와 같은
+/// 패턴(nullable FK, 작성자 탈퇴 시 SetNull). position은 컬럼 내 순서 — 이동 시 대상 컬럼의
+/// 카드 position을 0..n으로 재작성한다(정수, 부동소수 정밀도 회피).
+model BoardCard {
+  id        String   @id @default(cuid())
+  orgId     String
+  columnId  String
+  authorId  String?
+  text      String
+  position  Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  column       BoardColumn  @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  author       User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([columnId])
+  @@index([authorId])
 }
