@@ -10,6 +10,20 @@ export interface NoteInput {
   content?: string;
 }
 
+// 노트 수정·삭제 요청자. isAdmin은 Clerk 세션 클레임 기반(auth.ts) — 미러 role은 안 쓴다(KAN-18).
+export interface NoteActor {
+  userId: string;
+  isAdmin: boolean;
+}
+
+// 소유권 where — admin은 org의 모든 노트, 그 외엔 본인(authorId) 노트만. authorId가 null인
+// 소급 이전 노트는 member의 authorId 조건에 안 걸리므로 admin만 수정·삭제할 수 있다(정책).
+function ownedWhere(orgId: string, id: string, actor: NoteActor) {
+  return actor.isAdmin
+    ? { id, orgId }
+    : { id, orgId, authorId: actor.userId };
+}
+
 // 작성자는 표시에 필요한 최소 필드만 노출한다 (미러 User의 imageUrl 등은 아직 불필요).
 const AUTHOR_SELECT = { id: true, firstName: true, lastName: true, email: true } as const;
 
@@ -96,30 +110,48 @@ export async function createNote(
   return note;
 }
 
-// update/delete 모두 where에 orgId를 포함해 타 워크스페이스 접근을 막는다.
-// update는 확장 where-unique({ id, orgId })로 단건 원자 실행 — updateMany 후
-// 재조회하면 그 사이 삭제와 경합해 성공한 수정을 실패로 보고할 수 있다.
+// 수정·삭제 결과 — 권한 없음(forbidden)과 미존재(notfound)를 구분해 액션이 알맞은 문구를
+// 준다. 보안 경계는 아래 where의 소유권 조건(원자 write)이고, 이 구분은 메시지용이다.
+export type UpdateOutcome =
+  | { status: 'ok'; note: NoteWithAuthor }
+  | { status: 'forbidden' }
+  | { status: 'notfound' };
+
+export type DeleteOutcome = 'ok' | 'forbidden' | 'notfound';
+
+// update/delete 모두 where에 orgId를 포함해 타 워크스페이스 접근을 막고, 소유권 조건까지
+// 실어 권한을 쿼리 수준에서 강제한다(KAN-18). update는 확장 where-unique로 단건 원자 실행 —
+// updateMany 후 재조회하면 그 사이 삭제와 경합해 성공한 수정을 실패로 보고할 수 있다.
 export async function updateNote(
   orgId: string,
   id: string,
   input: Partial<NoteInput>,
-): Promise<NoteWithAuthor | null> {
+  actor: NoteActor,
+): Promise<UpdateOutcome> {
   try {
-    return await prisma.note.update({
-      where: { id, orgId },
+    const note = await prisma.note.update({
+      where: ownedWhere(orgId, id, actor),
       data: input,
       include: { author: { select: AUTHOR_SELECT } },
     });
+    return { status: 'ok', note };
   } catch (error) {
-    // P2025: 조건에 맞는 레코드 없음 (미존재 또는 타 org 소유)
+    // P2025: 조건에 맞는 레코드 없음. 소유권 때문인지(권한) 노트가 없어서인지(미존재) 구분.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
-      return null;
+      const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
+      return { status: exists ? 'forbidden' : 'notfound' };
     }
     throw error;
   }
 }
 
-export async function deleteNote(orgId: string, id: string): Promise<boolean> {
-  const { count } = await prisma.note.deleteMany({ where: { id, orgId } });
-  return count > 0;
+export async function deleteNote(
+  orgId: string,
+  id: string,
+  actor: NoteActor,
+): Promise<DeleteOutcome> {
+  const { count } = await prisma.note.deleteMany({ where: ownedWhere(orgId, id, actor) });
+  if (count > 0) return 'ok';
+  const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
+  return exists ? 'forbidden' : 'notfound';
 }
