@@ -27,4 +27,4 @@ paths:
 
 ## UI
 
-- 컴포넌트·스타일 규칙은 `.claude/rules/astryx.md`를 따른다 (아직 안 읽었으면 읽을 것).
+- 컴포넌트·스타일 규칙은 `.claude/rules/ui-styling.md`를 따른다 (shadcn/ui + Tailwind. 2026-07-25 Astryx/StyleX에서 전환).
