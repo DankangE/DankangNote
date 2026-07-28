@@ -12,6 +12,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# 검사만 하는 워크플로다 — 토큰에 쓰기 권한을 주지 않는다.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: 타입·린트·테스트·빌드
@@ -55,6 +59,21 @@ jobs:
       # postinstall의 prisma generate가 여기서 함께 돈다.
       - name: 의존성 설치
         run: pnpm install --frozen-lockfile
+
+      # backend.md 규약: 스키마를 바꾸면 마이그레이션을 같은 커밋에 넣는다.
+      # 사람이 잊으면 리뷰에서 잡아야 하는데, 여기서 기계가 잡는다.
+      # migrations를 섀도 DB에 재생해 schema.prisma와 비교 — 차이가 있으면 exit 2.
+      - name: 마이그레이션 누락 확인
+        env:
+          SHADOW_DATABASE_URL: postgresql://dankang:dankang@localhost:5432/dankangnote_shadow
+        run: |
+          printf 'CREATE DATABASE dankangnote_shadow;' \
+            | DATABASE_URL=postgresql://dankang:dankang@localhost:5432/postgres \
+              pnpm exec prisma db execute --stdin
+          pnpm exec prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema prisma/schema.prisma \
+            --exit-code
 
       - name: 타입 체크
         run: pnpm exec tsc --noEmit
