@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { SendHorizontal } from 'lucide-react';
+import { MessageSquare, SendHorizontal } from 'lucide-react';
 import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -147,7 +147,11 @@ export function ChatRoom({
       >
         {messages.length === 0 ? (
           <div className="px-2">
-            <EmptyState title="아직 메시지가 없어요" description="첫 메시지로 대화를 시작해 보세요." />
+            <EmptyState
+              icon={MessageSquare}
+              title="아직 메시지가 없어요"
+              description="첫 메시지로 대화를 시작해 보세요."
+            />
           </div>
         ) : (
           <div className="flex flex-col">

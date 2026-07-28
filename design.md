@@ -232,7 +232,9 @@ size: `sm`·`default`·`lg`·`icon`(정사각). 파괴적 흐름은 **확인 단
 ## 12. 다크 모드
 
 - `.dark` 클래스를 `<html>`에 토글하는 방식(`@custom-variant dark`). 시맨틱 토큰을 쓰면 컴포넌트 수정 없이 자동 대응.
-- **무의존 구현**: `layout.tsx` `<head>`의 no-flash 인라인 스크립트가 하이드레이션 전에 저장된 테마(또는 OS 설정)를 적용해 깜빡임(FOUC)을 막는다. `ThemeToggle`이 클래스·`localStorage['theme']`를 갱신한다(next-themes 등 의존성 없음).
+- **구현: next-themes** (KAN-23에서 직접 만든 no-flash 스크립트를 대체). `layout.tsx`의 `ThemeProvider`가 `attribute="class"`·`defaultTheme="system"`으로 하이드레이션 전 FOUC 방지 스크립트를 주입하고, OS 테마 변경 실시간 반영·탭 간 동기화·`color-scheme` 지정까지 함께 처리한다. 저장 키는 `localStorage['theme']`, 토글은 `ThemeToggle`.
+  - `<html>`에 `suppressHydrationWarning`이 필요하다 — 서버 렌더에는 없던 클래스를 스크립트가 하이드레이션 전에 붙이기 때문.
+  - 토글 아이콘은 두 개를 항상 렌더하고 CSS(`dark:`)로 전환한다. 상태로 분기하면 마운트 전후가 달라져 하이드레이션 불일치가 난다.
 - 새 컴포넌트를 만들 때 **다크용 색을 따로 칠하지 말 것** — 토큰만 쓰면 이미 두 테마가 정의돼 있다.
 
 ---
@@ -264,4 +266,4 @@ size: `sm`·`default`·`lg`·`icon`(정사각). 파괴적 흐름은 **확인 단
 ### 참조
 - 토큰 정의: [`src/app/globals.css`](src/app/globals.css)
 - 코드 규칙: [`.claude/rules/ui-styling.md`](.claude/rules/ui-styling.md)
-- 관련 티켓: KAN-20(스택 전환), KAN-21(디자인 시스템 정립)
+- 관련 티켓: KAN-20(스택 전환), KAN-21(디자인 시스템 정립), KAN-23(리스타일 트랙 단일화)
