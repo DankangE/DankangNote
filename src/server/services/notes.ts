@@ -3,7 +3,7 @@ import 'server-only';
 import { prisma } from '@/server/db';
 import { Prisma } from '@/server/generated/prisma/client';
 import type { Note, User } from '@/server/generated/prisma/client';
-import { findTombstoned } from '@/server/services/clerk-tombstone';
+import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 
 export interface NoteInput {
   title: string;
@@ -65,16 +65,7 @@ export async function createNote(
   // pre-check도 정리를 겸한다(clerk-sync와 동일) — 이전 시도가 post-check 전에 죽어 남긴
   // 부활 잔재를 다음 시도가 치운다. Server Action은 웹훅과 달리 재전송이 없어 이 경로가
   // 크래시 잔재의 확정적 치유 기회다. org 삭제는 cascade로 노트까지 정리한다.
-  const pre = await findTombstoned([orgId, authorId]);
-  if (pre.length > 0) {
-    if (pre.includes(orgId)) {
-      await prisma.organization.deleteMany({ where: { id: orgId } });
-    }
-    if (pre.includes(authorId)) {
-      await prisma.user.deleteMany({ where: { id: authorId } });
-    }
-    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${pre.join(', ')}`);
-  }
+  await assertNotTombstoned([orgId, authorId]);
 
   const [, , note] = await prisma.$transaction([
     prisma.organization.createMany({
@@ -95,17 +86,9 @@ export async function createNote(
   // post-check — 방금 되살렸을 수 있는 것들을 자가 정리(org 삭제는 cascade로 노트까지).
   // post-check가 tombstone 커밋보다 앞서는 문장 단위 인터리빙은 delete 핸들러의 커밋 후
   // sweep이 이어받는다 — clerk-sync 상단 수렴 논증 참조.
-  const post = await findTombstoned([orgId, authorId]);
-  if (post.length > 0) {
-    if (post.includes(orgId)) {
-      await prisma.organization.deleteMany({ where: { id: orgId } });
-    }
-    if (post.includes(authorId)) {
-      await prisma.note.deleteMany({ where: { id: note.id } });
-      await prisma.user.deleteMany({ where: { id: authorId } });
-    }
-    throw new Error(`삭제된 Clerk 리소스로 노트 생성 시도: ${post.join(', ')}`);
-  }
+  await assertNotTombstoned([orgId, authorId], async () => {
+    await prisma.note.deleteMany({ where: { id: note.id } });
+  });
 
   return note;
 }

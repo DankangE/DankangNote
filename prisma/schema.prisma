@@ -64,17 +64,23 @@ model Organization {
   notes        Note[]
   boardColumns BoardColumn[]
   boardCards   BoardCard[]
+  chatMessages ChatMessage[]
 }
 
 /// 워크스페이스 채팅 메시지 (워크스페이스당 방 1개, KAN-15).
-/// authorId는 Clerk user id — Note.orgId와 같은 이유로 FK를 두지 않는다
-/// (메시지 전송이 User 미러의 webhook 동기화 순서에 묶이면 안 됨). 표시용 조인은 서비스에서.
+/// orgId는 Note·BoardColumn과 같은 FK Cascade — 조직 삭제 시 메시지도 파기된다(KAN-19).
+/// 웹훅이 아직 org 미러를 안 채운 시점의 전송은 createMessage의 스켈레톤 upsert가 흡수한다.
+/// authorId는 Clerk user id지만 FK를 두지 않는다 — 전송이 User 미러의 동기화 순서에 묶이면
+/// 안 되고, 여기에 SetNull FK를 달면 작성자 탈퇴 시 '누가 말했는지'가 사라져 대화 로그가
+/// 깨진다. 대신 tombstone 가드가 삭제된 사용자의 쓰기를 막고, 표시용 조인은 서비스에서 한다.
 model ChatMessage {
   id        String   @id @default(cuid())
   orgId     String
   authorId  String
   body      String
   createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([orgId, createdAt])
 }
