@@ -14,7 +14,9 @@ type RoomMessage = ChatMessageView & { pending?: boolean };
 // 슬랙식 메시지 한 행. grouped(직전과 같은 작성자·5분 내)면 아바타·이름을 접고,
 // 접힌 행은 hover 시 거터에 시각을 보여준다.
 export function ChatMessageRow({ message, grouped }: { message: RoomMessage; grouped: boolean }) {
-  const time = message.pending ? '전송 중…' : timeFormat.format(new Date(message.createdAt));
+  // 낙관 전송 중인 행은 시각 대신 상태를 보여준다(거터에서는 빈칸).
+  const clock = timeFormat.format(new Date(message.createdAt));
+  const time = message.pending ? '전송 중…' : clock;
 
   return (
     <div
@@ -26,7 +28,7 @@ export function ChatMessageRow({ message, grouped }: { message: RoomMessage; gro
     >
       {grouped ? (
         <span className="w-9 shrink-0 pt-0.5 text-right text-xs leading-5 text-muted-foreground opacity-0 tabular-nums group-hover:opacity-100">
-          {message.pending ? '' : timeFormat.format(new Date(message.createdAt))}
+          {message.pending ? '' : clock}
         </span>
       ) : (
         <Avatar className="mt-0.5 size-9 shrink-0">

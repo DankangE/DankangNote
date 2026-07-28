@@ -33,7 +33,7 @@ export function AppSidebar() {
         <span className="hidden truncate font-semibold tracking-tight md:inline">DankangNote</span>
       </NextLink>
 
-      <nav className="flex flex-col gap-0.5">
+      <nav aria-label="주 메뉴" className="flex flex-col gap-0.5">
         {NAV.map(({ href, label, icon: Icon }) => {
           const active = pathname === href || pathname.startsWith(`${href}/`);
           return (
