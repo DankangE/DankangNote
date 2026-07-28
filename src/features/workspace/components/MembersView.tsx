@@ -1,4 +1,5 @@
 import { Fragment } from 'react';
+import { Users } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
@@ -34,6 +35,7 @@ export function MembersView({ members }: { members: WorkspaceMember[] }) {
 
       {members.length === 0 ? (
         <EmptyState
+          icon={Users}
           title="아직 동기화된 멤버가 없어요"
           description="멤버 정보는 Clerk webhook으로 동기화됩니다. webhook 엔드포인트가 연결되면 자동으로 채워져요."
         />

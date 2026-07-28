@@ -89,7 +89,7 @@ export function NoteComposer({ dispatch }: { dispatch: (action: NotesAction) => 
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+    <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs">
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="note-title">제목</Label>
         <Input

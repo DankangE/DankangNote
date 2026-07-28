@@ -27,7 +27,9 @@ export function BoardCard({ card, onDelete }: BoardCardProps) {
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <div className="flex items-start justify-between gap-2 rounded-lg border bg-card p-3">
+      {/* 카드 전체가 드래그 핸들이라 grab 커서로 조작 가능함을 알리고,
+          hover 시 브랜드 틴트 테두리로 상호작용 지점임을 드러낸다. */}
+      <div className="flex cursor-grab items-start justify-between gap-2 rounded-lg border bg-card p-3 shadow-sm transition-colors hover:border-primary/40 active:cursor-grabbing">
         <p className="text-sm">{card.text}</p>
         <span onPointerDown={(event) => event.stopPropagation()}>
           <Button variant="ghost" size="sm" onClick={() => onDelete(card.id)}>

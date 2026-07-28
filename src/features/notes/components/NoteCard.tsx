@@ -121,7 +121,7 @@ export function NoteCard({ note, viewer, dispatch, onDeleted }: NoteCardProps) {
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded-xl border bg-card p-4">
+    <div className="flex flex-col gap-2 rounded-xl border bg-card p-4 shadow-sm transition-colors hover:border-primary/40">
       {isEditing ? (
         <>
           <div className="flex flex-col gap-1.5">

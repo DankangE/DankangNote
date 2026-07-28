@@ -13,6 +13,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
+import { LayoutGrid } from 'lucide-react';
 import { EmptyState } from '@/lib/components/EmptyState';
 import type { BoardCardView, BoardView } from '@/features/board/types';
 import { useBoardState } from '@/features/board/hooks/useBoardState';
@@ -58,7 +59,11 @@ export function BoardClient({ initialBoard }: { initialBoard: BoardView }) {
 
       {columns.length === 0 ? (
         <div className="flex flex-col gap-4">
-          <EmptyState title="아직 컬럼이 없어요" description="첫 컬럼을 추가해 보드를 시작하세요." />
+          <EmptyState
+            icon={LayoutGrid}
+            title="아직 컬럼이 없어요"
+            description="첫 컬럼을 추가해 보드를 시작하세요."
+          />
           <AddColumnForm onCreate={createColumn} isBusy={isBusy} />
         </div>
       ) : (

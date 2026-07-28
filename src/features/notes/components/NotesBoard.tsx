@@ -1,5 +1,6 @@
 'use client';
 
+import { FileText } from 'lucide-react';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { useOptimisticNotes } from '@/features/notes/hooks/useOptimisticNotes';
 import type { Note, NoteViewer } from '@/features/notes/types';
@@ -16,7 +17,11 @@ export function NotesBoard({ notes, viewer }: { notes: Note[]; viewer: NoteViewe
       <NoteComposer dispatch={dispatch} />
 
       {optimisticNotes.length === 0 ? (
-        <EmptyState title="아직 노트가 없어요" description="위에서 첫 노트를 추가해 보세요." />
+        <EmptyState
+          icon={FileText}
+          title="아직 노트가 없어요"
+          description="위에서 첫 노트를 추가해 보세요."
+        />
       ) : (
         <div className="flex flex-col gap-3">
           {optimisticNotes.map((note) => (

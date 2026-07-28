@@ -1,15 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { MessageSquare, SendHorizontal } from 'lucide-react';
 import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
 import { CHAT_MESSAGE_EVENT, orgChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
+import { ChatMessageRow } from './ChatMessageRow';
 
 // NEXT_PUBLIC_*은 빌드 시 인라인된다 — 없으면 실시간 구독 없이 동작(경고 표시).
 const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY;
@@ -19,12 +20,11 @@ const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시
 const REALTIME_OFF_NOTICE =
   '실시간 연결이 설정되지 않았어요. 다른 멤버의 새 메시지는 새로고침해야 보입니다.';
 
-// 타임존 고정 — 서버/클라 동일 결과라 hydration이 안전하다 (NoteCard와 같은 이유).
-const timeFormat = new Intl.DateTimeFormat('ko-KR', {
-  timeZone: 'Asia/Seoul',
-  hour: '2-digit',
-  minute: '2-digit',
-});
+// 같은 작성자의 연속 메시지를 한 묶음으로 접는(슬랙식) 시간 창.
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+// 하단에서 이 픽셀 이내면 "붙어있다"고 보고 새 메시지에 자동 스크롤한다.
+const STICK_THRESHOLD_PX = 120;
 
 type RoomMessage = ChatMessageView & { pending?: boolean };
 
@@ -52,6 +52,19 @@ export function ChatRoom({
   const [messages, setMessages] = useState<RoomMessage[]>(initialMessages);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
+  // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  function handleListScroll() {
+    const el = listRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+  }
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     if (!PUSHER_KEY || !PUSHER_CLUSTER) {
@@ -87,6 +100,8 @@ export function ChatRoom({
     }
     setError(null);
     setDraft('');
+    // 내가 보낸 메시지는 항상 하단으로 스크롤해 보이게 한다.
+    stickToBottom.current = true;
 
     // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공 시 서버 확정본으로 교체한다.
     // 연속 전송은 각자 tempId를 가져 서로 간섭하지 않는다.
@@ -124,49 +139,37 @@ export function ChatRoom({
       : null;
 
   return (
-    <div className="flex h-[60vh] flex-col overflow-hidden rounded-xl border">
-      <div className="flex-1 overflow-y-auto p-4">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={listRef}
+        onScroll={handleListScroll}
+        className="min-h-0 flex-1 overflow-y-auto px-2 py-4 md:px-4"
+      >
         {messages.length === 0 ? (
-          <EmptyState title="아직 메시지가 없어요" description="첫 메시지로 대화를 시작해 보세요." />
+          <div className="px-2">
+            <EmptyState
+              icon={MessageSquare}
+              title="아직 메시지가 없어요"
+              description="첫 메시지로 대화를 시작해 보세요."
+            />
+          </div>
         ) : (
-          <div className="flex flex-col gap-3">
-            {messages.map((message) => {
-              const mine = message.authorId === viewer.id;
-              return (
-                <div
-                  key={message.id}
-                  className={cn('flex items-end gap-2', mine ? 'flex-row-reverse' : 'flex-row')}
-                >
-                  {!mine && (
-                    <Avatar className="size-8 shrink-0">
-                      <AvatarImage src={message.authorImageUrl ?? undefined} alt={message.authorName} />
-                      <AvatarFallback>{message.authorName.trim().charAt(0).toUpperCase() || '?'}</AvatarFallback>
-                    </Avatar>
-                  )}
-                  <div className={cn('flex max-w-[70%] flex-col gap-0.5', mine ? 'items-end' : 'items-start')}>
-                    {!mine && (
-                      <span className="text-xs text-muted-foreground">{message.authorName}</span>
-                    )}
-                    <div
-                      className={cn(
-                        'rounded-lg px-3 py-2 text-sm break-words whitespace-pre-wrap',
-                        mine ? 'bg-primary text-primary-foreground' : 'bg-muted',
-                      )}
-                    >
-                      {message.body}
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {message.pending ? '전송 중…' : timeFormat.format(new Date(message.createdAt))}
-                    </span>
-                  </div>
-                </div>
-              );
+          <div className="flex flex-col">
+            {messages.map((message, index) => {
+              // 같은 작성자의 연속 메시지(5분 내)는 아바타·이름을 접는다(슬랙식 그룹).
+              const prev = messages[index - 1];
+              const grouped =
+                !!prev &&
+                prev.authorId === message.authorId &&
+                new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() <
+                  GROUP_WINDOW_MS;
+              return <ChatMessageRow key={message.id} message={message} grouped={grouped} />;
             })}
           </div>
         )}
       </div>
 
-      <div className="border-t p-3">
+      <div className="shrink-0 px-2 pb-3 md:px-4">
         {status && (
           <p
             className={cn(
@@ -177,13 +180,14 @@ export function ChatRoom({
             {status.message}
           </p>
         )}
-        <div className="flex items-end gap-2">
+        {/* 슬랙식 컴포저 — 테두리 박스 안에 무테 Textarea + 아이콘 전송 버튼. */}
+        <div className="flex items-end gap-2 rounded-xl border bg-background p-2 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
           <Textarea
             aria-label="메시지"
             value={draft}
             placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"
             rows={1}
-            className="max-h-32 min-h-9 resize-none"
+            className="max-h-32 min-h-8 resize-none border-0 bg-transparent p-1 shadow-none focus-visible:ring-0"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               // Enter=전송, Shift+Enter=줄바꿈. 한글 IME 조합 확정 Enter는 무시.
@@ -193,7 +197,14 @@ export function ChatRoom({
               }
             }}
           />
-          <Button onClick={handleSubmit}>보내기</Button>
+          <Button
+            size="icon"
+            aria-label="보내기"
+            disabled={draft.trim().length === 0}
+            onClick={handleSubmit}
+          >
+            <SendHorizontal />
+          </Button>
         </div>
       </div>
     </div>
