@@ -1,8 +1,8 @@
 import type {
   ChannelPersonView,
   ChannelView,
-  ChatMessageView,
   ChatViewer,
+  MessagePage,
 } from '@/features/chat/types';
 import { ChannelHeader } from './ChannelHeader';
 import { ChatRoom } from './ChatRoom';
@@ -11,12 +11,12 @@ import { ChatRoom } from './ChatRoom';
 // 목록·전송은 각각 클라이언트 경계에 위임한다. 서버 컴포넌트.
 export function ChatView({
   channel,
-  messages,
+  page,
   viewer,
   roster,
 }: {
   channel: ChannelView;
-  messages: ChatMessageView[];
+  page: MessagePage;
   viewer: ChatViewer;
   roster: { members: ChannelPersonView[]; invitable: ChannelPersonView[] };
 }) {
@@ -26,12 +26,7 @@ export function ChatView({
       {/* key로 채널이 바뀔 때 방 상태(메시지 스트림·입력 중인 초안)를 새로 시작한다.
           Next가 동적 세그먼트마다 서브트리를 갈아 끼우므로 지금도 리마운트되지만,
           그 내부 동작에 실시간 스트림의 정확성을 기대지 않는다. */}
-      <ChatRoom
-        key={channel.id}
-        channelId={channel.id}
-        initialMessages={messages}
-        viewer={viewer}
-      />
+      <ChatRoom key={channel.id} channelId={channel.id} initialPage={page} viewer={viewer} />
     </div>
   );
 }

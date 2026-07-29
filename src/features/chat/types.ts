@@ -20,6 +20,7 @@ export type ChatViewer = {
   imageUrl: string | null;
 };
 
-// 채널 뷰 타입은 서비스 계층의 것을 그대로 쓴다(보드와 같은 방식).
+// 채널·페이지 뷰 타입은 서비스 계층의 것을 그대로 쓴다(보드와 같은 방식).
 export type { ChannelView } from '@/server/services/channels';
 export type { ChannelPersonView } from '@/server/services/channel-members';
+export type { MessagePage } from '@/server/services/chat';

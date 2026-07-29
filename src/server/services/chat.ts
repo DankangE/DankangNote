@@ -22,10 +22,31 @@ function toView(message: ChatMessage, author: User | null): ChatMessageView {
   };
 }
 
-const MESSAGE_PAGE_SIZE = 50;
+export const MESSAGE_PAGE_SIZE = 50;
 
 /**
- * 채널의 최근 N개를 오래된 것부터 반환. 페이지네이션은 KAN-29 스코프다.
+ * 한 페이지. messages는 언제나 오래된 것부터고, hasMore는 이 페이지보다 더 위(과거)에
+ * 메시지가 남아 있는지다 — 클라이언트가 '더 불러오기'를 띄울지 정하는 유일한 근거다.
+ * 다음 커서는 messages[0].id라 따로 내려보내지 않는다(클라이언트가 이미 들고 있다).
+ */
+export interface MessagePage {
+  messages: ChatMessageView[];
+  hasMore: boolean;
+}
+
+/**
+ * 채널 메시지 한 페이지를 오래된 것부터 반환한다(KAN-29).
+ *
+ * before가 없으면 최신 페이지, 있으면 그 메시지보다 과거의 페이지다. OFFSET이 아니라
+ * (createdAt, id) 키셋 커서를 쓴다 — OFFSET은 뒤로 갈수록 앞 행을 전부 훑고, 읽는 도중
+ * 새 메시지가 들어오면 페이지 경계가 밀려 같은 메시지를 두 번 보게 된다.
+ * 키셋은 @@index([channelId, createdAt])의 시작 경계로 들어가므로 깊은 페이지도 앞 구간을
+ * 훑지 않는다(아래 createdAt lte 주석 참조 — 그 조건이 없으면 이 성질이 성립하지 않는다).
+ *
+ * 한계 하나: createdAt은 벽시계이고 트랜잭션 시작 시각이 박히므로, 커밋 순서가 역전되면
+ * (A가 먼저 시각을 받고 B보다 늦게 커밋) 첫 페이지 조회 시점에 안 보였던 A가 이후 어느
+ * 페이지에도 안 나올 수 있다. 실시간 브로드캐스트가 그 메시지를 하단에 붙여 실질적으로
+ * 메우고 새로고침하면 정상화된다 — 단조 시퀀스가 필요해지면 그때 컬럼을 추가한다.
  *
  * 채널 접근 권한을 where에 실어 조회 자체가 매칭되지 않게 한다 — 남의 워크스페이스나
  * 참여하지 않은 비공개 채널의 id를 알아도 빈 배열만 나온다(쿼리 수준 격리).
@@ -34,20 +55,70 @@ export async function listMessages(
   orgId: string,
   userId: string,
   channelId: string,
-): Promise<ChatMessageView[]> {
-  const messages = await prisma.chatMessage.findMany({
-    where: { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } },
-    // createdAt 동률(같은 ms 연속 전송)은 id 타이브레이커로 순서 고정.
+  before?: string,
+): Promise<MessagePage> {
+  const scope = { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } };
+
+  // 커서는 메시지 id 하나만 받고 기준 시각은 서버가 되찾는다 — 클라이언트가 보낸
+  // 타임스탬프를 믿으면 그걸 조작해 페이지 경계를 임의로 옮길 수 있다. 조회 자체를 같은
+  // 스코프로 걸어, 남의 채널 메시지 id를 커서로 밀어 넣어도 앵커를 얻지 못한다.
+  const anchor = before
+    ? await prisma.chatMessage.findFirst({
+        where: { id: before, ...scope },
+        select: { id: true, createdAt: true },
+      })
+    : null;
+  // 커서를 줬는데 못 찾았다면(위조된 id, 접근 권한 없는 채널의 id) 더 줄 것이 없다고 답한다.
+  // '커서 유실'과 '이력 소진'을 한 값으로 뭉개는 것이라 완전하진 않다 — 메시지 삭제 기능이
+  // 생겨 화면에 남은 커서가 실제로 사라질 수 있게 되면, 남은 이력이 있는데도 '더 보기'가
+  // 사라지는 경로가 열린다. 그때 사유를 나눠 돌려주도록 계약을 넓혀야 한다.
+  // 지금은 fail-closed가 맞다: 못 찾은 커서로 범위를 넓히면 그게 곧 접근 우회다.
+  if (before && !anchor) {
+    return { messages: [], hasMore: false };
+  }
+
+  const rows = await prisma.chatMessage.findMany({
+    where: {
+      ...scope,
+      ...(anchor
+        ? {
+            // 인덱스 시작 경계. 아래 키셋만으로는 Postgres가 (channelId, createdAt) 인덱스의
+            // 출발점을 못 잡아 커서보다 최신인 행을 전부 훑고 버린다(EXPLAIN 실측: Index
+            // Cond가 channelId뿐, Rows Removed by Filter가 페이지 깊이만큼). 논리적으로는
+            // 아래 조건에 포함되는 중복이지만, 이게 있어야 Index Cond에 createdAt이 올라간다.
+            createdAt: { lte: anchor.createdAt },
+            // 키셋 조건 — 커서보다 엄격히 과거인 행만. createdAt 동률(같은 ms 연속 전송)은
+            // id로 갈라 커서가 자기 자신이나 동률 이웃을 다시 집지 않게 한다.
+            // AND로 감싸는 이유: 이 OR을 최상위에 두면 나중에 누가 채널 가시성 조건을
+            // 메시지 레벨로 평탄화했을 때 두 OR이 충돌해 조용히 서로를 덮어쓴다.
+            AND: [
+              {
+                OR: [
+                  { createdAt: { lt: anchor.createdAt } },
+                  { createdAt: anchor.createdAt, id: { lt: anchor.id } },
+                ],
+              },
+            ],
+          }
+        : {}),
+    },
+    // 정렬 키는 키셋 조건과 정확히 같은 (createdAt, id)여야 한다.
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    take: MESSAGE_PAGE_SIZE,
+    // 한 건 더 떠서 '더 있는지'를 별도 count 없이 판정한다.
+    take: MESSAGE_PAGE_SIZE + 1,
   });
-  messages.reverse();
+
+  const hasMore = rows.length > MESSAGE_PAGE_SIZE;
+  const messages = (hasMore ? rows.slice(0, MESSAGE_PAGE_SIZE) : rows).reverse();
 
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
   const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
   const authorById = new Map(authors.map((author) => [author.id, author]));
 
-  return messages.map((message) => toView(message, authorById.get(message.authorId) ?? null));
+  return {
+    messages: messages.map((message) => toView(message, authorById.get(message.authorId) ?? null)),
+    hasMore,
+  };
 }
 
 /**

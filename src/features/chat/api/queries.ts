@@ -4,7 +4,7 @@ import { requireOrg } from '@/server/auth';
 import * as memberService from '@/server/services/channel-members';
 import * as channelService from '@/server/services/channels';
 import * as chatService from '@/server/services/chat';
-import type { ChannelPersonView, ChannelView, ChatMessageView } from '@/features/chat/types';
+import type { ChannelPersonView, ChannelView, MessagePage } from '@/features/chat/types';
 
 // 서버 컴포넌트에서 직접 호출하는 조회 헬퍼.
 // notes와 동일하게 스코프(org·사용자)를 스스로 붙인다 — 호출부가 잊을 여지를 남기지 않는다.
@@ -25,7 +25,8 @@ export async function fetchChannel(channelId: string): Promise<ChannelView | nul
   return channelService.getChannel(orgId, actor, channelId);
 }
 
-export async function fetchMessages(channelId: string): Promise<ChatMessageView[]> {
+/** 채널 진입 시의 첫 페이지(가장 최신). 이후 위로 올라가는 건 Server Action이 맡는다. */
+export async function fetchMessages(channelId: string): Promise<MessagePage> {
   const { orgId, userId } = await requireOrg();
   return chatService.listMessages(orgId, userId, channelId);
 }
