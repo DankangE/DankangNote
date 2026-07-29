@@ -21,6 +21,23 @@ export function upsert(
   return [...rest, incoming];
 }
 
+// 같은 작성자의 연속 메시지를 한 묶음으로 접는(슬랙식) 시간 창.
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * 직전 행과 묶어 보여줄지 — 같은 작성자이고 5분 안이면 아바타·이름을 접는다.
+ * 스레드는 며칠에 걸쳐 이어지는 일이 흔해 시간 창이 본문보다 더 필요하다.
+ */
+export function isGrouped(previous: RoomMessage | undefined, current: RoomMessage): boolean {
+  if (!previous || previous.authorId !== current.authorId) {
+    return false;
+  }
+  return (
+    new Date(current.createdAt).getTime() - new Date(previous.createdAt).getTime() <
+    GROUP_WINDOW_MS
+  );
+}
+
 /**
  * 전송 즉시 붙일 낙관 말풍선. 서버가 확정본을 돌려주면 tempId로 교체된다.
  * 연속 전송이 서로 간섭하지 않도록 매번 새 tempId를 쓴다.

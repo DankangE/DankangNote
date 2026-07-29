@@ -428,3 +428,86 @@ describe('스레드 (KAN-30)', () => {
     expect(older?.page.hasMore).toBe(false);
   });
 });
+
+describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
+  // 아래 두 케이스는 orgId와 channelId가 어긋난 행을 직접 심는다. 서비스만 거치면 그런
+  // 행은 안 생기지만 DB에는 둘을 묶는 제약이 없고(복합 FK도 CHECK도 없다), 그래서 조회
+  // 조건에서 orgId를 빼도 채널 조건만으로 통과해 버리는지 아닌지가 드러나지 않는다.
+
+  it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지에는 답글을 달 수 없다', async () => {
+    const planted = await prisma.chatMessage.create({
+      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속 루트' },
+    });
+
+    expect(
+      await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '남의 루트에 답글', planted.id),
+    ).toBeNull();
+  });
+
+  it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지는 스레드로 열리지 않는다', async () => {
+    const planted = await prisma.chatMessage.create({
+      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속 루트' },
+    });
+
+    expect(await listThread(ORG_A, USER_OWNER, planted.id)).toBeNull();
+  });
+
+  it('부모만 가리킬 뿐 다른 워크스페이스에 속한 답글 행은 스레드에 안 나온다', async () => {
+    // 답글의 channelId·orgId가 부모와 같다는 불변식은 DB로 표현돼 있지 않다. 서비스를
+    // 거치지 않고 이물 행을 심어, 조회가 스스로 테넌트 스코프를 갖는지 확인한다.
+    const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await prisma.chatMessage.create({
+      data: {
+        orgId: ORG_B,
+        channelId: CHANNEL_B,
+        parentId: root!.message.id,
+        authorId: USER_OTHER,
+        body: 'B에 속한 이물 답글',
+      },
+    });
+
+    const thread = await listThread(ORG_A, USER_OWNER, root!.message.id);
+
+    expect(thread?.page.messages).toEqual([]);
+    expect(thread?.root.replyCount).toBe(1);
+  });
+
+  it('답글도 createdAt 동률에서 커서가 이웃을 다시 집지 않는다', async () => {
+    const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const sameMoment = new Date('2026-03-01T00:00:00.000Z');
+    await prisma.chatMessage.createMany({
+      data: ['ra', 'rb', 'rc'].map((id) => ({
+        id,
+        orgId: ORG_A,
+        channelId: CHANNEL_A,
+        parentId: root!.message.id,
+        authorId: USER_OWNER,
+        body: id,
+        createdAt: sameMoment,
+      })),
+    });
+
+    const first = await listThread(ORG_A, USER_OWNER, root!.message.id);
+    expect(first?.page.messages.map((m) => m.id)).toEqual(['ra', 'rb', 'rc']);
+
+    const older = await listThread(ORG_A, USER_OWNER, root!.message.id, 'rb');
+    expect(older?.page.messages.map((m) => m.id)).toEqual(['ra']);
+  });
+
+  it('본문의 답글 수와 스레드가 돌려주는 답글이 일치한다', async () => {
+    const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await createMessage(ORG_A, USER_OTHER, CHANNEL_A, '답글 1', root!.message.id);
+    await createMessage(ORG_A, USER_OTHER, CHANNEL_A, '답글 2', root!.message.id);
+    // 다른 루트의 답글이 섞여 세어지면 안 된다.
+    const other = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '다른 루트');
+    await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '남의 답글', other!.message.id);
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    const thread = await listThread(ORG_A, USER_OWNER, root!.message.id);
+
+    const rootRow = page.messages.find((m) => m.id === root!.message.id);
+    expect(rootRow?.replyCount).toBe(2);
+    expect(thread?.page.messages).toHaveLength(2);
+    expect(page.messages.find((m) => m.id === other!.message.id)?.replyCount).toBe(1);
+  });
+});

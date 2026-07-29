@@ -146,9 +146,12 @@ model ChatMessage {
   replies      ChatMessage[] @relation("MessageThread")
 
   @@index([orgId, createdAt])
-  // 채널 본문은 루트만 훑고(parentId IS NULL) 스레드는 한 루트의 답글만 훑는다 — 둘 다
-  // 이 인덱스로 커버된다. 키셋 커서(KAN-29)의 시작 경계도 그대로 유지된다.
-  @@index([channelId, parentId, createdAt])
+  // 채널 본문 목록은 (channelId, createdAt) 역스캔으로 뽑고 parentId IS NULL은 필터로
+  // 걸러진다. 한때 parentId를 인덱스 가운데에 끼웠는데 그건 틀렸다 — IS NULL은 등호가
+  // 아니라 NullTest라 정렬 pathkey가 성립하지 않아 오히려 Sort가 붙는다. 답글이 96%인
+  // 채널에서도 이 형태가 52행만 읽고 끝난다(실측 15 buffers / 0.27ms).
+  @@index([channelId, createdAt])
+  // 스레드 조회는 parentId가 등호라 이 인덱스로 정렬까지 해결된다.
   @@index([parentId, createdAt])
 }
 

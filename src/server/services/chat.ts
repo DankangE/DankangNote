@@ -8,15 +8,11 @@ import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
 import type { ChatMessageView } from '@/features/chat/types';
 
-// 답글 수는 매번 세지 않고 관계 카운트로 함께 받는다 — 루트 목록 한 페이지에 대해 상관
-// 서브쿼리 한 번이라, 별도 groupBy 왕복이나 비정규화 카운터(드리프트)보다 낫다.
-const WITH_REPLY_COUNT = { _count: { select: { replies: true } } } as const;
-
-type MessageRow = Prisma.ChatMessageGetPayload<{ include: typeof WITH_REPLY_COUNT }>;
+type MessageRow = Prisma.ChatMessageGetPayload<object>;
 
 // 작성자 표시는 Clerk 미러 User에서 읽는다 — webhook 동기화 전이면 id로 대체.
 // ChatMessage.authorId에 FK를 안 두는 이유이기도 하다(전송이 동기화 순서에 안 묶이게).
-function toView(message: MessageRow, author: User | null): ChatMessageView {
+function toView(message: MessageRow, author: User | null, replyCount: number): ChatMessageView {
   return {
     id: message.id,
     channelId: message.channelId,
@@ -26,16 +22,48 @@ function toView(message: MessageRow, author: User | null): ChatMessageView {
     authorImageUrl: author?.imageUrl ?? null,
     body: message.body,
     createdAt: message.createdAt.toISOString(),
-    replyCount: message._count.replies,
+    replyCount,
   };
 }
 
-// 여러 메시지의 작성자를 한 번에 조인해 뷰로 만든다(N+1 방지).
+/**
+ * 이 메시지들에 달린 답글 수를 한 번에 센다.
+ *
+ * Prisma의 `_count: { replies }`를 쓰지 않는다: 그건 상관 서브쿼리가 아니라
+ * `LEFT JOIN (SELECT parentId, COUNT(*) FROM "ChatMessage" WHERE 1=1 GROUP BY parentId)`으로
+ * 컴파일된다 — org·채널 필터가 전혀 없는 **전 테이블 GROUP BY**가 페이지 조회마다 한 번씩
+ * 돈다. 즉 비용이 전체 테넌트 합계에 비례해서, 한 워크스페이스가 메시지를 쌓으면 다른
+ * 워크스페이스의 채널 로딩까지 같이 느려진다(360k행 실측 113ms/13.8k buffers vs 0.33ms/423).
+ * 여기서는 이번 페이지의 루트 id로 스코프한 groupBy 한 번만 돈다.
+ *
+ * 답글에는 아예 세지 않는다 — 스레드는 1단계라 답글의 답글 수는 언제나 0이다.
+ */
+async function countReplies(rootIds: string[]): Promise<Map<string, number>> {
+  if (rootIds.length === 0) {
+    return new Map();
+  }
+  const grouped = await prisma.chatMessage.groupBy({
+    by: ['parentId'],
+    where: { parentId: { in: rootIds } },
+    _count: { _all: true },
+  });
+  return new Map(
+    grouped.flatMap((row) => (row.parentId ? [[row.parentId, row._count._all] as const] : [])),
+  );
+}
+
+// 여러 메시지의 작성자·답글 수를 한 번에 붙여 뷰로 만든다(N+1 방지).
 async function toViews(messages: MessageRow[]): Promise<ChatMessageView[]> {
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
-  const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
+  const rootIds = messages.filter((message) => !message.parentId).map((message) => message.id);
+  const [authors, replyCounts] = await Promise.all([
+    prisma.user.findMany({ where: { id: { in: authorIds } } }),
+    countReplies(rootIds),
+  ]);
   const authorById = new Map(authors.map((author) => [author.id, author]));
-  return messages.map((message) => toView(message, authorById.get(message.authorId) ?? null));
+  return messages.map((message) =>
+    toView(message, authorById.get(message.authorId) ?? null, replyCounts.get(message.id) ?? 0),
+  );
 }
 
 export const MESSAGE_PAGE_SIZE = 50;
@@ -135,7 +163,6 @@ async function pageOf(
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     // 한 건 더 떠서 '더 있는지'를 별도 count 없이 판정한다.
     take: MESSAGE_PAGE_SIZE + 1,
-    include: WITH_REPLY_COUNT,
   });
 
   const hasMore = rows.length > MESSAGE_PAGE_SIZE;
@@ -164,14 +191,18 @@ export async function listThread(
   const root = await prisma.chatMessage.findFirst({
     // parentId: null — 답글의 id로는 스레드를 열 수 없다(스레드는 1단계뿐이다).
     where: { id: rootId, parentId: null, orgId, channel: visibleWhere(orgId, userId) },
-    include: WITH_REPLY_COUNT,
   });
   if (!root) {
     return null;
   }
 
   const [rootView] = await toViews([root]);
-  return { root: rootView, page: await pageOf({ parentId: rootId }, before) };
+  // 답글도 테넌트 스코프를 스스로 갖는다. 루트에서 접근 판정이 끝났다는 논리만으로도
+  // 막히지만, '테넌트 데이터 조회에는 예외 없이 orgId를 싣는다'(backend.md)를 여기서만
+  // 비우면 나중에 이 함수를 다른 데서 부를 때 방어선이 없다. 답글의 channelId가 부모와
+  // 같다는 불변식도 DB로는 표현돼 있지 않으므로 한 겹 더 건다.
+  const page = await pageOf({ parentId: rootId, orgId, channelId: root.channelId }, before);
+  return { root: rootView, page };
 }
 
 /**
@@ -235,10 +266,7 @@ export async function createMessage(
   const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
     prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
-    prisma.chatMessage.create({
-      data: { orgId, channelId, authorId, body, parentId },
-      include: WITH_REPLY_COUNT,
-    }),
+    prisma.chatMessage.create({ data: { orgId, channelId, authorId, body, parentId } }),
   ]);
   const joined = join.count > 0;
 
@@ -253,5 +281,6 @@ export async function createMessage(
   });
 
   const author = await prisma.user.findUnique({ where: { id: authorId } });
-  return { message: toView(message, author), joined };
+  // 새로 만든 메시지의 답글 수는 언제나 0이다(방금 생겼고, 답글은 1단계라 답글의 답글도 없다).
+  return { message: toView(message, author, 0), joined };
 }

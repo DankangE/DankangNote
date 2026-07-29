@@ -13,10 +13,12 @@ import { Textarea } from '@/components/ui/textarea';
 export function MessageComposer({
   label,
   placeholder,
+  disabled,
   onSend,
 }: {
   label: string;
   placeholder: string;
+  disabled?: boolean;
   onSend: (body: string) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState('');
@@ -39,6 +41,7 @@ export function MessageComposer({
       <Textarea
         aria-label={label}
         value={draft}
+        disabled={disabled}
         placeholder={placeholder}
         rows={1}
         className="max-h-32 min-h-8 resize-none border-0 bg-transparent p-1 shadow-none focus-visible:ring-0"
@@ -51,7 +54,14 @@ export function MessageComposer({
           }
         }}
       />
-      <Button size="icon" aria-label="보내기" disabled={draft.trim().length === 0} onClick={submit}>
+      {/* 데스크톱에서는 본문과 스레드의 컴포저가 동시에 떠 있다 — 두 전송 버튼의 접근
+          가능한 이름이 같으면 스크린리더에서 구분되지 않으므로 label을 함께 싣는다. */}
+      <Button
+        size="icon"
+        aria-label={`${label} 보내기`}
+        disabled={disabled || draft.trim().length === 0}
+        onClick={submit}
+      >
         <SendHorizontal />
       </Button>
     </div>

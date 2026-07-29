@@ -64,7 +64,9 @@ export function ChatMessageRow({
         </Avatar>
       )}
 
-      <div className="min-w-0 flex-1">
+      {/* 답글 버튼이 절대배치라 본문 첫 줄 꼬리를 덮는다 — 그만큼 오른쪽을 비워
+          텍스트 선택이 버튼 클릭으로 새지 않게 한다. */}
+      <div className={cn('min-w-0 flex-1', threadable && 'pr-9')}>
         {!grouped && (
           <div className="flex items-baseline gap-2">
             <span className="text-sm font-semibold">{message.authorName}</span>
@@ -85,14 +87,15 @@ export function ChatMessageRow({
         )}
       </div>
 
-      {/* hover 진입점. 답글이 아직 없는 메시지에도 스레드를 열 수 있어야 한다.
-          sr-only가 아니라 opacity로 숨기는 이유: 포커스 시 드러나야 키보드로도 닿는다. */}
+      {/* 스레드 진입점. 답글이 아직 없는 메시지에도 열 수 있어야 하므로 답글 수 버튼과
+          별개로 둔다. 터치 기기에는 hover도 :focus-visible도 없어서 숨기면 영영 안 보인다 —
+          그래서 md 미만에서는 항상 드러내고, 데스크톱에서만 hover·포커스로 드러낸다. */}
       {threadable && (
         <Button
           variant="ghost"
           size="icon"
           aria-label={`${message.authorName}의 메시지에 답글`}
-          className="absolute top-0 right-2 size-7 opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
+          className="absolute top-0 right-2 size-7 text-muted-foreground md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
           onClick={() => onOpenThread(message.id)}
         >
           <MessageSquareReply />

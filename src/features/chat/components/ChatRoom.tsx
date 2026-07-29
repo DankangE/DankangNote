@@ -10,7 +10,7 @@ import { sendMessageAction } from '@/features/chat/api/actions';
 import { fetchOlderMessages } from '@/features/chat/api/history';
 import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChatViewer, MessagePage } from '@/features/chat/types';
-import { pendingMessage, upsert, type RoomMessage } from '@/features/chat/room-state';
+import { isGrouped, pendingMessage, upsert, type RoomMessage } from '@/features/chat/room-state';
 import { ChatMessageRow } from './ChatMessageRow';
 import { MessageComposer } from './MessageComposer';
 import { ThreadPanel } from './ThreadPanel';
@@ -23,15 +23,16 @@ const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시
 const REALTIME_OFF_NOTICE =
   '실시간 연결이 설정되지 않았어요. 다른 멤버의 새 메시지는 새로고침해야 보입니다.';
 
-// 같은 작성자의 연속 메시지를 한 묶음으로 접는(슬랙식) 시간 창.
-const GROUP_WINDOW_MS = 5 * 60 * 1000;
-
 // 하단에서 이 픽셀 이내면 "붙어있다"고 보고 새 메시지에 자동 스크롤한다.
 const STICK_THRESHOLD_PX = 120;
 
 // 상단에서 이 픽셀 이내로 올라오면 이전 페이지를 당겨온다 — 사용자가 끝에 닿기 전에
 // 채워 넣어야 스크롤이 끊기지 않는다.
 const LOAD_MORE_THRESHOLD_PX = 200;
+
+// 열려 있는 스레드 패널에 넘길 실시간 답글 버퍼 길이. 패널은 멱등하게 다시 접으므로
+// 넉넉히만 잡으면 되고, 세션 내내 무한정 쌓이는 것만 막으면 된다.
+const LIVE_REPLY_BUFFER = 50;
 
 export function ChatRoom({
   initialPage,
@@ -49,9 +50,11 @@ export function ChatRoom({
   const [loadingOlder, setLoadingOlder] = useState(false);
   // 스크린리더용 결과 안내 — 시각적으로는 스크롤 위로 붙은 게 곧 피드백이다.
   const [loadedNotice, setLoadedNotice] = useState('');
-  // 열려 있는 스레드의 루트 id와, 실시간으로 도착한 마지막 답글(패널로 전달).
+  // 열려 있는 스레드의 루트 id와, 실시간으로 도착한 답글 피드(패널로 전달).
+  // 한 건짜리 슬롯이 아니라 목록인 이유: 같은 태스크에 두 건이 도착하면 prop이 한 번만
+  // 바뀌어 앞의 것이 패널에서 조용히 사라진다(WS 폴백 전송에서 실제로 가능하다).
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
-  const [liveReply, setLiveReply] = useState<ChatMessageView | null>(null);
+  const [liveReplies, setLiveReplies] = useState<readonly ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
   // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
@@ -115,6 +118,16 @@ export function ChatRoom({
     if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) void loadOlder();
   }
 
+  // 스레드를 여는 동안 좁은 화면에서는 본문이 display:none이 된다. 그 사이에는 스크롤
+  // 위치를 쓸 수 없어(브라우저가 무시한다) 새 메시지가 와도 하단 추종이 멈춘다 — 패널이
+  // 닫히는 순간 따라잡는다. 위로 올려 읽던 중이었다면(stick=false) 건드리지 않는다.
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (el && !openThreadId && stickToBottom.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [openThreadId]);
+
   // 페인트 전에 위치를 잡는다(useEffect면 튄 화면이 한 프레임 보인다).
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -132,6 +145,21 @@ export function ChatRoom({
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // 답글 한 건을 본문의 답글 수에 반영한다. 같은 답글이 두 경로로 들어오므로(내가 보낸
+  // 답글은 패널의 전송 성공 + Pusher 에코) id로 한 번만 센다 — 에코만 세면 Pusher가
+  // 꺼진 환경에서 영영 안 오르고, 둘 다 세면 두 번 오른다. 중복 배달에도 같은 이유로 안전.
+  const countedReplies = useRef(new Set<string>());
+  const countReply = useCallback((reply: ChatMessageView) => {
+    if (!reply.parentId || countedReplies.current.has(reply.id)) {
+      return;
+    }
+    countedReplies.current.add(reply.id);
+    const parentId = reply.parentId;
+    setMessages((prev) =>
+      prev.map((row) => (row.id === parentId ? { ...row, replyCount: row.replyCount + 1 } : row)),
+    );
+  }, []);
+
   useEffect(() => {
     if (!PUSHER_KEY || !PUSHER_CLUSTER) {
       return;
@@ -147,12 +175,9 @@ export function ChatRoom({
       if (message.parentId) {
         // 답글은 본문 목록에 섞지 않는다. 스레드 패널로 넘기고, 본문에 있는 루트의
         // 답글 수만 올린다 — 그 루트가 이 페이지에 없으면 아무 일도 일어나지 않는다.
-        setLiveReply(message);
-        setMessages((prev) =>
-          prev.map((row) =>
-            row.id === message.parentId ? { ...row, replyCount: row.replyCount + 1 } : row,
-          ),
-        );
+        // 피드는 열려 있는 패널이 훑을 최근분만 남긴다(세션 내내 쌓이지 않게).
+        setLiveReplies((prev) => [...prev, message].slice(-LIVE_REPLY_BUFFER));
+        countReply(message);
         return;
       }
       setMessages((prev) => upsert(prev, message));
@@ -163,7 +188,7 @@ export function ChatRoom({
       client.unsubscribe(chatChannel(channelId));
       client.disconnect();
     };
-  }, [channelId]);
+  }, [channelId, countReply]);
 
   // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공하면 서버 확정본으로 교체한다.
   // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문을 되돌리게 한다.
@@ -192,6 +217,26 @@ export function ChatRoom({
       return fail(GENERIC_ERROR);
     }
   }
+
+  // 패널이 서버에서 받은 답글 수를 본문 행에 되돌려 준다 — 실시간 이벤트를 놓쳤거나
+  // Pusher가 꺼져 있으면 증가만 하는 카운트는 영영 어긋난 채로 남는다.
+  const syncReplyCount = useCallback((rootId: string, replyCount: number) => {
+    setMessages((prev) =>
+      prev.map((row) => (row.id === rootId ? { ...row, replyCount } : row)),
+    );
+  }, []);
+
+  // 스레드를 닫으면 열었던 메시지의 답글 버튼으로 포커스를 되돌린다 — 안 그러면 포커스가
+  // body로 떨어져 키보드 사용자는 사이드바부터 다시 Tab해야 한다.
+  const closeThread = useCallback(() => {
+    const rootId = openThreadId;
+    setOpenThreadId(null);
+    if (!rootId) return;
+    // 본문이 다시 그려진 다음에 잡아야 한다(좁은 화면에선 방금까지 display:none이었다).
+    requestAnimationFrame(() => {
+      rowNode(rootId)?.querySelector<HTMLElement>('button[aria-label$="답글"]')?.focus();
+    });
+  }, [openThreadId]);
 
   const realtimeOff = !PUSHER_KEY || !PUSHER_CLUSTER;
   const status = error
@@ -247,23 +292,14 @@ export function ChatRoom({
             </div>
           ) : (
             <div className="flex flex-col">
-              {messages.map((message, index) => {
-                // 같은 작성자의 연속 메시지(5분 내)는 아바타·이름을 접는다(슬랙식 그룹).
-                const prev = messages[index - 1];
-                const grouped =
-                  !!prev &&
-                  prev.authorId === message.authorId &&
-                  new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() <
-                    GROUP_WINDOW_MS;
-                return (
-                  <ChatMessageRow
-                    key={message.id}
-                    message={message}
-                    grouped={grouped}
-                    onOpenThread={setOpenThreadId}
-                  />
-                );
-              })}
+              {messages.map((message, index) => (
+                <ChatMessageRow
+                  key={message.id}
+                  message={message}
+                  grouped={isGrouped(messages[index - 1], message)}
+                  onOpenThread={setOpenThreadId}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -297,8 +333,10 @@ export function ChatRoom({
           rootId={openThreadId}
           channelId={channelId}
           viewer={viewer}
-          liveReply={liveReply}
-          onClose={() => setOpenThreadId(null)}
+          liveReplies={liveReplies}
+          onSyncReplyCount={syncReplyCount}
+          onReplyCreated={countReply}
+          onClose={closeThread}
         />
       )}
     </div>
