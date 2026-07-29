@@ -31,7 +31,7 @@ export default async function ChannelPage({
     ?.emailAddress;
   const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || email || userId;
 
-  const messages = await fetchMessages(channel.id);
+  const page = await fetchMessages(channel.id);
   // 참여자·초대 목록은 비공개 채널의 패널에서만 쓴다 — 공개 채널에선 조회 자체를 하지 않는다.
   const roster = channel.isPrivate
     ? await fetchChannelRoster(channel.id)
@@ -40,7 +40,7 @@ export default async function ChannelPage({
   return (
     <ChatView
       channel={channel}
-      messages={messages}
+      page={page}
       viewer={{ id: userId, name, imageUrl: user?.imageUrl ?? null }}
       roster={roster}
     />

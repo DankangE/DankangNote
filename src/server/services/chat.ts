@@ -22,10 +22,25 @@ function toView(message: ChatMessage, author: User | null): ChatMessageView {
   };
 }
 
-const MESSAGE_PAGE_SIZE = 50;
+export const MESSAGE_PAGE_SIZE = 50;
 
 /**
- * 채널의 최근 N개를 오래된 것부터 반환. 페이지네이션은 KAN-29 스코프다.
+ * 한 페이지. messages는 언제나 오래된 것부터고, hasMore는 이 페이지보다 더 위(과거)에
+ * 메시지가 남아 있는지다 — 클라이언트가 '더 불러오기'를 띄울지 정하는 유일한 근거다.
+ * 다음 커서는 messages[0].id라 따로 내려보내지 않는다(클라이언트가 이미 들고 있다).
+ */
+export interface MessagePage {
+  messages: ChatMessageView[];
+  hasMore: boolean;
+}
+
+/**
+ * 채널 메시지 한 페이지를 오래된 것부터 반환한다(KAN-29).
+ *
+ * before가 없으면 최신 페이지, 있으면 그 메시지보다 과거의 페이지다. OFFSET이 아니라
+ * (createdAt, id) 키셋 커서를 쓴다 — OFFSET은 뒤로 갈수록 앞 행을 전부 훑고, 읽는 도중
+ * 새 메시지가 들어오면 페이지 경계가 밀려 같은 메시지를 두 번 보게 된다.
+ * @@index([channelId, createdAt])를 그대로 타므로 깊은 페이지도 비용이 일정하다.
  *
  * 채널 접근 권한을 where에 실어 조회 자체가 매칭되지 않게 한다 — 남의 워크스페이스나
  * 참여하지 않은 비공개 채널의 id를 알아도 빈 배열만 나온다(쿼리 수준 격리).
@@ -34,20 +49,55 @@ export async function listMessages(
   orgId: string,
   userId: string,
   channelId: string,
-): Promise<ChatMessageView[]> {
-  const messages = await prisma.chatMessage.findMany({
-    where: { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } },
-    // createdAt 동률(같은 ms 연속 전송)은 id 타이브레이커로 순서 고정.
+  before?: string,
+): Promise<MessagePage> {
+  const scope = { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } };
+
+  // 커서는 메시지 id 하나만 받고 기준 시각은 서버가 되찾는다 — 클라이언트가 보낸
+  // 타임스탬프를 믿으면 그걸 조작해 페이지 경계를 임의로 옮길 수 있다. 조회 자체를 같은
+  // 스코프로 걸어, 남의 채널 메시지 id를 커서로 밀어 넣어도 앵커를 얻지 못한다.
+  const anchor = before
+    ? await prisma.chatMessage.findFirst({
+        where: { id: before, ...scope },
+        select: { id: true, createdAt: true },
+      })
+    : null;
+  // 커서를 줬는데 못 찾았다면(잘못된 id·이미 지워진 메시지) 더 줄 것이 없다고 답한다.
+  if (before && !anchor) {
+    return { messages: [], hasMore: false };
+  }
+
+  const rows = await prisma.chatMessage.findMany({
+    where: {
+      ...scope,
+      // 키셋 조건 — 커서보다 엄격히 과거인 행만. createdAt 동률(같은 ms 연속 전송)은
+      // id로 갈라 커서가 자기 자신이나 동률 이웃을 다시 집지 않게 한다.
+      ...(anchor
+        ? {
+            OR: [
+              { createdAt: { lt: anchor.createdAt } },
+              { createdAt: anchor.createdAt, id: { lt: anchor.id } },
+            ],
+          }
+        : {}),
+    },
+    // 정렬 키는 키셋 조건과 정확히 같은 (createdAt, id)여야 한다.
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    take: MESSAGE_PAGE_SIZE,
+    // 한 건 더 떠서 '더 있는지'를 별도 count 없이 판정한다.
+    take: MESSAGE_PAGE_SIZE + 1,
   });
-  messages.reverse();
+
+  const hasMore = rows.length > MESSAGE_PAGE_SIZE;
+  const messages = (hasMore ? rows.slice(0, MESSAGE_PAGE_SIZE) : rows).reverse();
 
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
   const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
   const authorById = new Map(authors.map((author) => [author.id, author]));
 
-  return messages.map((message) => toView(message, authorById.get(message.authorId) ?? null));
+  return {
+    messages: messages.map((message) => toView(message, authorById.get(message.authorId) ?? null)),
+    hasMore,
+  };
 }
 
 /**

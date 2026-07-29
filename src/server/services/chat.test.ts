@@ -11,7 +11,7 @@ import {
   seedChannels,
   seedTenants,
 } from '../../../test/db';
-import { createMessage, listMessages } from './chat';
+import { MESSAGE_PAGE_SIZE, createMessage, listMessages } from './chat';
 
 beforeEach(async () => {
   await resetDatabase();
@@ -19,15 +19,33 @@ beforeEach(async () => {
   await seedChannels();
 });
 
+/**
+ * 페이지네이션 테스트용 대량 시드. createdAt을 1초씩 벌려 넣어 '오래된 것부터' 순서가
+ * 관측 가능하게 한다(같은 ms에 몰아 넣으면 id 타이브레이커만 검증하게 된다).
+ */
+async function seedMessages(channelId: string, count: number): Promise<void> {
+  const base = new Date('2026-01-01T00:00:00.000Z').getTime();
+  await prisma.chatMessage.createMany({
+    data: Array.from({ length: count }, (_, index) => ({
+      id: `msg_${String(index).padStart(3, '0')}`,
+      orgId: ORG_A,
+      channelId,
+      authorId: USER_OWNER,
+      body: `메시지 ${index}`,
+      createdAt: new Date(base + index * 1000),
+    })),
+  });
+}
+
 describe('멀티테넌시 격리', () => {
   it('listMessages는 자기 org·자기 채널의 메시지만 반환한다', async () => {
     await createMessage(ORG_A, USER_OWNER, CHANNEL_A, 'A의 메시지');
     await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 메시지');
 
-    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).messages.map((m) => m.body)).toEqual([
       'A의 메시지',
     ]);
-    expect((await listMessages(ORG_B, USER_OTHER, CHANNEL_B)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_B, USER_OTHER, CHANNEL_B)).messages.map((m) => m.body)).toEqual([
       'B의 메시지',
     ]);
   });
@@ -36,7 +54,7 @@ describe('멀티테넌시 격리', () => {
     await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 비밀');
 
     // 내 org로 스코프한 채 남의 채널 id를 넘기는 경로 — 조회는 비고, 전송은 거부된다.
-    expect(await listMessages(ORG_A, USER_OWNER, CHANNEL_B)).toEqual([]);
+    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_B)).messages).toEqual([]);
     expect(await createMessage(ORG_A, USER_OWNER, CHANNEL_B, '끼어들기')).toBeNull();
     expect(await prisma.chatMessage.count({ where: { channelId: CHANNEL_B } })).toBe(1);
   });
@@ -46,10 +64,10 @@ describe('멀티테넌시 격리', () => {
     await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '일반의 말');
     await createMessage(ORG_A, USER_OWNER, other.id, '공지의 말');
 
-    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).messages.map((m) => m.body)).toEqual([
       '일반의 말',
     ]);
-    expect((await listMessages(ORG_A, USER_OWNER, other.id)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, other.id)).messages.map((m) => m.body)).toEqual([
       '공지의 말',
     ]);
   });
@@ -59,7 +77,7 @@ describe('멀티테넌시 격리', () => {
     await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '두 번째');
     await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '세 번째');
 
-    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).messages.map((m) => m.body)).toEqual([
       '첫 번째',
       '두 번째',
       '세 번째',
@@ -80,10 +98,10 @@ describe('비공개 채널 (KAN-28)', () => {
     await createMessage(ORG_A, USER_OWNER, secret.id, '멤버끼리 하는 말');
 
     // 같은 워크스페이스라도 참여자가 아니면 존재하지 않는 것과 같다.
-    expect(await listMessages(ORG_A, USER_OTHER, secret.id)).toEqual([]);
+    expect((await listMessages(ORG_A, USER_OTHER, secret.id)).messages).toEqual([]);
     expect(await createMessage(ORG_A, USER_OTHER, secret.id, '엿듣기')).toBeNull();
     // 참여자에게는 그대로 보인다.
-    expect((await listMessages(ORG_A, USER_OWNER, secret.id)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, secret.id)).messages.map((m) => m.body)).toEqual([
       '멤버끼리 하는 말',
     ]);
   });
@@ -113,7 +131,7 @@ describe('작성자 표시', () => {
     // 웹훅이 아직 안 온 사용자 — 미러 행이 없다(스켈레톤만 생긴다).
     await createMessage(ORG_A, 'user_not_mirrored_yet', CHANNEL_A, '아직 동기화 전');
 
-    const [named, unnamed] = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    const [named, unnamed] = (await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).messages;
     expect(named.authorName).toBe('단 강');
     expect(unnamed.authorName).toBe('user_not_mirrored_yet');
   });
@@ -140,7 +158,7 @@ describe('테넌트 수명 (KAN-19 · KAN-28)', () => {
     await prisma.channel.delete({ where: { id: other.id } });
 
     expect(await prisma.chatMessage.count({ where: { orgId: ORG_A } })).toBe(1);
-    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).map((m) => m.body)).toEqual([
+    expect((await listMessages(ORG_A, USER_OWNER, CHANNEL_A)).messages.map((m) => m.body)).toEqual([
       '남을 말',
     ]);
   });
@@ -177,5 +195,110 @@ describe('테넌트 수명 (KAN-19 · KAN-28)', () => {
     expect(
       await prisma.channelMember.count({ where: { channelId: CHANNEL_A, userId: 'user_brand_new' } }),
     ).toBe(1);
+  });
+});
+
+describe('커서 페이지네이션 (KAN-29)', () => {
+  const TOTAL = MESSAGE_PAGE_SIZE + 3;
+
+  it('첫 페이지는 가장 최신 한 페이지를 오래된 것부터 준다', async () => {
+    await seedMessages(CHANNEL_A, TOTAL);
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+
+    expect(page.messages).toHaveLength(MESSAGE_PAGE_SIZE);
+    expect(page.hasMore).toBe(true);
+    // 가장 오래된 3건은 잘려 나가고, 페이지 안은 시간 오름차순이다.
+    expect(page.messages[0].body).toBe('메시지 3');
+    expect(page.messages.at(-1)?.body).toBe(`메시지 ${TOTAL - 1}`);
+  });
+
+  it('커서로 그 앞 페이지를 이어 받고, 다 받으면 hasMore가 꺼진다', async () => {
+    await seedMessages(CHANNEL_A, TOTAL);
+    const first = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+
+    const older = await listMessages(ORG_A, USER_OWNER, CHANNEL_A, first.messages[0].id);
+
+    expect(older.messages.map((m) => m.body)).toEqual(['메시지 0', '메시지 1', '메시지 2']);
+    expect(older.hasMore).toBe(false);
+  });
+
+  it('페이지끼리 겹치지도 빠지지도 않는다', async () => {
+    await seedMessages(CHANNEL_A, TOTAL);
+
+    const collected: string[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const page: Awaited<ReturnType<typeof listMessages>> = await listMessages(
+        ORG_A,
+        USER_OWNER,
+        CHANNEL_A,
+        cursor,
+      );
+      collected.unshift(...page.messages.map((m) => m.body));
+      cursor = page.messages[0]?.id;
+      hasMore = page.hasMore;
+    }
+
+    expect(collected).toEqual(Array.from({ length: TOTAL }, (_, i) => `메시지 ${i}`));
+    expect(new Set(collected).size).toBe(TOTAL);
+  });
+
+  it('createdAt이 같아도 커서가 자기 자신이나 이웃을 다시 집지 않는다', async () => {
+    // 같은 ms에 몰린 연속 전송 — 키셋의 id 타이브레이커가 없으면 무한 루프가 된다.
+    const sameMoment = new Date('2026-01-01T00:00:00.000Z');
+    await prisma.chatMessage.createMany({
+      data: ['a', 'b', 'c'].map((id) => ({
+        id,
+        orgId: ORG_A,
+        channelId: CHANNEL_A,
+        authorId: USER_OWNER,
+        body: id,
+        createdAt: sameMoment,
+      })),
+    });
+
+    const first = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    expect(first.messages.map((m) => m.id)).toEqual(['a', 'b', 'c']);
+
+    const older = await listMessages(ORG_A, USER_OWNER, CHANNEL_A, 'b');
+    expect(older.messages.map((m) => m.id)).toEqual(['a']);
+  });
+
+  it('남의 채널 메시지를 커서로 넣어도 그 채널을 읽지 못한다', async () => {
+    await seedMessages(CHANNEL_A, 5);
+    const foreign = await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 비밀');
+
+    // 커서가 이 채널 것이 아니면 앵커를 못 찾아 빈 페이지다 — 남의 메시지가 새지 않는다.
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A, foreign!.message.id);
+
+    expect(page).toEqual({ messages: [], hasMore: false });
+  });
+
+  it('참여하지 않은 비공개 채널은 커서를 줘도 빈 페이지다', async () => {
+    const secret = await prisma.channel.create({
+      data: {
+        orgId: ORG_A,
+        name: '비밀',
+        isPrivate: true,
+        members: { create: { userId: USER_OWNER } },
+      },
+    });
+    await seedMessages(secret.id, 5);
+    const mine = await listMessages(ORG_A, USER_OWNER, secret.id);
+
+    const stolen = await listMessages(ORG_A, USER_OTHER, secret.id, mine.messages[0].id);
+
+    expect(stolen).toEqual({ messages: [], hasMore: false });
+  });
+
+  it('없는 커서를 주면 조용히 빈 페이지를 준다', async () => {
+    await seedMessages(CHANNEL_A, 5);
+
+    expect(await listMessages(ORG_A, USER_OWNER, CHANNEL_A, 'msg_does_not_exist')).toEqual({
+      messages: [],
+      hasMore: false,
+    });
   });
 });

@@ -41,6 +41,8 @@ const channelTopic = z
 
 export const channelRefSchema = z.object({ id: idSchema });
 export const sendMessageSchema = z.object({ channelId: idSchema, body: messageBodySchema });
+// before는 '이 메시지보다 과거'를 가리키는 커서 — 화면에 남아 있는 가장 오래된 메시지 id다.
+export const olderMessagesSchema = z.object({ channelId: idSchema, before: idSchema });
 export const createChannelSchema = z.object({
   name: channelName,
   topic: channelTopic,

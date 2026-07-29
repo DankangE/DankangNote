@@ -1,15 +1,15 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MessageSquare, SendHorizontal } from 'lucide-react';
 import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/lib/components/EmptyState';
-import { sendMessageAction } from '@/features/chat/api/actions';
+import { loadOlderMessagesAction, sendMessageAction } from '@/features/chat/api/actions';
 import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
-import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
+import type { ChatMessageView, ChatViewer, MessagePage } from '@/features/chat/types';
 import { ChatMessageRow } from './ChatMessageRow';
 
 // NEXT_PUBLIC_*은 빌드 시 인라인된다 — 없으면 실시간 구독 없이 동작(경고 표시).
@@ -26,6 +26,10 @@ const GROUP_WINDOW_MS = 5 * 60 * 1000;
 // 하단에서 이 픽셀 이내면 "붙어있다"고 보고 새 메시지에 자동 스크롤한다.
 const STICK_THRESHOLD_PX = 120;
 
+// 상단에서 이 픽셀 이내로 올라오면 이전 페이지를 당겨온다 — 사용자가 끝에 닿기 전에
+// 채워 넣어야 스크롤이 끊기지 않는다.
+const LOAD_MORE_THRESHOLD_PX = 200;
+
 type RoomMessage = ChatMessageView & { pending?: boolean };
 
 // 이미 있는 id(자기 전송의 브로드캐스트 echo)는 버리고,
@@ -39,31 +43,81 @@ function upsert(list: RoomMessage[], incoming: RoomMessage, replaceId?: string):
 }
 
 export function ChatRoom({
-  initialMessages,
+  initialPage,
   viewer,
   channelId,
 }: {
-  initialMessages: ChatMessageView[];
+  initialPage: MessagePage;
   viewer: ChatViewer;
   channelId: string;
 }) {
-  // 서버가 준 초기 목록을 시드로, 이후엔 Pusher 이벤트·전송 결과로만 갱신하는
+  // 서버가 준 초기 목록을 시드로, 이후엔 Pusher 이벤트·전송 결과·이전 페이지로만 갱신하는
   // 라이브 스트림 상태. 서버 상태의 사본이 아니라 이벤트 소싱 뷰라 useState가 맞다.
-  const [messages, setMessages] = useState<RoomMessage[]>(initialMessages);
+  const [messages, setMessages] = useState<RoomMessage[]>(initialPage.messages);
+  const [hasMore, setHasMore] = useState(initialPage.hasMore);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
   // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
+  // 이전 페이지를 앞에 붙이기 직전의 scrollHeight. 붙이고 나면 그만큼 내려 보정해
+  // 사용자가 보던 메시지가 제자리에 있게 한다(안 하면 화면이 위로 튄다).
+  const heightBeforePrepend = useRef<number | null>(null);
+  // loadingOlder는 리렌더 후에야 반영돼 연속 스크롤 이벤트가 같은 페이지를 두 번 부른다 —
+  // ref로 동기 차단한다(보드의 이중 제출 가드와 같은 이유).
+  const fetching = useRef(false);
+
+  const loadOlder = useCallback(async () => {
+    const el = listRef.current;
+    const oldest = messages[0];
+    if (!el || !oldest || fetching.current || !hasMore) return;
+    fetching.current = true;
+    setLoadingOlder(true);
+    // 위치 보정 기준은 요청 직전의 높이다 — 응답을 기다리는 사이 새 메시지가 아래에
+    // 붙어도 '늘어난 만큼 내린다'는 계산은 그대로 성립한다.
+    heightBeforePrepend.current = el.scrollHeight;
+    try {
+      const result = await loadOlderMessagesAction({ channelId, before: oldest.id });
+      if (result.ok) {
+        setHasMore(result.data.hasMore);
+        setMessages((prev) => {
+          // 경계에서 겹칠 일은 없지만, 겹치면 조용히 중복 말풍선이 생기므로 걸러 낸다.
+          const known = new Set(prev.map((message) => message.id));
+          const older = result.data.messages.filter((message) => !known.has(message.id));
+          return older.length > 0 ? [...older, ...prev] : prev;
+        });
+      } else {
+        heightBeforePrepend.current = null;
+        setError(result.error);
+      }
+    } catch {
+      heightBeforePrepend.current = null;
+      setError(GENERIC_ERROR);
+    } finally {
+      fetching.current = false;
+      setLoadingOlder(false);
+    }
+  }, [channelId, hasMore, messages]);
+
   function handleListScroll() {
     const el = listRef.current;
     if (!el) return;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) void loadOlder();
   }
-  useEffect(() => {
+
+  // 페인트 전에 위치를 잡는다(useEffect면 튄 화면이 한 프레임 보인다).
+  useLayoutEffect(() => {
     const el = listRef.current;
-    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (heightBeforePrepend.current !== null) {
+      el.scrollTop += el.scrollHeight - heightBeforePrepend.current;
+      heightBeforePrepend.current = null;
+      return;
+    }
+    if (stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -158,6 +212,20 @@ export function ChatRoom({
           </div>
         ) : (
           <div className="flex flex-col">
+            {/* 스크롤이 상단에 닿으면 자동으로 당겨오지만 버튼도 함께 둔다 — 스크롤
+                이벤트만으로 트리거하면 키보드·스크린리더 사용자는 이력에 닿을 수 없다. */}
+            {hasMore && (
+              <div className="flex justify-center pb-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={loadingOlder}
+                  onClick={() => void loadOlder()}
+                >
+                  {loadingOlder ? '불러오는 중…' : '이전 메시지 더 보기'}
+                </Button>
+              </div>
+            )}
             {messages.map((message, index) => {
               // 같은 작성자의 연속 메시지(5분 내)는 아바타·이름을 접는다(슬랙식 그룹).
               const prev = messages[index - 1];
