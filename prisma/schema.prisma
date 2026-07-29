@@ -127,19 +127,32 @@ model ChannelMember {
 /// authorId는 Clerk user id지만 FK를 두지 않는다 — 전송이 User 미러의 동기화 순서에 묶이면
 /// 안 되고, 여기에 SetNull FK를 달면 작성자 탈퇴 시 '누가 말했는지'가 사라져 대화 로그가
 /// 깨진다. 대신 tombstone 가드가 삭제된 사용자의 쓰기를 막고, 표시용 조인은 서비스에서 한다.
+/// parentId는 스레드 루트 메시지(KAN-30). null이면 채널 본문에 보이는 루트 메시지고,
+/// 값이 있으면 그 루트의 답글이라 본문 목록에는 나오지 않는다. 답글의 답글은 만들지
+/// 않는다(슬랙과 같은 1단계) — 그 규칙은 DB로 표현할 수 없어 createMessage가 강제한다.
+/// 루트를 지우면 딸린 답글도 함께 파기된다(Cascade) — 맥락 없는 답글만 남는 게 더 나쁘다.
 model ChatMessage {
   id        String   @id @default(cuid())
   orgId     String
   channelId String
   authorId  String
+  parentId  String?
   body      String
   createdAt DateTime @default(now())
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel      Channel       @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  parent       ChatMessage?  @relation("MessageThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      ChatMessage[] @relation("MessageThread")
 
   @@index([orgId, createdAt])
+  // 채널 본문 목록은 (channelId, createdAt) 역스캔으로 뽑고 parentId IS NULL은 필터로
+  // 걸러진다. 한때 parentId를 인덱스 가운데에 끼웠는데 그건 틀렸다 — IS NULL은 등호가
+  // 아니라 NullTest라 정렬 pathkey가 성립하지 않아 오히려 Sort가 붙는다. 답글이 96%인
+  // 채널에서도 이 형태가 52행만 읽고 끝난다(실측 15 buffers / 0.27ms).
   @@index([channelId, createdAt])
+  // 스레드 조회는 parentId가 등호라 이 인덱스로 정렬까지 해결된다.
+  @@index([parentId, createdAt])
 }
 
 /// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.

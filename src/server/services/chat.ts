@@ -1,25 +1,69 @@
 import 'server-only';
 
 import { prisma } from '@/server/db';
-import type { ChatMessage, User } from '@/server/generated/prisma/client';
+import type { Prisma, User } from '@/server/generated/prisma/client';
 import { visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
 import type { ChatMessageView } from '@/features/chat/types';
 
+type MessageRow = Prisma.ChatMessageGetPayload<object>;
+
 // 작성자 표시는 Clerk 미러 User에서 읽는다 — webhook 동기화 전이면 id로 대체.
 // ChatMessage.authorId에 FK를 안 두는 이유이기도 하다(전송이 동기화 순서에 안 묶이게).
-function toView(message: ChatMessage, author: User | null): ChatMessageView {
+function toView(message: MessageRow, author: User | null, replyCount: number): ChatMessageView {
   return {
     id: message.id,
     channelId: message.channelId,
+    parentId: message.parentId,
     authorId: message.authorId,
     authorName: author ? displayName(author) : message.authorId,
     authorImageUrl: author?.imageUrl ?? null,
     body: message.body,
     createdAt: message.createdAt.toISOString(),
+    replyCount,
   };
+}
+
+/**
+ * 이 메시지들에 달린 답글 수를 한 번에 센다.
+ *
+ * Prisma의 `_count: { replies }`를 쓰지 않는다: 그건 상관 서브쿼리가 아니라
+ * `LEFT JOIN (SELECT parentId, COUNT(*) FROM "ChatMessage" WHERE 1=1 GROUP BY parentId)`으로
+ * 컴파일된다 — org·채널 필터가 전혀 없는 **전 테이블 GROUP BY**가 페이지 조회마다 한 번씩
+ * 돈다. 즉 비용이 전체 테넌트 합계에 비례해서, 한 워크스페이스가 메시지를 쌓으면 다른
+ * 워크스페이스의 채널 로딩까지 같이 느려진다(360k행 실측 113ms/13.8k buffers vs 0.33ms/423).
+ * 여기서는 이번 페이지의 루트 id로 스코프한 groupBy 한 번만 돈다.
+ *
+ * 답글에는 아예 세지 않는다 — 스레드는 1단계라 답글의 답글 수는 언제나 0이다.
+ */
+async function countReplies(rootIds: string[]): Promise<Map<string, number>> {
+  if (rootIds.length === 0) {
+    return new Map();
+  }
+  const grouped = await prisma.chatMessage.groupBy({
+    by: ['parentId'],
+    where: { parentId: { in: rootIds } },
+    _count: { _all: true },
+  });
+  return new Map(
+    grouped.flatMap((row) => (row.parentId ? [[row.parentId, row._count._all] as const] : [])),
+  );
+}
+
+// 여러 메시지의 작성자·답글 수를 한 번에 붙여 뷰로 만든다(N+1 방지).
+async function toViews(messages: MessageRow[]): Promise<ChatMessageView[]> {
+  const authorIds = [...new Set(messages.map((message) => message.authorId))];
+  const rootIds = messages.filter((message) => !message.parentId).map((message) => message.id);
+  const [authors, replyCounts] = await Promise.all([
+    prisma.user.findMany({ where: { id: { in: authorIds } } }),
+    countReplies(rootIds),
+  ]);
+  const authorById = new Map(authors.map((author) => [author.id, author]));
+  return messages.map((message) =>
+    toView(message, authorById.get(message.authorId) ?? null, replyCounts.get(message.id) ?? 0),
+  );
 }
 
 export const MESSAGE_PAGE_SIZE = 50;
@@ -51,14 +95,27 @@ export interface MessagePage {
  * 채널 접근 권한을 where에 실어 조회 자체가 매칭되지 않게 한다 — 남의 워크스페이스나
  * 참여하지 않은 비공개 채널의 id를 알아도 빈 배열만 나온다(쿼리 수준 격리).
  */
-export async function listMessages(
+export function listMessages(
   orgId: string,
   userId: string,
   channelId: string,
   before?: string,
 ): Promise<MessagePage> {
-  const scope = { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } };
+  // parentId: null — 답글은 채널 본문에 섞이지 않는다. 스레드 패널에서만 보인다(KAN-30).
+  return pageOf(
+    { orgId, parentId: null, channel: { id: channelId, ...visibleWhere(orgId, userId) } },
+    before,
+  );
+}
 
+/**
+ * 키셋 페이지 조회의 공용 몸통. scope는 그 자체로 접근 판정이 끝난 where여야 한다 —
+ * 커서 앵커도 같은 scope로 찾으므로, scope가 새면 커서로도 샌다.
+ */
+async function pageOf(
+  scope: Prisma.ChatMessageWhereInput,
+  before: string | undefined,
+): Promise<MessagePage> {
   // 커서는 메시지 id 하나만 받고 기준 시각은 서버가 되찾는다 — 클라이언트가 보낸
   // 타임스탬프를 믿으면 그걸 조작해 페이지 경계를 임의로 옮길 수 있다. 조회 자체를 같은
   // 스코프로 걸어, 남의 채널 메시지 id를 커서로 밀어 넣어도 앵커를 얻지 못한다.
@@ -111,14 +168,41 @@ export async function listMessages(
   const hasMore = rows.length > MESSAGE_PAGE_SIZE;
   const messages = (hasMore ? rows.slice(0, MESSAGE_PAGE_SIZE) : rows).reverse();
 
-  const authorIds = [...new Set(messages.map((message) => message.authorId))];
-  const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
-  const authorById = new Map(authors.map((author) => [author.id, author]));
+  return { messages: await toViews(messages), hasMore };
+}
 
-  return {
-    messages: messages.map((message) => toView(message, authorById.get(message.authorId) ?? null)),
-    hasMore,
-  };
+/** 스레드 = 루트 메시지 + 그 답글 한 페이지. */
+export interface ThreadView {
+  root: ChatMessageView;
+  page: MessagePage;
+}
+
+/**
+ * 스레드 한 건. 접근 판정은 루트 메시지에서 한 번 끝난다 — 루트가 보이면 그 답글도
+ * 보이는 것이 스레드의 정의이므로, 답글 조회는 parentId만으로 스코프해도 샐 곳이 없다.
+ * 답글이 많으면 채널 본문과 같은 키셋 커서로 위쪽을 더 불러온다.
+ */
+export async function listThread(
+  orgId: string,
+  userId: string,
+  rootId: string,
+  before?: string,
+): Promise<ThreadView | null> {
+  const root = await prisma.chatMessage.findFirst({
+    // parentId: null — 답글의 id로는 스레드를 열 수 없다(스레드는 1단계뿐이다).
+    where: { id: rootId, parentId: null, orgId, channel: visibleWhere(orgId, userId) },
+  });
+  if (!root) {
+    return null;
+  }
+
+  const [rootView] = await toViews([root]);
+  // 답글도 테넌트 스코프를 스스로 갖는다. 루트에서 접근 판정이 끝났다는 논리만으로도
+  // 막히지만, '테넌트 데이터 조회에는 예외 없이 orgId를 싣는다'(backend.md)를 여기서만
+  // 비우면 나중에 이 함수를 다른 데서 부를 때 방어선이 없다. 답글의 channelId가 부모와
+  // 같다는 불변식도 DB로는 표현돼 있지 않으므로 한 겹 더 건다.
+  const page = await pageOf({ parentId: rootId, orgId, channelId: root.channelId }, before);
+  return { root: rootView, page };
 }
 
 /**
@@ -131,12 +215,18 @@ export interface SendResult {
   joined: boolean;
 }
 
-/** 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다. */
+/**
+ * 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다.
+ * parentId가 있으면 그 메시지의 답글이 된다. 부모는 **같은 채널의 루트 메시지**여야 한다:
+ * 다른 채널의 메시지에 답글을 달면 그 답글은 어느 채널에도 안 보이는 고아가 되고,
+ * 답글에 답글을 허용하면 화면에 없는 2단계 스레드가 데이터에만 생긴다(슬랙과 같은 1단계).
+ */
 export async function createMessage(
   orgId: string,
   authorId: string,
   channelId: string,
   body: string,
+  parentId?: string,
 ): Promise<SendResult | null> {
   // 대상 채널이 이 워크스페이스의 것이고 내가 접근할 수 있는지 — 전송의 테넌트 경계다.
   const channel = await prisma.channel.findFirst({
@@ -145,6 +235,17 @@ export async function createMessage(
   });
   if (!channel) {
     return null;
+  }
+
+  if (parentId) {
+    // channelId까지 where에 실어, 접근할 수 있는 다른 채널의 메시지도 부모가 될 수 없게 한다.
+    const parent = await prisma.chatMessage.findFirst({
+      where: { id: parentId, channelId, orgId, parentId: null },
+      select: { id: true },
+    });
+    if (!parent) {
+      return null;
+    }
   }
 
   // 삭제된 워크스페이스·사용자로의 쓰기를 막는다 — 세션은 조직/계정이 지워진 뒤에도 토큰
@@ -165,7 +266,7 @@ export async function createMessage(
   const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
     prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
-    prisma.chatMessage.create({ data: { orgId, channelId, authorId, body } }),
+    prisma.chatMessage.create({ data: { orgId, channelId, authorId, body, parentId } }),
   ]);
   const joined = join.count > 0;
 
@@ -180,5 +281,6 @@ export async function createMessage(
   });
 
   const author = await prisma.user.findUnique({ where: { id: authorId } });
-  return { message: toView(message, author), joined };
+  // 새로 만든 메시지의 답글 수는 언제나 0이다(방금 생겼고, 답글은 1단계라 답글의 답글도 없다).
+  return { message: toView(message, author, 0), joined };
 }

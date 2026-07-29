@@ -42,10 +42,12 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
       org.userId,
       parsed.data.channelId,
       parsed.data.body,
+      parsed.data.parentId,
     );
-    // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)은 '없음'으로 답한다.
+    // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)이나 답글을 달 수 없는 부모는
+    // '없음'으로 답한다 — 어느 쪽인지 알려주면 그 자체가 존재 여부 오라클이 된다.
     if (!sent) {
-      return { ok: false, error: '채널을 찾을 수 없습니다.' };
+      return { ok: false, error: '메시지를 보낼 대상을 찾을 수 없습니다.' };
     }
     // 평소엔 재검증하지 않는다 — 메시지는 Pusher로 흐르고, 매 전송마다 레이아웃을 다시
     // 그리면 낭비다. 자동 참여가 일어난 첫 전송에서만 채널 목록을 갱신한다(그 채널이
