@@ -51,14 +51,25 @@ export async function joinChannel(
 }
 
 /**
- * 채널에서 나간다. 기본 채널은 나갈 수 없다 — 다음 접속에서 ensureDefaultChannel이
- * 도로 넣을 것이므로, 사용자에게 '나갔다'고 거짓말하지 않는다.
+ * 채널에서 나간다. 거부되는 두 경우:
+ * - 기본 채널 — 다음 접속에서 ensureDefaultChannel이 도로 넣으므로 '나갔다'고 거짓말하지 않는다.
+ * - 비공개 채널의 마지막 참여자 — 나가는 순간 그 채널은 아무에게도 보이지 않게 된다.
+ *   접근 판정이 곧 참여 행이고 admin 예외도 없으므로, 열람도 재참여도 삭제도 불가능한
+ *   고아가 되고 이름은 유니크 제약에 영구히 묶인다(DB를 직접 고치는 것 말고 회복 불가).
  */
 export async function leaveChannel(
   orgId: string,
   userId: string,
   channelId: string,
 ): Promise<boolean> {
+  const channel = await prisma.channel.findFirst({
+    where: { id: channelId, orgId, isDefault: false },
+    select: { isPrivate: true, _count: { select: { members: true } } },
+  });
+  if (!channel || (channel.isPrivate && channel._count.members <= 1)) {
+    return false;
+  }
+
   const { count } = await prisma.channelMember.deleteMany({
     where: { userId, channel: { id: channelId, orgId, isDefault: false } },
   });
@@ -67,7 +78,7 @@ export async function leaveChannel(
 
 /**
  * 비공개 채널에 같은 워크스페이스의 멤버를 초대한다. 초대자는 그 채널이 보여야 하고
- * (비공개면 곧 참여자), 대상은 조직 멤버여야 한다.
+ * (비공개면 곧 참여자), 대상은 조직 멤버여야 한다. 공개 채널에는 쓸 수 없다.
  *
  * 대상이 조직 멤버인지는 Membership 미러로 본다. 미러는 표시용이라는 원칙(KAN-18)과
  * 어긋나 보이지만, 여기서 미러는 '후보 목록'일 뿐이다 — 실제 게이트는 초대된 사람이
@@ -81,13 +92,19 @@ export async function inviteToChannel(
   channelId: string,
   inviteeId: string,
 ): Promise<boolean> {
+  // 비공개 채널에만 초대가 있다. 공개 채널은 조직 누구나 스스로 들어올 수 있으므로,
+  // 여기서 남을 밀어 넣는 건 타인 명의의 쓰기일 뿐이다(isPrivate를 where에 실어 차단).
   const channel = await prisma.channel.findFirst({
-    where: { id: channelId, ...visibleWhere(orgId, actorId) },
+    where: { id: channelId, isPrivate: true, ...visibleWhere(orgId, actorId) },
     select: { id: true },
   });
   if (!channel) {
     return false;
   }
+
+  // 삭제된 계정의 stale 세션이 남을 채널에 밀어 넣지 못하게 한다. 여기선 스켈레톤을
+  // 만들지 않으므로(아래 참조) 부활 위험이 없어 pre-check 하나로 충분하다.
+  await assertNotTombstoned([orgId, actorId]);
 
   const membership = await prisma.membership.findFirst({
     where: { orgId, userId: inviteeId },

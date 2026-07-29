@@ -1,4 +1,9 @@
-import type { ChannelPersonView, ChannelView, ChatMessageView, ChatViewer } from '@/features/chat/types';
+import type {
+  ChannelPersonView,
+  ChannelView,
+  ChatMessageView,
+  ChatViewer,
+} from '@/features/chat/types';
 import { ChannelHeader } from './ChannelHeader';
 import { ChatRoom } from './ChatRoom';
 
@@ -8,18 +13,19 @@ export function ChatView({
   channel,
   messages,
   viewer,
-  invitable,
+  roster,
 }: {
   channel: ChannelView;
   messages: ChatMessageView[];
   viewer: ChatViewer;
-  invitable: ChannelPersonView[];
+  roster: { members: ChannelPersonView[]; invitable: ChannelPersonView[] };
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ChannelHeader channel={channel} invitable={invitable} />
-      {/* key로 채널이 바뀔 때 방 상태(메시지 스트림·입력 중인 초안)를 새로 시작한다 —
-          이전 채널의 낙관 말풍선이 다음 채널로 흘러가지 않게. */}
+      <ChannelHeader channel={channel} members={roster.members} invitable={roster.invitable} />
+      {/* key로 채널이 바뀔 때 방 상태(메시지 스트림·입력 중인 초안)를 새로 시작한다.
+          Next가 동적 세그먼트마다 서브트리를 갈아 끼우므로 지금도 리마운트되지만,
+          그 내부 동작에 실시간 스트림의 정확성을 기대지 않는다. */}
       <ChatRoom
         key={channel.id}
         channelId={channel.id}

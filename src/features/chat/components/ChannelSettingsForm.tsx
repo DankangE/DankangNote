@@ -52,7 +52,10 @@ export function ChannelSettingsForm({
         <Input
           aria-label="채널 이름"
           value={name}
-          disabled={channel.isDefault}
+          // disabled가 아니라 readOnly — 잠긴 이유(아래 안내)를 스크린리더가 읽을 수 있게
+          // 포커스는 살려 둔다.
+          readOnly={channel.isDefault}
+          aria-describedby={channel.isDefault ? 'default-channel-note' : undefined}
           placeholder="채널 이름"
           onChange={(event) => setName(event.target.value)}
           onKeyDown={(event) => {
@@ -71,9 +74,15 @@ export function ChannelSettingsForm({
         />
       </div>
       {channel.isDefault && (
-        <p className="text-xs text-muted-foreground">기본 채널은 이름을 바꿀 수 없어요.</p>
+        <p id="default-channel-note" className="text-xs text-muted-foreground">
+          기본 채널은 이름을 바꿀 수 없어요.
+        </p>
       )}
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex gap-2">
         <Button size="sm" disabled={busy} onClick={save}>
           저장

@@ -1,10 +1,6 @@
 import { redirect } from 'next/navigation';
 import { auth, currentUser } from '@clerk/nextjs/server';
-import {
-  fetchChannel,
-  fetchInvitableMembers,
-  fetchMessages,
-} from '@/features/chat/api/queries';
+import { fetchChannel, fetchChannelRoster, fetchMessages } from '@/features/chat/api/queries';
 import { ChatView } from '@/features/chat/components/ChatView';
 import { NoOrganization } from '@/lib/components/NoOrganization';
 
@@ -36,15 +32,17 @@ export default async function ChannelPage({
   const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || email || userId;
 
   const messages = await fetchMessages(channel.id);
-  // 초대 목록은 비공개 채널에서만 쓴다 — 공개 채널에선 조회 자체를 하지 않는다.
-  const invitable = channel.isPrivate ? await fetchInvitableMembers(channel.id) : [];
+  // 참여자·초대 목록은 비공개 채널의 패널에서만 쓴다 — 공개 채널에선 조회 자체를 하지 않는다.
+  const roster = channel.isPrivate
+    ? await fetchChannelRoster(channel.id)
+    : { members: [], invitable: [] };
 
   return (
     <ChatView
       channel={channel}
       messages={messages}
       viewer={{ id: userId, name, imageUrl: user?.imageUrl ?? null }}
-      invitable={invitable}
+      roster={roster}
     />
   );
 }

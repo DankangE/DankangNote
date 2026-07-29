@@ -1,5 +1,6 @@
 'use server';
 
+import { revalidatePath } from 'next/cache';
 import { guarded, parseOrError } from '@/lib/action-result';
 import { resolveOrg } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
@@ -36,17 +37,23 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
   }
 
   return guarded('chat.sendMessage', async () => {
-    const message = await chatService.createMessage(
+    const sent = await chatService.createMessage(
       org.orgId,
       org.userId,
       parsed.data.channelId,
       parsed.data.body,
     );
     // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)은 '없음'으로 답한다.
-    if (!message) {
+    if (!sent) {
       return { ok: false, error: '채널을 찾을 수 없습니다.' };
     }
-    await broadcast(message);
-    return { ok: true, data: message };
+    // 평소엔 재검증하지 않는다 — 메시지는 Pusher로 흐르고, 매 전송마다 레이아웃을 다시
+    // 그리면 낭비다. 자동 참여가 일어난 첫 전송에서만 채널 목록을 갱신한다(그 채널이
+    // '둘러보기'에서 '내 채널'로 옮겨가야 하는데, 레이아웃은 이동만으론 다시 불리지 않는다).
+    if (sent.joined) {
+      revalidatePath('/chat', 'layout');
+    }
+    await broadcast(sent.message);
+    return { ok: true, data: sent.message };
   });
 }

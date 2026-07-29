@@ -30,7 +30,15 @@ export async function fetchMessages(channelId: string): Promise<ChatMessageView[
   return chatService.listMessages(orgId, userId, channelId);
 }
 
-export async function fetchInvitableMembers(channelId: string): Promise<ChannelPersonView[]> {
+/** 비공개 채널의 초대 패널이 쓰는 두 목록 — 지금 참여자와 아직 없는 워크스페이스 멤버. */
+export async function fetchChannelRoster(channelId: string): Promise<{
+  members: ChannelPersonView[];
+  invitable: ChannelPersonView[];
+}> {
   const { orgId, userId } = await requireOrg();
-  return (await memberService.listInvitableMembers(orgId, userId, channelId)) ?? [];
+  const [members, invitable] = await Promise.all([
+    memberService.listChannelMembers(orgId, userId, channelId),
+    memberService.listInvitableMembers(orgId, userId, channelId),
+  ]);
+  return { members: members ?? [], invitable: invitable ?? [] };
 }

@@ -63,19 +63,20 @@ export function CreateChannelForm({ onClose }: { onClose: () => void }) {
         placeholder="주제 (선택)"
         onChange={(event) => setTopic(event.target.value)}
       />
-      <Toggle
-        variant="outline"
-        size="sm"
-        pressed={isPrivate}
-        onPressedChange={setIsPrivate}
-        aria-label="비공개 채널"
-      >
+      {/* aria-label을 두지 않는다 — 보이는 글씨가 그대로 접근 가능한 이름이어야 하고
+          (WCAG 2.5.3), 눌림 상태는 Toggle의 aria-pressed가 이미 전달한다. */}
+      <Toggle variant="outline" size="sm" pressed={isPrivate} onPressedChange={setIsPrivate}>
         <Lock aria-hidden />
         {isPrivate ? '비공개 — 초대한 멤버만' : '공개 — 워크스페이스 전체'}
       </Toggle>
-      {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex gap-2">
-        <Button size="sm" className="flex-1" disabled={busy} onClick={submit}>
+        {/* 이름이 비면 제출을 조용히 무시하는 대신 버튼을 잠근다(전송 버튼과 같은 규칙). */}
+        <Button size="sm" className="flex-1" disabled={busy || !name.trim()} onClick={submit}>
           만들기
         </Button>
         <Button size="sm" variant="ghost" onClick={onClose}>

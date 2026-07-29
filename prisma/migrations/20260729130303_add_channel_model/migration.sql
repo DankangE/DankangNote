@@ -61,11 +61,12 @@ INSERT INTO "Channel" ("id", "orgId", "name", "topic", "isPrivate", "isDefault",
 SELECT gen_random_uuid()::text, "id", '일반', '워크스페이스 멤버 전체 대화', false, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM "Organization";
 
+-- 컬럼은 nullable로 먼저 붙인다 — 기존 행에 값이 없어 NOT NULL로는 못 만든다.
+ALTER TABLE "ChatMessage" ADD COLUMN "channelId" TEXT;
+
 -- 백필 ②: 기존 메시지를 자기 org의 기본 채널로 옮긴다. ChatMessage.orgId에는 이미
 -- FK(KAN-19)가 있어 org 없는 고아 메시지는 존재할 수 없고, 위 INSERT가 모든 org를 덮으므로
 -- 여기서 채널을 못 찾는 행은 없다 — 그래서 곧바로 SET NOT NULL을 걸 수 있다.
-ALTER TABLE "ChatMessage" ADD COLUMN "channelId" TEXT;
-
 UPDATE "ChatMessage" AS m
 SET "channelId" = c."id"
 FROM "Channel" AS c

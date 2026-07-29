@@ -50,13 +50,23 @@ export async function listMessages(
   return messages.map((message) => toView(message, authorById.get(message.authorId) ?? null));
 }
 
+/**
+ * 전송 결과. joined는 이번 전송이 슬랙식 자동 참여를 일으켰는지 — 액션이 이때만 채널
+ * 목록을 재검증한다. 없으면 사이드바가 그 채널을 계속 '둘러보기'에 둔 채 굳는다
+ * (목록은 레이아웃이 그리는데 레이아웃은 페이지 이동만으로 다시 안 불린다).
+ */
+export interface SendResult {
+  message: ChatMessageView;
+  joined: boolean;
+}
+
 /** 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다. */
 export async function createMessage(
   orgId: string,
   authorId: string,
   channelId: string,
   body: string,
-): Promise<ChatMessageView | null> {
+): Promise<SendResult | null> {
   // 대상 채널이 이 워크스페이스의 것이고 내가 접근할 수 있는지 — 전송의 테넌트 경계다.
   const channel = await prisma.channel.findFirst({
     where: { id: channelId, ...visibleWhere(orgId, authorId) },
@@ -81,19 +91,23 @@ export async function createMessage(
   // ON CONFLICT DO NOTHING으로 아무 일도 일어나지 않는다.
   // userSkeleton이 필요한 것도 이 문장 때문이다 — ChannelMember.userId에는 FK가 있어,
   // user.created 웹훅이 늦은 새 멤버의 첫 발언이 FK 위반으로 죽지 않게 한다.
-  const [, , message] = await prisma.$transaction([
+  const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
     prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
     prisma.chatMessage.create({ data: { orgId, channelId, authorId, body } }),
   ]);
+  const joined = join.count > 0;
 
   // post-check — 방금 되살렸을 수 있는 org·user를 자가 정리한다. org tombstone이면 cascade로
   // 메시지까지 지워지지만, user tombstone 경로에서는 메시지가 남으므로 명시적으로 지운다.
+  // 참여 행은 이번에 만든 것만 되돌린다(원래 멤버였다면 건드릴 이유가 없다).
   await assertNotTombstoned([orgId, authorId], async () => {
     await prisma.chatMessage.deleteMany({ where: { id: message.id } });
-    await prisma.channelMember.deleteMany({ where: { channelId, userId: authorId } });
+    if (joined) {
+      await prisma.channelMember.deleteMany({ where: { channelId, userId: authorId } });
+    }
   });
 
   const author = await prisma.user.findUnique({ where: { id: authorId } });
-  return toView(message, author);
+  return { message: toView(message, author), joined };
 }

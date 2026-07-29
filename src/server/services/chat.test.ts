@@ -92,11 +92,14 @@ describe('비공개 채널 (KAN-28)', () => {
     const open = await prisma.channel.create({ data: { orgId: ORG_A, name: '잡담' } });
     expect(await prisma.channelMember.count({ where: { channelId: open.id } })).toBe(0);
 
-    await createMessage(ORG_A, USER_OTHER, open.id, '안녕하세요');
+    const first = await createMessage(ORG_A, USER_OTHER, open.id, '안녕하세요');
 
     expect(
       await prisma.channelMember.count({ where: { channelId: open.id, userId: USER_OTHER } }),
     ).toBe(1);
+    // joined는 액션이 채널 목록을 재검증할지 정하는 신호다 — 처음에만 true여야 한다.
+    expect(first?.joined).toBe(true);
+    expect((await createMessage(ORG_A, USER_OTHER, open.id, '또 왔어요'))?.joined).toBe(false);
   });
 });
 
@@ -167,9 +170,9 @@ describe('테넌트 수명 (KAN-19 · KAN-28)', () => {
   it('사용자 미러가 아직 없어도 전송된다 (웹훅 지연 경합)', async () => {
     // user.created가 아직 안 온 새 멤버의 첫 발언. ChannelMember FK 때문에 스켈레톤이
     // 필요하다 — 없으면 자동 참여가 FK 위반으로 죽는다.
-    const message = await createMessage(ORG_A, 'user_brand_new', CHANNEL_A, '부트스트랩');
+    const sent = await createMessage(ORG_A, 'user_brand_new', CHANNEL_A, '부트스트랩');
 
-    expect(message?.body).toBe('부트스트랩');
+    expect(sent?.message.body).toBe('부트스트랩');
     expect(await prisma.user.count({ where: { id: 'user_brand_new' } })).toBe(1);
     expect(
       await prisma.channelMember.count({ where: { channelId: CHANNEL_A, userId: 'user_brand_new' } }),

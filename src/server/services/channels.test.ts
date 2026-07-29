@@ -14,8 +14,10 @@ import {
   inviteToChannel,
   joinChannel,
   leaveChannel,
+  listChannelMembers,
   listInvitableMembers,
 } from './channel-members';
+import { deleteMembership } from './clerk-sync';
 import {
   createChannel,
   deleteChannel,
@@ -72,6 +74,21 @@ describe('기본 채널 부트스트랩', () => {
 
     expect(await prisma.organization.count({ where: { id: ORG_A } })).toBe(1);
     expect(await prisma.channel.count({ where: { id: channelId } })).toBe(1);
+  });
+
+  it("누가 '일반'이라는 이름을 먼저 가져갔어도 기본 채널이 보장된다", async () => {
+    // UI 흐름으론 불가능하지만 Server Action 직접 호출로는 가능한 경로. 그대로 두면
+    // 기본 채널을 영영 만들 수 없어 그 워크스페이스의 /chat이 통째로 죽는다.
+    const usurper = await makeChannel(ORG_A, USER_OTHER, '일반');
+
+    const channelId = await ensureDefaultChannel(ORG_A, USER_OWNER);
+
+    expect(channelId).toBe(usurper);
+    expect(await getChannel(ORG_A, owner, channelId)).toMatchObject({
+      isDefault: true,
+      isMember: true,
+    });
+    expect(await prisma.channel.count({ where: { orgId: ORG_A } })).toBe(1);
   });
 });
 
@@ -144,11 +161,45 @@ describe('비공개 채널 접근', () => {
     expect(await getChannel(ORG_A, other, secret)).toMatchObject({ isMember: true });
   });
 
+  it('마지막 참여자는 나갈 수 없다 — 아무도 못 보는 채널을 만들지 않는다', async () => {
+    const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
+
+    expect(await leaveChannel(ORG_A, USER_OWNER, secret)).toBe(false);
+    expect(await getChannel(ORG_A, owner, secret)).toMatchObject({ isMember: true });
+
+    // 둘 이상이면 나갈 수 있다.
+    await seedMemberships();
+    await inviteToChannel(ORG_A, USER_OWNER, secret, USER_OTHER);
+    expect(await leaveChannel(ORG_A, USER_OWNER, secret)).toBe(true);
+    expect(await getChannel(ORG_A, owner, secret)).toBeNull();
+  });
+
   it('참여자가 아니면 초대할 수 없다', async () => {
     const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
     await seedMemberships();
 
     expect(await inviteToChannel(ORG_A, USER_OTHER, secret, USER_ADMIN)).toBe(false);
+  });
+
+  it('공개 채널에는 초대할 수 없다 — 참여는 스스로 하는 것이다', async () => {
+    const open = await makeChannel(ORG_A, USER_OWNER, '잡담');
+    await seedMemberships();
+
+    expect(await inviteToChannel(ORG_A, USER_OWNER, open, USER_OTHER)).toBe(false);
+    expect(await prisma.channelMember.count({ where: { channelId: open, userId: USER_OTHER } })).toBe(
+      0,
+    );
+  });
+
+  it('삭제된 계정의 stale 세션은 초대할 수 없다', async () => {
+    const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
+    await seedMemberships();
+    await prisma.clerkTombstone.create({ data: { id: USER_OWNER } });
+
+    await expect(inviteToChannel(ORG_A, USER_OWNER, secret, USER_OTHER)).rejects.toThrow();
+    expect(
+      await prisma.channelMember.count({ where: { channelId: secret, userId: USER_OTHER } }),
+    ).toBe(0);
   });
 
   it('다른 워크스페이스 사람은 초대할 수 없다', async () => {
@@ -193,6 +244,17 @@ describe('참여 / 나가기', () => {
     expect((await listInvitableMembers(ORG_A, USER_OWNER, secret))?.map((p) => p.id)).toEqual([
       USER_OTHER,
     ]);
+    expect((await listChannelMembers(ORG_A, USER_OWNER, secret))?.map((p) => p.id)).toEqual([
+      USER_OWNER,
+    ]);
+  });
+
+  it('참여자·초대 후보 목록은 접근 권한이 없으면 null이다', async () => {
+    await seedMemberships();
+    const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
+
+    expect(await listChannelMembers(ORG_A, USER_OTHER, secret)).toBeNull();
+    expect(await listInvitableMembers(ORG_A, USER_OTHER, secret)).toBeNull();
   });
 });
 
@@ -256,6 +318,22 @@ describe('수명 정책 · tombstone 가드', () => {
     expect(await prisma.channel.count({ where: { orgId: ORG_A } })).toBe(0);
     expect(await prisma.channelMember.count({ where: { userId: USER_OWNER } })).toBe(0);
     expect(await prisma.channel.count({ where: { orgId: ORG_B } })).toBe(1);
+  });
+
+  it('조직에서 빠지면 그 조직 채널의 참여도 사라진다 (재초대 시 접근 부활 방지)', async () => {
+    await seedMemberships();
+    const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
+    await inviteToChannel(ORG_A, USER_OWNER, secret, USER_OTHER);
+    // 다른 워크스페이스의 참여는 건드리면 안 된다.
+    const foreign = await makeChannel(ORG_B, USER_OTHER, 'b-채널');
+
+    await deleteMembership('mem_a_other');
+
+    expect(await getChannel(ORG_A, other, secret)).toBeNull();
+    expect(await prisma.channelMember.count({ where: { channelId: secret } })).toBe(1);
+    expect(
+      await prisma.channelMember.count({ where: { channelId: foreign, userId: USER_OTHER } }),
+    ).toBe(1);
   });
 
   it('사용자를 지우면 참여만 사라지고 채널은 남는다', async () => {

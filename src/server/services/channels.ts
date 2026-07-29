@@ -128,6 +128,18 @@ export async function ensureDefaultChannel(orgId: string, userId: string): Promi
     }),
   ]);
 
+  // createMany가 스킵됐는데 기본 채널이 없다면 누군가 '일반'이라는 이름을 먼저 가져간
+  // 것이다(UI 흐름으론 불가능하지만 Server Action 직접 호출로는 가능). 그대로 두면 아래
+  // 조회가 throw하면서 그 워크스페이스의 /chat이 영구히 500이 되고, 이름이 이미 점유돼
+  // 스스로 회복할 수도 없다 — 그 채널을 기본 채널로 승격시켜 불변식을 되돌린다.
+  // 정상 경로에선 매칭이 0건이다(기본 채널의 이름은 언제나 '일반'이고 [orgId,name]은 유일).
+  if (created.count === 0) {
+    await prisma.channel.updateMany({
+      where: { orgId, name: DEFAULT_CHANNEL_NAME, isDefault: false },
+      data: { isDefault: true },
+    });
+  }
+
   const channel = await prisma.channel.findFirstOrThrow({
     where: { orgId, isDefault: true },
     select: { id: true },
@@ -224,8 +236,12 @@ export async function updateChannel(
 
   try {
     // 권한 조건을 where에 실어 원자적으로 반영한다 — 위 조회는 사유 구분용이다(KAN-18).
+    // 이름을 바꾸는 요청이면 '기본 채널 아님'도 where에 함께 싣는다(deleteChannel과 같은 형태).
     const { count } = await prisma.channel.updateMany({
-      where: manageWhere(orgId, actor, channelId),
+      where: {
+        ...manageWhere(orgId, actor, channelId),
+        ...(input.name === current.name ? {} : { isDefault: false }),
+      },
       data: { name: input.name, topic: input.topic },
     });
     if (count === 0) {

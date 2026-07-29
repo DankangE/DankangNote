@@ -224,8 +224,25 @@ export async function deleteOrganization(id: string): Promise<void> {
 }
 
 export async function deleteMembership(id: string): Promise<void> {
+  // 조직에서 빠지면 그 조직 채널의 참여도 함께 끝난다(KAN-28). ChannelMember는 Channel과
+  // User에만 매달려 있어서 여기서 지우지 않으면 조직을 떠난 뒤에도 행이 남고, 나중에 같은
+  // 조직에 재초대되는 순간 비공개 채널 접근이 조용히 되살아난다 — 그 행이 곧 접근 권한이다.
+  // '누가 어느 조직에서 빠졌는지'는 행에만 있으므로 지우기 전에 읽어 둔다. 삭제 두 개를 한
+  // 트랜잭션에 묶어, 중간에 죽어도 '멤버십은 없는데 채널 참여만 남은' 상태가 안 생긴다.
+  const membership = await prisma.membership.findUnique({
+    where: { id },
+    select: { orgId: true, userId: true },
+  });
+
   await prisma.$transaction([
     prisma.clerkTombstone.createMany({ data: [{ id }], skipDuplicates: true }),
+    ...(membership
+      ? [
+          prisma.channelMember.deleteMany({
+            where: { userId: membership.userId, channel: { orgId: membership.orgId } },
+          }),
+        ]
+      : []),
     prisma.membership.deleteMany({ where: { id } }),
   ]);
   await prisma.membership.deleteMany({ where: { id } });

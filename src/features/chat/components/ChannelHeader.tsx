@@ -22,9 +22,11 @@ type Panel = 'none' | 'settings' | 'invite';
 // 노출 판단은 편의일 뿐이고 강제는 서버가 한다(canManage도 서버가 계산해 내려준 값).
 export function ChannelHeader({
   channel,
+  members,
   invitable,
 }: {
   channel: ChannelView;
+  members: ChannelPersonView[];
   invitable: ChannelPersonView[];
 }) {
   const router = useRouter();
@@ -33,9 +35,11 @@ export function ChannelHeader({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // navigateTo가 있으면 이동만 한다 — push 뒤에 refresh까지 하면 착지한 /chat의
+  // ensureDefaultChannel 트랜잭션이 두 번 돈다.
   async function run(
     action: Promise<ActionResult<unknown>>,
-    onSuccess?: () => void,
+    navigateTo?: string,
   ): Promise<void> {
     setBusy(true);
     setError(null);
@@ -45,7 +49,10 @@ export function ChannelHeader({
         setError(result.error);
         return;
       }
-      onSuccess?.();
+      if (navigateTo) {
+        router.push(navigateTo);
+        return;
+      }
       // 목록·헤더는 서버 컴포넌트가 그린다 — 액션의 revalidate를 화면에 당겨온다.
       router.refresh();
     } catch {
@@ -104,7 +111,11 @@ export function ChannelHeader({
               variant="ghost"
               size="sm"
               disabled={busy}
-              onClick={() => run(leaveChannelAction({ id: channel.id }))}
+              // 비공개 채널은 나가는 순간 안 보이게 되므로 기본 채널로 데리고 나간다.
+              // 공개 채널은 나가도 계속 읽을 수 있어 그 자리에 머문다.
+              onClick={() =>
+                run(leaveChannelAction({ id: channel.id }), channel.isPrivate ? '/chat' : undefined)
+              }
             >
               나가기
             </Button>
@@ -117,13 +128,8 @@ export function ChannelHeader({
                   variant="destructive"
                   size="sm"
                   disabled={busy}
-                  onClick={() =>
-                    run(deleteChannelAction({ id: channel.id }), () => {
-                      setConfirmingDelete(false);
-                      // 삭제된 채널을 계속 보고 있을 수 없다 — 기본 채널로 돌아간다.
-                      router.push('/chat');
-                    })
-                  }
+                  // 삭제된 채널을 계속 보고 있을 수 없다 — 기본 채널로 돌아간다.
+                  onClick={() => run(deleteChannelAction({ id: channel.id }), '/chat')}
                 >
                   삭제 확정
                 </Button>
@@ -139,12 +145,18 @@ export function ChannelHeader({
         </div>
       </div>
 
-      {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+      {error && (
+        <p role="alert" className="mt-2 text-sm text-destructive">
+          {error}
+        </p>
+      )}
 
       {panel === 'settings' && (
         <ChannelSettingsForm channel={channel} onClose={() => setPanel('none')} />
       )}
-      {panel === 'invite' && <ChannelInvitePanel channelId={channel.id} candidates={invitable} />}
+      {panel === 'invite' && (
+        <ChannelInvitePanel channelId={channel.id} members={members} candidates={invitable} />
+      )}
     </header>
   );
 }
