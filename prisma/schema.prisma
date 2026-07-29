@@ -44,9 +44,11 @@ model User {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  memberships Membership[]
-  notes       Note[]
-  boardCards  BoardCard[]
+  memberships     Membership[]
+  notes           Note[]
+  boardCards      BoardCard[]
+  createdChannels Channel[]
+  channelMembers  ChannelMember[]
 }
 
 /// Clerk 조직(=워크스페이스) 미러. id는 Clerk org id(org_...). organization.* 이벤트로 동기화.
@@ -65,10 +67,62 @@ model Organization {
   boardColumns BoardColumn[]
   boardCards   BoardCard[]
   chatMessages ChatMessage[]
+  channels     Channel[]
 }
 
-/// 워크스페이스 채팅 메시지 (워크스페이스당 방 1개, KAN-15).
-/// orgId는 Note·BoardColumn과 같은 FK Cascade — 조직 삭제 시 메시지도 파기된다(KAN-19).
+/// 채팅 채널 (KAN-28) — '워크스페이스당 방 1개'(KAN-15)를 대체한다.
+/// orgId Cascade는 Note·BoardColumn과 같은 테넌트 수명 정책이다.
+/// name은 org 안에서 유일하며 소문자로 정규화해 저장한다 — 'General'과 'general'이 다른
+/// 채널로 갈라지면 슬랙식 `#이름` 멘탈 모델이 깨진다(정규화는 validation.ts).
+model Channel {
+  id    String  @id @default(cuid())
+  orgId String
+  name  String
+  /// 채널 주제 — 헤더 부제로 쓰는 한 줄 설명.
+  topic String?
+  /// 비공개 채널은 ChannelMember 행이 곧 접근 권한이다(공개 채널은 조직 멤버 전체 공개).
+  /// 생성 후 공개/비공개 전환은 지원하지 않는다 — 비공개→공개는 과거 대화가 통째로
+  /// 노출되는 되돌릴 수 없는 사고라 별도 확인 UX 없이 열어둘 수 없다.
+  isPrivate Boolean @default(false)
+  /// 워크스페이스의 기본 채널(첫 착지점). 삭제할 수 없다 — 채널이 0개인 상태를 만들지
+  /// 않기 위한 앵커이고, ensureDefaultChannel이 org당 정확히 하나를 보장한다.
+  isDefault Boolean @default(false)
+  /// 생성자 Clerk user id. 채널 수정·삭제 권한의 근거(작성자 본인 또는 org:admin — KAN-18
+  /// 노트 규칙과 같다). 탈퇴 시 null이 되며, 그때는 admin만 관리할 수 있다.
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  members      ChannelMember[]
+  messages     ChatMessage[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([createdById])
+}
+
+/// 채널 참여(슬랙식). 비공개 채널에선 이 행이 접근 권한 그 자체이고, 공개 채널에선
+/// 사이드바 '내 채널' 구성용이다 — 공개 채널의 열람·전송은 조직 멤버 누구나 가능하다.
+/// userId는 ChatMessage.authorId와 달리 FK를 둔다: 참여는 '지금 소속'이라 계정이 사라지면
+/// 함께 사라지는 게 맞고(Cascade), 대화 로그처럼 보존할 이력이 아니다.
+model ChannelMember {
+  channelId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([channelId, userId])
+  @@index([userId])
+}
+
+/// 채널 메시지 (KAN-15 → KAN-28에서 채널 스코프로).
+/// channelId Cascade — 채널 삭제 시 그 대화도 함께 파기된다. orgId는 채널을 거치지 않는
+/// 테넌트 수준 쿼리(격리 어서션·후속 통합 검색)를 위해 남긴 비정규화 컬럼이며, 조직 삭제
+/// 시의 Cascade 경로도 그대로다(KAN-19).
 /// 웹훅이 아직 org 미러를 안 채운 시점의 전송은 createMessage의 스켈레톤 upsert가 흡수한다.
 /// authorId는 Clerk user id지만 FK를 두지 않는다 — 전송이 User 미러의 동기화 순서에 묶이면
 /// 안 되고, 여기에 SetNull FK를 달면 작성자 탈퇴 시 '누가 말했는지'가 사라져 대화 로그가
@@ -76,13 +130,16 @@ model Organization {
 model ChatMessage {
   id        String   @id @default(cuid())
   orgId     String
+  channelId String
   authorId  String
   body      String
   createdAt DateTime @default(now())
 
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
 
   @@index([orgId, createdAt])
+  @@index([channelId, createdAt])
 }
 
 /// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.

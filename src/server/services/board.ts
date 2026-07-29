@@ -2,6 +2,7 @@ import 'server-only';
 
 import { prisma } from '@/server/db';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
+import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
 
 // 보드는 워크스페이스당 1개(Board 모델 없이 orgId 직스코프, KAN-17). 뷰 타입은 화면에
 // 필요한 최소 필드만 노출한다(Prisma 행을 그대로 흘리지 않는다).
@@ -21,14 +22,6 @@ export interface BoardColumnView {
 }
 
 export type BoardView = BoardColumnView[];
-
-// 스켈레톤 생성 — webhook이 아직 org/user 미러를 안 채웠어도 FK가 성립하게 한다
-// (notes.createNote와 동일 패턴). createMany+skipDuplicates는 네이티브 ON CONFLICT
-// DO NOTHING으로 컴파일돼 동시 생성에도 안전하다.
-const orgSkeleton = (orgId: string) =>
-  prisma.organization.createMany({ data: [{ id: orgId, name: orgId }], skipDuplicates: true });
-const userSkeleton = (userId: string) =>
-  prisma.user.createMany({ data: [{ id: userId }], skipDuplicates: true });
 
 // 다음 append 위치 = max(position)+1. 행이 없으면 0.
 async function nextPosition(

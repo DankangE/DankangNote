@@ -2,12 +2,23 @@ import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import type { ChatMessageView } from '@/features/chat/types';
 
-// 타임존 고정 — 서버/클라 동일 결과라 hydration이 안전하다 (NoteCard와 같은 이유).
-const timeFormat = new Intl.DateTimeFormat('ko-KR', {
+// 타임존 고정 + 오전/오후는 직접 붙인다. 타임존만 고정해선 hydration이 안전하지 않다 —
+// 'ko-KR'의 오전/오후 표기는 CLDR 판본에 따라 달라져서, 서버 Node의 ICU와 브라우저의 ICU가
+// 다르면 같은 시각이 '오후 10:25'와 'PM 10:25'로 갈린다(실측: Node 22/ICU 78 = PM,
+// Chrome = 오후). en-US의 AM/PM은 판본이 달라도 안 흔들리므로 그걸로 받아 한국어로 옮긴다.
+const timeParts = new Intl.DateTimeFormat('en-US', {
   timeZone: 'Asia/Seoul',
   hour: '2-digit',
   minute: '2-digit',
+  hour12: true,
 });
+
+function formatClock(date: Date): string {
+  const parts = timeParts.formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? '';
+  return `${part('dayPeriod') === 'AM' ? '오전' : '오후'} ${part('hour')}:${part('minute')}`;
+}
 
 type RoomMessage = ChatMessageView & { pending?: boolean };
 
@@ -15,7 +26,7 @@ type RoomMessage = ChatMessageView & { pending?: boolean };
 // 접힌 행은 hover 시 거터에 시각을 보여준다.
 export function ChatMessageRow({ message, grouped }: { message: RoomMessage; grouped: boolean }) {
   // 낙관 전송 중인 행은 시각 대신 상태를 보여준다(거터에서는 빈칸).
-  const clock = timeFormat.format(new Date(message.createdAt));
+  const clock = formatClock(new Date(message.createdAt));
   const time = message.pending ? '전송 중…' : clock;
 
   return (

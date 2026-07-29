@@ -1,28 +1,15 @@
-import { auth, currentUser } from '@clerk/nextjs/server';
-import { fetchMessages } from '@/features/chat/api/queries';
-import { ChatView } from '@/features/chat/components/ChatView';
+import { redirect } from 'next/navigation';
+import { auth } from '@clerk/nextjs/server';
+import { ensureDefaultChannelId } from '@/features/chat/api/queries';
 import { NoOrganization } from '@/lib/components/NoOrganization';
 
+// 채팅의 착지점. 워크스페이스의 기본 채널을 보장하고 그리로 보낸다 —
+// 새 워크스페이스의 첫 접속에서 채널이 스스로 부트스트랩되는 지점이기도 하다.
 export default async function ChatPage() {
-  // auth.protect()는 미인증이면 sign-in으로 redirect하고, 인증되면 auth 객체를 반환한다.
-  const { userId, orgId } = await auth.protect();
+  const { orgId } = await auth.protect();
   if (!orgId) {
     return <NoOrganization />;
   }
 
-  // 낙관 전송 말풍선에 쓸 내 표시 정보 — 미러 테이블이 아직 동기화 전일 수 있어
-  // Clerk 세션에서 직접 읽는다.
-  const user = await currentUser();
-  const email = user?.emailAddresses.find((address) => address.id === user.primaryEmailAddressId)
-    ?.emailAddress;
-  const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || email || userId;
-
-  const messages = await fetchMessages();
-  return (
-    <ChatView
-      messages={messages}
-      viewer={{ id: userId, name, imageUrl: user?.imageUrl ?? null }}
-      orgId={orgId}
-    />
-  );
+  redirect(`/chat/${await ensureDefaultChannelId()}`);
 }

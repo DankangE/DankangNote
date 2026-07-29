@@ -120,18 +120,22 @@ describe('부활 차단 — tombstone (KAN-12)', () => {
     expect(await prisma.clerkTombstone.count({ where: { id: USER_OWNER } })).toBe(1);
   });
 
-  it('조직 삭제는 그 조직의 노트·메시지·보드까지 파기한다', async () => {
+  it('조직 삭제는 그 조직의 노트·채널·메시지·보드까지 파기한다', async () => {
     await upsertOrganization(orgPayload({ id: ORG_A, updatedAt: EARLIER, name: '워크스페이스' }));
     await upsertUser(userPayload({ id: USER_OWNER, updatedAt: EARLIER }));
     await prisma.note.create({ data: { orgId: ORG_A, authorId: USER_OWNER, title: '노트' } });
+    const channel = await prisma.channel.create({
+      data: { orgId: ORG_A, name: '일반', isDefault: true },
+    });
     await prisma.chatMessage.create({
-      data: { orgId: ORG_A, authorId: USER_OWNER, body: '메시지' },
+      data: { orgId: ORG_A, channelId: channel.id, authorId: USER_OWNER, body: '메시지' },
     });
     await prisma.boardColumn.create({ data: { orgId: ORG_A, name: '컬럼', position: 0 } });
 
     await deleteOrganization(ORG_A);
 
     expect(await prisma.note.count()).toBe(0);
+    expect(await prisma.channel.count()).toBe(0);
     expect(await prisma.chatMessage.count()).toBe(0);
     expect(await prisma.boardColumn.count()).toBe(0);
     // 사용자 미러는 조직에 매달려 있지 않다 — 다른 워크스페이스에도 속할 수 있다.
