@@ -63,6 +63,7 @@ export function ChannelHeader({
   }
 
   const Icon = channel.isPrivate ? Lock : Hash;
+  const lastPrivateMember = channel.isPrivate && channel.memberCount <= 1;
 
   return (
     <header className="shrink-0 border-b px-4 py-3 md:px-6">
@@ -106,7 +107,9 @@ export function ChannelHeader({
               설정
             </Button>
           )}
-          {channel.isMember && !channel.isDefault && (
+          {/* 비공개 채널의 마지막 참여자는 나갈 수 없다(나가면 아무도 못 보는 채널이 된다) —
+              서버가 거부하는 조건을 버튼 노출에도 그대로 반영해 눌러보고 알게 하지 않는다. */}
+          {channel.isMember && !channel.isDefault && !lastPrivateMember && (
             <Button
               variant="ghost"
               size="sm"

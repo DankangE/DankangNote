@@ -128,8 +128,12 @@ export async function leaveChannelAction(input: unknown): Promise<ActionResult<{
   return guarded('chat.leaveChannel', async () => {
     const ok = await memberService.leaveChannel(org.orgId, org.userId, parsed.data.id);
     if (!ok) {
-      // 참여 중이 아니거나 기본 채널이거나 — 사용자가 할 수 있는 일은 같으므로 한 문구로.
-      return { ok: false, error: '나갈 수 없는 채널이에요. 기본 채널은 나갈 수 없습니다.' };
+      // 참여 중이 아니거나, 기본 채널이거나, 비공개 채널의 마지막 참여자이거나 —
+      // 어느 쪽이든 사용자가 할 수 있는 일은 같으므로 한 문구로 안내한다.
+      return {
+        ok: false,
+        error: '나갈 수 없는 채널이에요. 기본 채널과 비공개 채널의 마지막 참여자는 나갈 수 없습니다.',
+      };
     }
     revalidateChannels();
     return { ok: true, data: { id: parsed.data.id } };
