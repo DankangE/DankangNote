@@ -1,25 +1,41 @@
 import 'server-only';
 
 import { prisma } from '@/server/db';
-import type { ChatMessage, User } from '@/server/generated/prisma/client';
+import type { Prisma, User } from '@/server/generated/prisma/client';
 import { visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
 import type { ChatMessageView } from '@/features/chat/types';
 
+// 답글 수는 매번 세지 않고 관계 카운트로 함께 받는다 — 루트 목록 한 페이지에 대해 상관
+// 서브쿼리 한 번이라, 별도 groupBy 왕복이나 비정규화 카운터(드리프트)보다 낫다.
+const WITH_REPLY_COUNT = { _count: { select: { replies: true } } } as const;
+
+type MessageRow = Prisma.ChatMessageGetPayload<{ include: typeof WITH_REPLY_COUNT }>;
+
 // 작성자 표시는 Clerk 미러 User에서 읽는다 — webhook 동기화 전이면 id로 대체.
 // ChatMessage.authorId에 FK를 안 두는 이유이기도 하다(전송이 동기화 순서에 안 묶이게).
-function toView(message: ChatMessage, author: User | null): ChatMessageView {
+function toView(message: MessageRow, author: User | null): ChatMessageView {
   return {
     id: message.id,
     channelId: message.channelId,
+    parentId: message.parentId,
     authorId: message.authorId,
     authorName: author ? displayName(author) : message.authorId,
     authorImageUrl: author?.imageUrl ?? null,
     body: message.body,
     createdAt: message.createdAt.toISOString(),
+    replyCount: message._count.replies,
   };
+}
+
+// 여러 메시지의 작성자를 한 번에 조인해 뷰로 만든다(N+1 방지).
+async function toViews(messages: MessageRow[]): Promise<ChatMessageView[]> {
+  const authorIds = [...new Set(messages.map((message) => message.authorId))];
+  const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
+  const authorById = new Map(authors.map((author) => [author.id, author]));
+  return messages.map((message) => toView(message, authorById.get(message.authorId) ?? null));
 }
 
 export const MESSAGE_PAGE_SIZE = 50;
@@ -51,14 +67,27 @@ export interface MessagePage {
  * 채널 접근 권한을 where에 실어 조회 자체가 매칭되지 않게 한다 — 남의 워크스페이스나
  * 참여하지 않은 비공개 채널의 id를 알아도 빈 배열만 나온다(쿼리 수준 격리).
  */
-export async function listMessages(
+export function listMessages(
   orgId: string,
   userId: string,
   channelId: string,
   before?: string,
 ): Promise<MessagePage> {
-  const scope = { orgId, channel: { id: channelId, ...visibleWhere(orgId, userId) } };
+  // parentId: null — 답글은 채널 본문에 섞이지 않는다. 스레드 패널에서만 보인다(KAN-30).
+  return pageOf(
+    { orgId, parentId: null, channel: { id: channelId, ...visibleWhere(orgId, userId) } },
+    before,
+  );
+}
 
+/**
+ * 키셋 페이지 조회의 공용 몸통. scope는 그 자체로 접근 판정이 끝난 where여야 한다 —
+ * 커서 앵커도 같은 scope로 찾으므로, scope가 새면 커서로도 샌다.
+ */
+async function pageOf(
+  scope: Prisma.ChatMessageWhereInput,
+  before: string | undefined,
+): Promise<MessagePage> {
   // 커서는 메시지 id 하나만 받고 기준 시각은 서버가 되찾는다 — 클라이언트가 보낸
   // 타임스탬프를 믿으면 그걸 조작해 페이지 경계를 임의로 옮길 수 있다. 조회 자체를 같은
   // 스코프로 걸어, 남의 채널 메시지 id를 커서로 밀어 넣어도 앵커를 얻지 못한다.
@@ -106,19 +135,43 @@ export async function listMessages(
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     // 한 건 더 떠서 '더 있는지'를 별도 count 없이 판정한다.
     take: MESSAGE_PAGE_SIZE + 1,
+    include: WITH_REPLY_COUNT,
   });
 
   const hasMore = rows.length > MESSAGE_PAGE_SIZE;
   const messages = (hasMore ? rows.slice(0, MESSAGE_PAGE_SIZE) : rows).reverse();
 
-  const authorIds = [...new Set(messages.map((message) => message.authorId))];
-  const authors = await prisma.user.findMany({ where: { id: { in: authorIds } } });
-  const authorById = new Map(authors.map((author) => [author.id, author]));
+  return { messages: await toViews(messages), hasMore };
+}
 
-  return {
-    messages: messages.map((message) => toView(message, authorById.get(message.authorId) ?? null)),
-    hasMore,
-  };
+/** 스레드 = 루트 메시지 + 그 답글 한 페이지. */
+export interface ThreadView {
+  root: ChatMessageView;
+  page: MessagePage;
+}
+
+/**
+ * 스레드 한 건. 접근 판정은 루트 메시지에서 한 번 끝난다 — 루트가 보이면 그 답글도
+ * 보이는 것이 스레드의 정의이므로, 답글 조회는 parentId만으로 스코프해도 샐 곳이 없다.
+ * 답글이 많으면 채널 본문과 같은 키셋 커서로 위쪽을 더 불러온다.
+ */
+export async function listThread(
+  orgId: string,
+  userId: string,
+  rootId: string,
+  before?: string,
+): Promise<ThreadView | null> {
+  const root = await prisma.chatMessage.findFirst({
+    // parentId: null — 답글의 id로는 스레드를 열 수 없다(스레드는 1단계뿐이다).
+    where: { id: rootId, parentId: null, orgId, channel: visibleWhere(orgId, userId) },
+    include: WITH_REPLY_COUNT,
+  });
+  if (!root) {
+    return null;
+  }
+
+  const [rootView] = await toViews([root]);
+  return { root: rootView, page: await pageOf({ parentId: rootId }, before) };
 }
 
 /**
@@ -131,12 +184,18 @@ export interface SendResult {
   joined: boolean;
 }
 
-/** 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다. */
+/**
+ * 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다.
+ * parentId가 있으면 그 메시지의 답글이 된다. 부모는 **같은 채널의 루트 메시지**여야 한다:
+ * 다른 채널의 메시지에 답글을 달면 그 답글은 어느 채널에도 안 보이는 고아가 되고,
+ * 답글에 답글을 허용하면 화면에 없는 2단계 스레드가 데이터에만 생긴다(슬랙과 같은 1단계).
+ */
 export async function createMessage(
   orgId: string,
   authorId: string,
   channelId: string,
   body: string,
+  parentId?: string,
 ): Promise<SendResult | null> {
   // 대상 채널이 이 워크스페이스의 것이고 내가 접근할 수 있는지 — 전송의 테넌트 경계다.
   const channel = await prisma.channel.findFirst({
@@ -145,6 +204,17 @@ export async function createMessage(
   });
   if (!channel) {
     return null;
+  }
+
+  if (parentId) {
+    // channelId까지 where에 실어, 접근할 수 있는 다른 채널의 메시지도 부모가 될 수 없게 한다.
+    const parent = await prisma.chatMessage.findFirst({
+      where: { id: parentId, channelId, orgId, parentId: null },
+      select: { id: true },
+    });
+    if (!parent) {
+      return null;
+    }
   }
 
   // 삭제된 워크스페이스·사용자로의 쓰기를 막는다 — 세션은 조직/계정이 지워진 뒤에도 토큰
@@ -165,7 +235,10 @@ export async function createMessage(
   const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
     prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
-    prisma.chatMessage.create({ data: { orgId, channelId, authorId, body } }),
+    prisma.chatMessage.create({
+      data: { orgId, channelId, authorId, body, parentId },
+      include: WITH_REPLY_COUNT,
+    }),
   ]);
   const joined = join.count > 0;
 

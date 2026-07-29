@@ -40,9 +40,16 @@ const channelTopic = z
   .default(null);
 
 export const channelRefSchema = z.object({ id: idSchema });
-export const sendMessageSchema = z.object({ channelId: idSchema, body: messageBodySchema });
+export const sendMessageSchema = z.object({
+  channelId: idSchema,
+  body: messageBodySchema,
+  // 있으면 그 메시지의 답글이 된다(KAN-30). 부모 검증은 서비스가 한다.
+  parentId: idSchema.optional(),
+});
 // before는 '이 메시지보다 과거'를 가리키는 커서 — 화면에 남아 있는 가장 오래된 메시지 id다.
 export const olderMessagesSchema = z.object({ channelId: idSchema, before: idSchema });
+// 스레드 조회 — rootId는 루트 메시지, before는 답글 페이지 커서(선택).
+export const threadSchema = z.object({ rootId: idSchema, before: idSchema.optional() });
 export const createChannelSchema = z.object({
   name: channelName,
   topic: channelTopic,

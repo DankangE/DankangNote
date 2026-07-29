@@ -5,11 +5,15 @@
 export type ChatMessageView = {
   id: string;
   channelId: string;
+  /** 스레드 루트 메시지 id. null이면 채널 본문에 보이는 루트다(KAN-30). */
+  parentId: string | null;
   authorId: string;
   authorName: string;
   authorImageUrl: string | null;
   body: string;
   createdAt: string;
+  /** 이 메시지에 달린 답글 수. 답글 자신은 늘 0이다(스레드는 1단계). */
+  replyCount: number;
 };
 
 // 현재 사용자의 표시 정보 — 낙관 전송 말풍선에 쓴다. 미러 테이블이 아직 동기화
@@ -23,4 +27,4 @@ export type ChatViewer = {
 // 채널·페이지 뷰 타입은 서비스 계층의 것을 그대로 쓴다(보드와 같은 방식).
 export type { ChannelView } from '@/server/services/channels';
 export type { ChannelPersonView } from '@/server/services/channel-members';
-export type { MessagePage } from '@/server/services/chat';
+export type { MessagePage, ThreadView } from '@/server/services/chat';
