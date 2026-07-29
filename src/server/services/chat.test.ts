@@ -223,26 +223,46 @@ describe('커서 페이지네이션 (KAN-29)', () => {
     expect(older.hasMore).toBe(false);
   });
 
-  it('페이지끼리 겹치지도 빠지지도 않는다', async () => {
-    await seedMessages(CHANNEL_A, TOTAL);
+  it.each([
+    [0, false],
+    [1, false],
+    [MESSAGE_PAGE_SIZE - 1, false],
+    // 정확히 한 페이지면 '더 있음'이 아니다 — >= 로 잘못 쓰면 빈 페이지를 부르는 버튼이 뜬다.
+    [MESSAGE_PAGE_SIZE, false],
+    [MESSAGE_PAGE_SIZE + 1, true],
+  ])('메시지 %i건일 때 hasMore는 %s다', async (count, expected) => {
+    await seedMessages(CHANNEL_A, count);
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+
+    expect(page.messages).toHaveLength(Math.min(count, MESSAGE_PAGE_SIZE));
+    expect(page.hasMore).toBe(expected);
+  });
+
+  it('페이지끼리 겹치지도 빠지지도 않는다 (세 페이지 이상 순회)', async () => {
+    // 커서로 받은 페이지에서 다시 커서를 뽑는 경로까지 지나가도록 세 페이지 분량을 쓴다.
+    const total = MESSAGE_PAGE_SIZE * 2 + 7;
+    await seedMessages(CHANNEL_A, total);
 
     const collected: string[] = [];
     let cursor: string | undefined;
     let hasMore = true;
-    while (hasMore) {
-      const page: Awaited<ReturnType<typeof listMessages>> = await listMessages(
+    // 상한을 둬 hasMore가 고장 나면 타임아웃 대신 이 단언에서 죽게 한다.
+    for (let page = 0; hasMore && page < 10; page++) {
+      const result: Awaited<ReturnType<typeof listMessages>> = await listMessages(
         ORG_A,
         USER_OWNER,
         CHANNEL_A,
         cursor,
       );
-      collected.unshift(...page.messages.map((m) => m.body));
-      cursor = page.messages[0]?.id;
-      hasMore = page.hasMore;
+      collected.unshift(...result.messages.map((m) => m.body));
+      cursor = result.messages[0]?.id;
+      hasMore = result.hasMore;
     }
 
-    expect(collected).toEqual(Array.from({ length: TOTAL }, (_, i) => `메시지 ${i}`));
-    expect(new Set(collected).size).toBe(TOTAL);
+    expect(hasMore).toBe(false);
+    expect(collected).toEqual(Array.from({ length: total }, (_, i) => `메시지 ${i}`));
+    expect(new Set(collected).size).toBe(total);
   });
 
   it('createdAt이 같아도 커서가 자기 자신이나 이웃을 다시 집지 않는다', async () => {
@@ -276,6 +296,8 @@ describe('커서 페이지네이션 (KAN-29)', () => {
     expect(page).toEqual({ messages: [], hasMore: false });
   });
 
+  // 이 케이스는 본 쿼리의 채널 가시성만으로도 막힌다(앵커 스코프를 지워도 통과한다).
+  // 앵커 조회의 스코프를 고정하는 건 위의 '남의 채널 메시지를 커서로' 케이스다.
   it('참여하지 않은 비공개 채널은 커서를 줘도 빈 페이지다', async () => {
     const secret = await prisma.channel.create({
       data: {

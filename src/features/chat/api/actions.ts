@@ -7,8 +7,8 @@ import { pusherServer } from '@/server/pusher';
 import * as chatService from '@/server/services/chat';
 import type { ActionResult } from '@/lib/action-result';
 import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
-import type { ChatMessageView, MessagePage } from '@/features/chat/types';
-import { olderMessagesSchema, sendMessageSchema } from './validation';
+import type { ChatMessageView } from '@/features/chat/types';
+import { sendMessageSchema } from './validation';
 
 // 저장 커밋 이후의 브로드캐스트 실패는 전송 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 메시지를 만든다(notes revalidate와 같은 원칙). 로그만 남긴다.
@@ -55,32 +55,5 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
     }
     await broadcast(sent.message);
     return { ok: true, data: sent.message };
-  });
-}
-
-/**
- * 위로 스크롤할 때의 이전 페이지. 조회지만 Server Action으로 두는 이유는 클라이언트가
- * 임의 시점에 호출해야 해서다(RSC 조회는 렌더 시점에 묶인다). 접근 판정은 전송과 똑같이
- * 서비스의 채널 스코프가 한다 — 액션이 별도 규칙을 갖지 않는다.
- */
-export async function loadOlderMessagesAction(input: unknown): Promise<ActionResult<MessagePage>> {
-  const org = await resolveOrg();
-  if ('error' in org) {
-    return { ok: false, error: org.error };
-  }
-
-  const parsed = parseOrError(olderMessagesSchema, input);
-  if (!parsed.ok) {
-    return parsed;
-  }
-
-  return guarded('chat.loadOlderMessages', async () => {
-    const page = await chatService.listMessages(
-      org.orgId,
-      org.userId,
-      parsed.data.channelId,
-      parsed.data.before,
-    );
-    return { ok: true, data: page };
   });
 }

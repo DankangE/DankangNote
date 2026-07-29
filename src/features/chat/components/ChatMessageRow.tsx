@@ -31,6 +31,8 @@ export function ChatMessageRow({ message, grouped }: { message: RoomMessage; gro
 
   return (
     <div
+      // 이전 페이지를 앞에 붙일 때 이 행을 화면에 붙들어 두기 위한 기준점(ChatRoom).
+      data-message-id={message.id}
       className={cn(
         'group flex gap-3 rounded-md px-2 hover:bg-accent/40',
         grouped ? 'py-0.5' : 'mt-2 py-1 first:mt-0',
