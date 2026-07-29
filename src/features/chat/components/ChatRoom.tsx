@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
-import { CHAT_MESSAGE_EVENT, orgChannel } from '@/features/chat/realtime';
+import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
 import { ChatMessageRow } from './ChatMessageRow';
 
@@ -41,11 +41,11 @@ function upsert(list: RoomMessage[], incoming: RoomMessage, replaceId?: string):
 export function ChatRoom({
   initialMessages,
   viewer,
-  orgId,
+  channelId,
 }: {
   initialMessages: ChatMessageView[];
   viewer: ChatViewer;
-  orgId: string;
+  channelId: string;
 }) {
   // 서버가 준 초기 목록을 시드로, 이후엔 Pusher 이벤트·전송 결과로만 갱신하는
   // 라이브 스트림 상태. 서버 상태의 사본이 아니라 이벤트 소싱 뷰라 useState가 맞다.
@@ -74,17 +74,19 @@ export function ChatRoom({
       cluster: PUSHER_CLUSTER,
       channelAuthorization: { transport: 'ajax', endpoint: '/api/pusher/auth' },
     });
-    const channel = client.subscribe(orgChannel(orgId));
+    const channel = client.subscribe(chatChannel(channelId));
     const onMessage = (message: ChatMessageView) => {
+      // 다른 채널의 이벤트는 버린다 — 채널 전환 직후 이전 구독이 잠깐 살아 있을 수 있다.
+      if (message.channelId !== channelId) return;
       setMessages((prev) => upsert(prev, message));
     };
     channel.bind(CHAT_MESSAGE_EVENT, onMessage);
     return () => {
       channel.unbind(CHAT_MESSAGE_EVENT, onMessage);
-      client.unsubscribe(orgChannel(orgId));
+      client.unsubscribe(chatChannel(channelId));
       client.disconnect();
     };
-  }, [orgId]);
+  }, [channelId]);
 
   // 실패한 낙관 말풍선은 제거하고, 그 사이 새로 입력 중이 아니면 본문을 복원한다.
   function failSend(tempId: string, message: string, body: string) {
@@ -110,6 +112,7 @@ export function ChatRoom({
       ...prev,
       {
         id: tempId,
+        channelId,
         authorId: viewer.id,
         authorName: viewer.name,
         authorImageUrl: viewer.imageUrl,
@@ -120,7 +123,7 @@ export function ChatRoom({
     ]);
 
     try {
-      const result = await sendMessageAction(body);
+      const result = await sendMessageAction({ channelId, body });
       if (result.ok) {
         setMessages((prev) => upsert(prev, result.data, tempId));
       } else {

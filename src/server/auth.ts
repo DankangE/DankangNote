@@ -62,6 +62,19 @@ export async function getViewer(): Promise<{ userId: string; isAdmin: boolean } 
 }
 
 /**
+ * resolveOrg의 throw 버전 — 서버 컴포넌트 조회 헬퍼용. 사용자·조직·역할이 모두 필요한
+ * 조회(예: 채널 목록은 '내가 참여 중인지'까지 계산한다)가 쓴다. 정상 흐름에선 페이지
+ * 진입부의 auth.protect()가 이미 걸러낸다.
+ */
+export async function requireOrg(): Promise<{ userId: string; orgId: string; isAdmin: boolean }> {
+  const org = await resolveOrg();
+  if ('error' in org) {
+    throw new Error(org.error);
+  }
+  return org;
+}
+
+/**
  * orgId를 필수로 요구한다 — 없으면 throw. orgId가 반드시 있어야 하는 조회 헬퍼 등의
  * 방어선이다. 정상 흐름에선 진입부에서 이미 걸러진다.
  */

@@ -36,3 +36,27 @@ export async function seedTenants(): Promise<void> {
     data: [{ id: USER_OWNER }, { id: USER_OTHER }, { id: USER_ADMIN }],
   });
 }
+
+// 각 워크스페이스의 기본 채널 — 메시지를 붙일 곳(KAN-28에서 ChatMessage가 채널에 매달렸다).
+export const CHANNEL_A = 'chan_a';
+export const CHANNEL_B = 'chan_b';
+
+export async function seedChannels(): Promise<void> {
+  await prisma.channel.createMany({
+    data: [
+      { id: CHANNEL_A, orgId: ORG_A, name: '일반', isDefault: true },
+      { id: CHANNEL_B, orgId: ORG_B, name: '일반', isDefault: true },
+    ],
+  });
+}
+
+/** 조직 멤버십 미러 — 채널 초대 후보 조회처럼 Membership을 보는 서비스가 쓴다. */
+export async function seedMemberships(): Promise<void> {
+  await prisma.membership.createMany({
+    data: [
+      { id: 'mem_a_owner', orgId: ORG_A, userId: USER_OWNER, role: 'org:admin' },
+      { id: 'mem_a_other', orgId: ORG_A, userId: USER_OTHER, role: 'org:member' },
+      { id: 'mem_b_other', orgId: ORG_B, userId: USER_OTHER, role: 'org:member' },
+    ],
+  });
+}
