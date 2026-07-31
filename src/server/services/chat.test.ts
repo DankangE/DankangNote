@@ -11,7 +11,13 @@ import {
   seedChannels,
   seedTenants,
 } from '../../../test/db';
-import { MESSAGE_PAGE_SIZE, createMessage, listMessages, listThread } from './chat';
+import {
+  MESSAGE_PAGE_SIZE,
+  createMessage,
+  listMessages,
+  listThread,
+  toggleReaction,
+} from './chat';
 
 beforeEach(async () => {
   await resetDatabase();
@@ -509,5 +515,201 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
     expect(rootRow?.replyCount).toBe(2);
     expect(thread?.page.messages).toHaveLength(2);
     expect(page.messages.find((m) => m.id === other!.message.id)?.replyCount).toBe(1);
+  });
+});
+
+describe('이모지 리액션 (KAN-31)', () => {
+  it('같은 이모지를 다시 누르면 취소된다 (토글)', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+
+    const added = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(added).toMatchObject({ added: true, count: 1, emoji: '👍', channelId: CHANNEL_A });
+
+    const removed = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(removed).toMatchObject({ added: false, count: 0 });
+    expect(await prisma.messageReaction.count()).toBe(0);
+  });
+
+  it('여러 사람이 같은 이모지를 눌러도 각자 한 번씩만 센다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+
+    await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    const second = await toggleReaction(ORG_A, USER_OTHER, id, '👍');
+    expect(second?.count).toBe(2);
+
+    // 한 사람이 취소해도 남의 몫은 남는다.
+    const back = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(back).toMatchObject({ added: false, count: 1 });
+  });
+
+  it('조회는 이모지별로 접고 mine을 보는 사람 기준으로 채운다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+    await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    await toggleReaction(ORG_A, USER_OTHER, id, '👍');
+    await toggleReaction(ORG_A, USER_OTHER, id, '🎉');
+
+    const asOwner = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    expect(asOwner.messages[0].reactions).toEqual([
+      { emoji: '👍', count: 2, mine: true },
+      { emoji: '🎉', count: 1, mine: false },
+    ]);
+
+    const asOther = await listMessages(ORG_A, USER_OTHER, CHANNEL_A);
+    expect(asOther.messages[0].reactions).toEqual([
+      { emoji: '👍', count: 2, mine: true },
+      { emoji: '🎉', count: 1, mine: true },
+    ]);
+  });
+
+  it('칩 순서는 누른 순서가 아니라 팔레트 순서로 고정된다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+    // 팔레트 역순으로 누른다 — 삽입 순서를 그대로 쓰면 이 순서가 그대로 나온다.
+    await toggleReaction(ORG_A, USER_OWNER, id, '🔥');
+    await toggleReaction(ORG_A, USER_OWNER, id, '❤️');
+    await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    expect(page.messages[0].reactions.map((r) => r.emoji)).toEqual(['👍', '❤️', '🔥']);
+  });
+
+  it('답글에도 리액션을 달 수 있고 스레드 조회에 실린다', async () => {
+    const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const reply = await createMessage(ORG_A, USER_OTHER, CHANNEL_A, '답글', root!.message.id);
+
+    const delta = await toggleReaction(ORG_A, USER_OWNER, reply!.message.id, '✅');
+    // 답글의 델타는 parentId를 싣는다 — 수신 측이 본문이 아니라 스레드 패널에 반영해야 한다.
+    expect(delta).toMatchObject({ parentId: root!.message.id, count: 1 });
+
+    const thread = await listThread(ORG_A, USER_OWNER, root!.message.id);
+    expect(thread?.page.messages[0].reactions).toEqual([{ emoji: '✅', count: 1, mine: true }]);
+    // 답글에 달린 리액션이 루트로 새지 않는다.
+    expect(thread?.root.reactions).toEqual([]);
+  });
+
+  it('리액션은 자기 메시지에만 붙는다 (다른 메시지로 새지 않는다)', async () => {
+    const first = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '첫 번째');
+    await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '두 번째');
+    await toggleReaction(ORG_A, USER_OWNER, first!.message.id, '👀');
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+    expect(page.messages.map((m) => m.reactions.length)).toEqual([1, 0]);
+  });
+});
+
+describe('리액션 격리 · 수명 (KAN-31)', () => {
+  it('남의 워크스페이스 메시지에는 리액션할 수 없다', async () => {
+    const foreign = await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 메시지');
+
+    expect(await toggleReaction(ORG_A, USER_OWNER, foreign!.message.id, '👍')).toBeNull();
+    expect(await prisma.messageReaction.count()).toBe(0);
+  });
+
+  it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지에는 리액션할 수 없다', async () => {
+    // 스레드와 같은 이유의 이물 행 — orgId와 channelId를 묶는 DB 제약이 없어서, 조회 조건에서
+    // orgId를 빼도 채널 조건만으로 통과해 버리는지가 이 케이스에서만 드러난다.
+    const planted = await prisma.chatMessage.create({
+      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속' },
+    });
+
+    expect(await toggleReaction(ORG_A, USER_OWNER, planted.id, '👍')).toBeNull();
+  });
+
+  it('참여하지 않은 비공개 채널의 메시지에는 리액션할 수 없다', async () => {
+    const secret = await prisma.channel.create({
+      data: {
+        orgId: ORG_A,
+        name: '비밀',
+        isPrivate: true,
+        members: { create: { userId: USER_OWNER } },
+      },
+    });
+    const message = await createMessage(ORG_A, USER_OWNER, secret.id, '비밀');
+
+    expect(await toggleReaction(ORG_A, USER_OTHER, message!.message.id, '👍')).toBeNull();
+    expect(await toggleReaction(ORG_A, USER_OWNER, message!.message.id, '👍')).toMatchObject({
+      added: true,
+    });
+  });
+
+  it('남의 리액션은 내가 취소할 수 없다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await toggleReaction(ORG_A, USER_OTHER, sent!.message.id, '👍');
+
+    // 같은 이모지를 누르면 '취소'가 아니라 '나도 추가'다 — 토글의 대상은 내 행뿐이다.
+    const mine = await toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍');
+    expect(mine).toMatchObject({ added: true, count: 2 });
+  });
+
+  it('메시지를 지우면 그 리액션도 함께 파기된다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍');
+
+    await prisma.chatMessage.delete({ where: { id: sent!.message.id } });
+
+    expect(await prisma.messageReaction.count()).toBe(0);
+  });
+
+  it('조직을 지우면 그 조직의 리액션도 함께 파기된다', async () => {
+    const mine = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, 'A의 메시지');
+    const theirs = await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 메시지');
+    await toggleReaction(ORG_A, USER_OWNER, mine!.message.id, '👍');
+    await toggleReaction(ORG_B, USER_OTHER, theirs!.message.id, '👍');
+
+    await prisma.organization.delete({ where: { id: ORG_A } });
+
+    expect(await prisma.messageReaction.findMany()).toMatchObject([{ orgId: ORG_B }]);
+  });
+
+  it('삭제된 org·사용자로는 리액션할 수 없다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await prisma.clerkTombstone.create({ data: { id: USER_OWNER } });
+
+    await expect(toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍')).rejects.toThrow();
+    // 가드가 pre-check에서 멈추므로 행이 남지 않는다.
+    expect(await prisma.messageReaction.count()).toBe(0);
+  });
+});
+
+describe('리액션 자체 리뷰 반영 (KAN-31)', () => {
+  it('토글이 돌려주는 count는 자기 쓰기를 반드시 반영한다', async () => {
+    // 토글과 집계가 한 트랜잭션이 아니면, 내 요청이 내 변경조차 안 담긴 값을 돌려줄 수 있다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+
+    const add = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(add!.count).toBe(await prisma.messageReaction.count({ where: { messageId: id } }));
+
+    const remove = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(remove!.count).toBe(0);
+  });
+
+  it('조회의 리액션 집계도 org로 스코프된다', async () => {
+    // orgId와 messageId가 어긋난 행은 서비스만 거치면 안 생긴다. 조회 조건에서 orgId를
+    // 빼도 messageId만으로 통과해 버리는지는 이물 행을 심어야만 드러난다(스레드와 같은 이유).
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍');
+    await prisma.messageReaction.create({
+      data: { messageId: sent!.message.id, userId: USER_OTHER, emoji: '🎉', orgId: ORG_B },
+    });
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+
+    expect(page.messages[0].reactions).toEqual([{ emoji: '👍', count: 1, mine: true }]);
+  });
+
+  it('조직을 지워도 남의 org 리액션은 그 메시지에 남지 않는다', async () => {
+    // 위 이물 행이 org 삭제 cascade를 타는지 — orgId FK가 실제로 걸려 있는지 확인한다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await prisma.messageReaction.create({
+      data: { messageId: sent!.message.id, userId: USER_OTHER, emoji: '🎉', orgId: ORG_B },
+    });
+
+    await prisma.organization.delete({ where: { id: ORG_B } });
+
+    expect(await prisma.messageReaction.count()).toBe(0);
   });
 });

@@ -8,9 +8,22 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
 import { fetchOlderMessages } from '@/features/chat/api/history';
-import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
-import type { ChatMessageView, ChatViewer, MessagePage } from '@/features/chat/types';
-import { isGrouped, pendingMessage, upsert, type RoomMessage } from '@/features/chat/room-state';
+import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
+import type {
+  ChatMessageView,
+  ChatViewer,
+  LiveReaction,
+  MessagePage,
+  ReactionDelta,
+} from '@/features/chat/types';
+import {
+  applyReaction,
+  isGrouped,
+  pendingMessage,
+  upsert,
+  type RoomMessage,
+} from '@/features/chat/room-state';
+import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
 import { ChatMessageRow } from './ChatMessageRow';
 import { MessageComposer } from './MessageComposer';
 import { ThreadPanel } from './ThreadPanel';
@@ -34,6 +47,9 @@ const LOAD_MORE_THRESHOLD_PX = 200;
 // 넉넉히만 잡으면 되고, 세션 내내 무한정 쌓이는 것만 막으면 된다.
 const LIVE_REPLY_BUFFER = 50;
 
+// 같은 이유의 리액션 델타 버퍼. 리액션은 메시지보다 훨씬 자주 오가므로 더 넉넉히 잡는다.
+const LIVE_REACTION_BUFFER = 100;
+
 export function ChatRoom({
   initialPage,
   viewer,
@@ -55,6 +71,10 @@ export function ChatRoom({
   // 바뀌어 앞의 것이 패널에서 조용히 사라진다(WS 폴백 전송에서 실제로 가능하다).
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [liveReplies, setLiveReplies] = useState<readonly ChatMessageView[]>([]);
+  // 리액션 델타 피드 — 열려 있는 스레드 패널이 자기 몫(루트·답글)을 골라 간다.
+  // 순번을 붙여 보내는 이유는 LiveReaction 주석 참조(옛 델타 재적용 방지).
+  const [liveReactions, setLiveReactions] = useState<readonly LiveReaction[]>([]);
+  const reactionSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
   // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
   // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
@@ -160,6 +180,42 @@ export function ChatRoom({
     );
   }, []);
 
+  /**
+   * 리액션 델타가 들어오는 단 하나의 문. Pusher 이벤트·내 토글 응답·스레드 패널의 토글이
+   * 전부 여기로 모인다 — 경로마다 따로 반영하면 같은 메시지가 본문과 패널에 동시에 떠 있는
+   * (md 이상) 화면에서 한쪽만 갱신된다.
+   *
+   * 델타의 count가 절대값이라 몇 번 들어와도, 순서가 뒤바뀌어도 같은 곳에 수렴한다 —
+   * 그래서 답글 수(countReply)와 달리 '이미 센 것' 집합을 둘 필요가 없다.
+   */
+  const applyReactionDelta = useCallback(
+    (delta: ReactionDelta) => {
+      // 본문에 없는 메시지(답글이거나, 아직 안 불러온 과거 페이지)면 아무 일도 안 일어난다.
+      setMessages((prev) => applyReaction(prev, delta, viewer.id));
+      reactionSeq.current += 1;
+      const entry = { seq: reactionSeq.current, delta };
+      setLiveReactions((prev) => [...prev, entry].slice(-LIVE_REACTION_BUFFER));
+    },
+    [viewer.id],
+  );
+
+  const { toggle: toggleReaction, noteServerDelta } = useReactionToggle({
+    viewerId: viewer.id,
+    apply: setMessages,
+    onConfirmed: applyReactionDelta,
+    onError: setError,
+  });
+
+  // 스레드 패널이 확정한 델타도 이 문으로 들어온다 — 패널에서 루트에 단 리액션은 본문
+  // 목록에도 같은 행으로 떠 있고, 롤백 판단(markMyReaction)의 근거도 여기서 갱신돼야 한다.
+  const receiveReaction = useCallback(
+    (delta: ReactionDelta) => {
+      noteServerDelta(delta);
+      applyReactionDelta(delta);
+    },
+    [noteServerDelta, applyReactionDelta],
+  );
+
   useEffect(() => {
     if (!PUSHER_KEY || !PUSHER_CLUSTER) {
       return;
@@ -182,13 +238,20 @@ export function ChatRoom({
       }
       setMessages((prev) => upsert(prev, message));
     };
+    const onReaction = (delta: ReactionDelta) => {
+      // 메시지와 같은 이유 — 채널 전환 직후 살아 있는 이전 구독의 이벤트는 버린다.
+      if (delta.channelId !== channelId) return;
+      receiveReaction(delta);
+    };
     channel.bind(CHAT_MESSAGE_EVENT, onMessage);
+    channel.bind(CHAT_REACTION_EVENT, onReaction);
     return () => {
       channel.unbind(CHAT_MESSAGE_EVENT, onMessage);
+      channel.unbind(CHAT_REACTION_EVENT, onReaction);
       client.unsubscribe(chatChannel(channelId));
       client.disconnect();
     };
-  }, [channelId, countReply]);
+  }, [channelId, countReply, receiveReaction]);
 
   // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공하면 서버 확정본으로 교체한다.
   // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문을 되돌리게 한다.
@@ -217,6 +280,12 @@ export function ChatRoom({
       return fail(GENERIC_ERROR);
     }
   }
+
+  const handleToggleReaction = (messageId: string, emoji: string) =>
+    void toggleReaction(
+      messages.find((message) => message.id === messageId),
+      emoji,
+    );
 
   // 패널이 서버에서 받은 답글 수를 본문 행에 되돌려 준다 — 실시간 이벤트를 놓쳤거나
   // Pusher가 꺼져 있으면 증가만 하는 카운트는 영영 어긋난 채로 남는다.
@@ -298,6 +367,7 @@ export function ChatRoom({
                   message={message}
                   grouped={isGrouped(messages[index - 1], message)}
                   onOpenThread={setOpenThreadId}
+                  onToggleReaction={handleToggleReaction}
                 />
               ))}
             </div>
@@ -334,8 +404,10 @@ export function ChatRoom({
           channelId={channelId}
           viewer={viewer}
           liveReplies={liveReplies}
+          liveReactions={liveReactions}
           onSyncReplyCount={syncReplyCount}
           onReplyCreated={countReply}
+          onReactionApplied={receiveReaction}
           onClose={closeThread}
         />
       )}

@@ -1,4 +1,10 @@
-import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
+import { REACTION_EMOJIS } from '@/features/chat/reactions';
+import type {
+  ChatMessageView,
+  ChatViewer,
+  ReactionDelta,
+  ReactionView,
+} from '@/features/chat/types';
 
 // 채널 본문과 스레드 패널이 공유하는 라이브 목록 조작. 순수 함수라 server-only가 아니다.
 
@@ -59,6 +65,124 @@ export function pendingMessage(
     createdAt: new Date().toISOString(),
     // 답글은 스레드 1단계라 자기 답글을 가질 수 없다.
     replyCount: 0,
+    // 아직 서버에 없는 메시지라 누를 수 있는 리액션도 없다.
+    reactions: [],
     pending: true,
   };
+}
+
+// 칩 표시 순서는 서버(loadReactions)와 같은 팔레트 순서다 — 실시간으로 새 이모지가 붙을 때
+// 끝에 쌓이면, 새로고침 한 번에 순서가 바뀌어 방금 누른 칩이 다른 자리로 튄다.
+const EMOJI_ORDER = new Map<string, number>(REACTION_EMOJIS.map((emoji, i) => [emoji, i]));
+
+function sortedByPalette(reactions: ReactionView[]): ReactionView[] {
+  return reactions.sort((a, b) => (EMOJI_ORDER.get(a.emoji) ?? 99) - (EMOJI_ORDER.get(b.emoji) ?? 99));
+}
+
+/**
+ * 한 메시지의 리액션 목록에 서버 델타를 반영한다 (KAN-31).
+ *
+ * count는 절대값이라 그대로 덮는다 — 그래서 같은 델타가 두 번 와도, 순서가 뒤바뀌어 와도
+ * 마지막에 도착한 서버 상태로 수렴한다. mine은 나에 대한 것이라 내가 누른 델타에서만 바꾸고,
+ * 남이 누른 델타에서는 내가 이미 눌러 둔 상태를 그대로 보존한다.
+ */
+function reduceReactions(
+  reactions: ReactionView[],
+  delta: ReactionDelta,
+  viewerId: string,
+): ReactionView[] {
+  const rest = reactions.filter((reaction) => reaction.emoji !== delta.emoji);
+  // 마지막 한 명이 취소하면 칩 자체를 없앤다(count 0짜리 빈 칩이 남지 않게).
+  if (delta.count === 0) {
+    return rest;
+  }
+  const current = reactions.find((reaction) => reaction.emoji === delta.emoji);
+  return sortedByPalette([
+    ...rest,
+    {
+      emoji: delta.emoji,
+      count: delta.count,
+      mine: delta.userId === viewerId ? delta.added : (current?.mine ?? false),
+    },
+  ]);
+}
+
+/** 델타를 목록에 적용한다. 그 메시지가 목록에 없으면 아무 일도 하지 않는다. */
+export function applyReaction(
+  list: RoomMessage[],
+  delta: ReactionDelta,
+  viewerId: string,
+): RoomMessage[] {
+  return list.map((message) =>
+    message.id === delta.messageId
+      ? { ...message, reactions: reduceReactions(message.reactions, delta, viewerId) }
+      : message,
+  );
+}
+
+/**
+ * 서버 응답을 기다리지 않고 내 리액션만 먼저 뒤집는다.
+ *
+ * next를 인자로 받아 '토글'이 아니라 '이 상태로 맞춰라'로 만든 것이 핵심이다. 실패 시
+ * 되돌리기가 같은 함수의 반대 인자 한 번이고, 이미 그 상태면 count를 건드리지 않아
+ * 두 번 적용해도 어긋나지 않는다. 남이 누른 몫(count의 나머지)은 손대지 않는다 —
+ * 전체 스냅샷 복원이 아니라 내가 바꾼 것만 되돌리는 타깃 롤백이다.
+ */
+export function setMyReaction(
+  list: RoomMessage[],
+  messageId: string,
+  emoji: string,
+  viewerId: string,
+  next: boolean,
+): RoomMessage[] {
+  return list.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+    const current = message.reactions.find((reaction) => reaction.emoji === emoji);
+    if ((current?.mine ?? false) === next) {
+      return message;
+    }
+    const rest = message.reactions.filter((reaction) => reaction.emoji !== emoji);
+    const count = (current?.count ?? 0) + (next ? 1 : -1);
+    return {
+      ...message,
+      reactions: count > 0 ? sortedByPalette([...rest, { emoji, count, mine: next }]) : rest,
+    };
+  });
+}
+
+/**
+ * count는 그대로 두고 내 표시만 되돌린다.
+ *
+ * 낙관 적용과 롤백 사이에 서버 절대값이 도착했을 때 쓴다. 그 값은 실패한 내 토글을
+ * 포함하지 않은 진짜 카운트라, 여기서 setMyReaction으로 또 ∓1 하면 그만큼 어긋난 채
+ * 굳는다(다음 델타가 올 때까지). 되돌릴 것은 이미 덮인 count가 아니라 내 표시뿐이다.
+ */
+export function markMyReaction(
+  list: RoomMessage[],
+  messageId: string,
+  emoji: string,
+  mine: boolean,
+): RoomMessage[] {
+  return list.map((message) =>
+    message.id === messageId
+      ? {
+          ...message,
+          reactions: message.reactions.map((reaction) =>
+            reaction.emoji === emoji ? { ...reaction, mine } : reaction,
+          ),
+        }
+      : message,
+  );
+}
+
+/** 이 메시지에 내가 그 이모지를 눌러 뒀는지 — 다음 클릭의 방향을 정한다. */
+export function hasMyReaction(message: RoomMessage, emoji: string): boolean {
+  return message.reactions.some((reaction) => reaction.emoji === emoji && reaction.mine);
+}
+
+/** 델타·in-flight 추적의 키. 리액션은 (메시지, 이모지)마다 독립이다. */
+export function reactionKey(messageId: string, emoji: string): string {
+  return `${messageId}:${emoji}`;
 }

@@ -1,4 +1,5 @@
 import { z } from '@/lib/zod';
+import { REACTION_EMOJIS } from '@/features/chat/reactions';
 
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.
@@ -50,6 +51,12 @@ export const sendMessageSchema = z.object({
 export const olderMessagesSchema = z.object({ channelId: idSchema, before: idSchema });
 // 스레드 조회 — rootId는 루트 메시지, before는 답글 페이지 커서(선택).
 export const threadSchema = z.object({ rootId: idSchema, before: idSchema.optional() });
+// 리액션 토글 (KAN-31). emoji는 팔레트 안의 값만 — 자유 문자열이면 임의 텍스트가 그대로
+// 남의 화면에 렌더된다. enum이 그 경계를 스키마 한 줄로 못 박는다.
+export const toggleReactionSchema = z.object({
+  messageId: idSchema,
+  emoji: z.enum(REACTION_EMOJIS),
+});
 export const createChannelSchema = z.object({
   name: channelName,
   topic: channelTopic,
