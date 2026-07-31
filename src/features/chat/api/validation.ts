@@ -41,11 +41,22 @@ const channelTopic = z
   .default(null);
 
 export const channelRefSchema = z.object({ id: idSchema });
+// 멘션 스팬 (KAN-32). 클라이언트의 '주장'이라 여기서는 모양만 본다 — 대상이 조직 멤버인지,
+// 본문의 그 자리에 정말 그 이름이 적혀 있는지는 서비스가 미러를 다시 읽어 검증한다.
+// 한 메시지의 멘션 수에 상한을 두는 이유는 알림 생성이 여기에 비례하기 때문이다.
+const mentionSpanSchema = z.object({
+  kind: z.enum(['user', 'channel']),
+  userId: idSchema.nullable(),
+  start: z.number().int().min(0).max(4000),
+  length: z.number().int().min(1).max(200),
+});
+
 export const sendMessageSchema = z.object({
   channelId: idSchema,
   body: messageBodySchema,
   // 있으면 그 메시지의 답글이 된다(KAN-30). 부모 검증은 서비스가 한다.
   parentId: idSchema.optional(),
+  mentions: z.array(mentionSpanSchema).max(50).default([]),
 });
 // before는 '이 메시지보다 과거'를 가리키는 커서 — 화면에 남아 있는 가장 오래된 메시지 id다.
 export const olderMessagesSchema = z.object({ channelId: idSchema, before: idSchema });

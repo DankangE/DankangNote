@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import type { ChatMessageView } from '@/features/chat/types';
+import { MessageBody } from './MessageBody';
 import { ReactionChips, ReactionPicker } from './MessageReactions';
 
 // 타임존 고정 + 오전/오후는 직접 붙인다. 타임존만 고정해선 hydration이 안전하지 않다 —
@@ -36,11 +37,14 @@ type RoomMessage = ChatMessageView & { pending?: boolean };
 export function ChatMessageRow({
   message,
   grouped,
+  viewerId,
   onOpenThread,
   onToggleReaction,
 }: {
   message: RoomMessage;
   grouped: boolean;
+  /** 나를 부른 멘션을 강조하는 기준(KAN-32). */
+  viewerId: string;
   onOpenThread?: (rootId: string) => void;
   onToggleReaction?: (messageId: string, emoji: string) => void;
 }) {
@@ -89,7 +93,7 @@ export function ChatMessageRow({
             <span className="text-xs text-muted-foreground">{time}</span>
           </div>
         )}
-        <p className="text-sm break-words whitespace-pre-wrap">{message.body}</p>
+        <MessageBody body={message.body} mentions={message.mentions} viewerId={viewerId} />
 
         {reactable && <ReactionChips reactions={message.reactions} onToggle={toggle} />}
 

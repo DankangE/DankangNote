@@ -7,6 +7,7 @@ import { pusherServer } from '@/server/pusher';
 import * as chatService from '@/server/services/chat';
 import type { ActionResult } from '@/lib/action-result';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
+import { NOTIFICATION_EVENT, notificationChannel } from '@/features/notifications/realtime';
 import type { ChatMessageView, ReactionDelta } from '@/features/chat/types';
 import { sendMessageSchema, toggleReactionSchema } from './validation';
 
@@ -38,6 +39,37 @@ async function broadcastReaction(delta: ReactionDelta): Promise<void> {
   }
 }
 
+// pusher-http-node가 한 번의 trigger에 허용하는 채널 수 상한(라이브러리 하드코딩 값).
+const PUSHER_CHANNEL_LIMIT = 100;
+
+/**
+ * 멘션된 사람들에게 '새 알림이 있다'만 알린다 (KAN-32).
+ *
+ * 알림 내용을 싣지 않는 것은 의도적이다 — 페이로드가 커지고, 무엇보다 수신 측이 그걸
+ * 그대로 그리면 서버의 가시성 판정(listNotifications)을 건너뛰게 된다. 신호만 받고
+ * 목록은 다시 물어보게 한다.
+ */
+async function broadcastNotifications(orgId: string, userIds: string[]): Promise<void> {
+  if (!pusherServer || userIds.length === 0) {
+    return;
+  }
+  try {
+    // Pusher는 한 번의 trigger에 100채널까지만 받고, 넘기면 **동기 throw**다 —
+    // 초과분만 빠지는 게 아니라 전부 실패한다. @channel 한 번이면 참여자 수만큼 채널이
+    // 생기므로 100명이 넘는 채널에서는 아무도 실시간 핑을 못 받게 된다. 잘라서 보낸다.
+    for (let index = 0; index < userIds.length; index += PUSHER_CHANNEL_LIMIT) {
+      const chunk = userIds.slice(index, index + PUSHER_CHANNEL_LIMIT);
+      await pusherServer.trigger(
+        chunk.map((userId) => notificationChannel(orgId, userId)),
+        NOTIFICATION_EVENT,
+        {},
+      );
+    }
+  } catch (error) {
+    console.error('[chat] notification broadcast failed:', error);
+  }
+}
+
 export async function sendMessageAction(input: unknown): Promise<ActionResult<ChatMessageView>> {
   const org = await resolveOrg();
   if ('error' in org) {
@@ -56,6 +88,7 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
       parsed.data.channelId,
       parsed.data.body,
       parsed.data.parentId,
+      parsed.data.mentions,
     );
     // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)이나 답글을 달 수 없는 부모는
     // '없음'으로 답한다 — 어느 쪽인지 알려주면 그 자체가 존재 여부 오라클이 된다.
@@ -69,6 +102,7 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
       revalidatePath('/chat', 'layout');
     }
     await broadcast(sent.message);
+    await broadcastNotifications(org.orgId, sent.notified);
     return { ok: true, data: sent.message };
   });
 }

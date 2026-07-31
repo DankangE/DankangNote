@@ -1,3 +1,4 @@
+import type { MentionSpan } from '@/features/chat/mentions';
 import { REACTION_EMOJIS } from '@/features/chat/reactions';
 import type {
   ChatMessageView,
@@ -53,6 +54,7 @@ export function pendingMessage(
   channelId: string,
   body: string,
   parentId: string | null,
+  mentions: MentionSpan[] = [],
 ): RoomMessage {
   return {
     id: `pending-${crypto.randomUUID()}`,
@@ -67,6 +69,9 @@ export function pendingMessage(
     replyCount: 0,
     // 아직 서버에 없는 메시지라 누를 수 있는 리액션도 없다.
     reactions: [],
+    // 멘션은 컴포저가 방금 고른 것을 그대로 쓴다 — 낙관 말풍선에서도 강조가 바로 보인다.
+    // 서버가 확정본을 돌려주면 검증을 통과한 것만 남은 목록으로 교체된다.
+    mentions,
     pending: true,
   };
 }

@@ -2,6 +2,31 @@ import { getAuthState } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
 import * as channelService from '@/server/services/channels';
 import { channelIdFromPusherChannel } from '@/features/chat/realtime';
+import { notificationTargetFromChannel } from '@/features/notifications/realtime';
+
+/**
+ * 이 세션이 이 Pusher 채널을 구독해도 되는가. 채널 종류마다 판정이 다르다.
+ *
+ * 접근할 수 없는 것과 존재하지 않는 것을 구분하지 않는다(전부 false) — 응답이 갈리면
+ * 남의 워크스페이스에 그 id의 채널이 있는지 알아내는 오라클이 된다.
+ */
+async function maySubscribe(
+  pusherChannel: string,
+  session: { orgId: string; userId: string; isAdmin: boolean },
+): Promise<boolean> {
+  // 알림은 사람 단위 채널이라 DB를 볼 것도 없다 — 내 org·내 id의 채널만 서명한다(KAN-32).
+  const target = notificationTargetFromChannel(pusherChannel);
+  if (target) {
+    return target.orgId === session.orgId && target.userId === session.userId;
+  }
+
+  const channelId = channelIdFromPusherChannel(pusherChannel);
+  if (!channelId) {
+    return false;
+  }
+  const { orgId, ...actor } = session;
+  return Boolean(await channelService.getChannel(orgId, actor, channelId));
+}
 
 // pusher-js가 private 채널 구독 시 POST하는 인증 엔드포인트(form-urlencoded).
 // 멀티테넌시 핵심: 요청한 채팅 채널이 현재 세션의 활성 org에 속하고, 비공개라면 내가
@@ -25,10 +50,7 @@ export async function POST(request: Request) {
     return new Response('Bad Request', { status: 400 });
   }
 
-  const channelId = channelIdFromPusherChannel(pusherChannel);
-  // 접근할 수 없는 채널과 존재하지 않는 채널을 같은 403으로 답한다 — 응답 차이로
-  // 남의 워크스페이스에 그 id의 채널이 있는지 알아낼 수 없게.
-  if (!channelId || !(await channelService.getChannel(orgId, { userId, isAdmin }, channelId))) {
+  if (!(await maySubscribe(pusherChannel, { orgId, userId, isAdmin }))) {
     return new Response('Forbidden', { status: 403 });
   }
 

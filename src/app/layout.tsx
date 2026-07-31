@@ -10,6 +10,7 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
+import { NotificationBell } from "@/features/notifications/components/NotificationBell";
 import { AppSidebar } from "@/lib/components/AppSidebar";
 import { ThemeProvider } from "@/lib/components/ThemeProvider";
 import { ThemeToggle } from "@/lib/components/ThemeToggle";
@@ -58,6 +59,7 @@ export default function RootLayout({
                   <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-4">
                     <OrganizationSwitcher />
                     <div className="flex items-center gap-2">
+                      <NotificationBell />
                       <ThemeToggle />
                       <UserButton />
                     </div>
