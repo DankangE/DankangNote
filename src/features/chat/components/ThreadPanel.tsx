@@ -303,7 +303,7 @@ export function ThreadPanel({
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
       }}
-      className="flex w-full min-w-0 shrink-0 flex-col border-l bg-background md:w-96"
+      className="flex w-full min-w-0 shrink-0 flex-col border-l bg-background xl:w-96"
     >
       <header className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
         <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold tracking-tight outline-none">

@@ -76,9 +76,21 @@ export function ChatRoom({
   // 알림에서 온 `?thread=` — 그 스레드를 열어 준다(KAN-32). URL을 상태의 원본으로 삼지
   // 않는 이유는 비용이다: 라우터로 replace하면 서버 컴포넌트가 다시 돌아 메시지 첫 페이지를
   // 통째로 다시 받는다. 여기서는 열고 나서 파라미터만 걷어 낸다.
+  //
+  // **렌더 중 setState에는 반드시 '값이 달라졌을 때만'이라는 가드가 필요하다.** 렌더 단계
+  // 업데이트는 값이 같아도 큐에 그대로 들어가고(react-dom: isRenderPhaseUpdate 분기에는
+  // eager 비교 bailout이 없다) 컴포넌트를 다시 돌린다. 조건이 파라미터 하나뿐이면 그 조건은
+  // 다음 렌더에도 참이라 루프가 되고, React가 상한에서 'Too many re-renders'로 던진다 —
+  // 답글 멘션 알림을 누르면 채팅 화면이 통째로 죽었다.
+  // 아래는 매번 seenThreadParam을 바꾸므로 최대 한 번만 다시 돌고 멈춘다.
   const threadParam = useSearchParams().get('thread');
-  if (threadParam) {
-    setOpenThreadId(threadParam);
+  const [seenThreadParam, setSeenThreadParam] = useState<string | null>(null);
+  if (threadParam !== seenThreadParam) {
+    setSeenThreadParam(threadParam);
+    // 파라미터가 지워질 때(아래 effect)는 열려 있는 스레드를 건드리지 않는다.
+    if (threadParam) {
+      setOpenThreadId(threadParam);
+    }
   }
 
   // 소비한 파라미터는 지운다. 남겨 두면 ① 스레드를 닫은 뒤 같은 알림을 다시 눌러도 URL이
@@ -348,6 +360,12 @@ export function ChatRoom({
       if (!newest || !stickToBottom.current || document.visibilityState !== 'visible') {
         return;
       }
+      // 스레드가 열려 있으면 멈춘다. xl 미만에서는 본문이 display:none이라 스크롤 위치가
+      // 열던 순간 값으로 얼어붙고(브라우저가 이벤트를 안 준다), 그 사이 도착한 메시지가
+      // 화면에 뜬 적도 없이 읽음 처리된다.
+      if (openThreadId) {
+        return;
+      }
       if (lastMarked.current === newest.id) {
         return;
       }
@@ -360,7 +378,9 @@ export function ChatRoom({
           lastMarked.current = null;
         });
     },
-    [channelId],
+    // openThreadId를 ref가 아니라 의존성으로 받는다 — 그래야 스레드를 닫는 순간 이 콜백의
+    // 정체성이 바뀌고, 아래 effect가 그때 밀린 것을 이어서 처리한다.
+    [channelId, openThreadId],
   );
 
   // 스크롤·탭 복귀 핸들러가 최신 목록을 읽게 한다(핸들러는 구독 시점에 고정된다).
@@ -417,12 +437,14 @@ export function ChatRoom({
 
   return (
     <div className="flex min-h-0 flex-1">
-      {/* 스레드가 열리면 좁은 화면에서는 본문을 감추고 패널만 보인다(슬랙 모바일과 같다) —
-          두 컬럼을 나란히 두기엔 폭이 모자라 양쪽 다 못 읽게 된다. */}
+      {/* 스레드가 열리면 좁은 화면에서는 본문을 감추고 패널만 보인다(슬랙 모바일과 같다).
+          기준이 md(768)가 아니라 xl(1280)인 이유는 실측이다: 앱 레일 240 + 채널 사이드바 240
+          + 스레드 패널 384 = 864px이 본문 앞에 이미 서 있어서, 768에서는 본문 폭이 0이 되고
+          1008에서도 본문 텍스트가 한 글자씩 끊겨 내려간다. 나란히 세울 수 있을 때만 세운다. */}
       <div
         className={cn(
           'min-w-0 flex-1 flex-col',
-          openThreadId ? 'hidden md:flex' : 'flex',
+          openThreadId ? 'hidden xl:flex' : 'flex',
         )}
       >
         <div

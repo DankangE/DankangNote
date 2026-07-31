@@ -208,6 +208,28 @@ describe('자체 리뷰 반영 (KAN-33)', () => {
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBeUndefined();
   });
 
+  it('답글 id로는 커서를 세울 수 없다', async () => {
+    // 답글은 채널 본문에 없는데 createdAt은 뒤다 — 답글로 커서를 세우면 아직 안 읽은
+    // 루트 메시지들을 건너뛴다.
+    await join(CHANNEL_A, USER_OWNER);
+    const root = await say(CHANNEL_A, USER_OTHER, '루트');
+    const reply = await createMessage(ORG_A, USER_OTHER, CHANNEL_A, '답글', root.id);
+
+    expect(await markChannelRead(ORG_A, USER_OWNER, CHANNEL_A, reply!.message.id)).toBe(false);
+    expect(await prisma.channelRead.count()).toBe(0);
+  });
+
+  it('참여하지 않은 공개 채널에는 커서를 세우지 않는다', async () => {
+    // unreadCounts가 참여 채널만 세므로, 여기서 허용하면 둘러보기만 한 채널마다
+    // 아무도 안 읽는 행이 쌓인다. 두 함수의 대상 집합을 맞춘다.
+    const open = await prisma.channel.create({ data: { orgId: ORG_A, name: '잡담' } });
+    const message = await say(open.id, USER_OTHER, '둘러보기');
+
+    expect(await markChannelRead(ORG_A, USER_OWNER, open.id, message.id)).toBe(false);
+    await join(open.id, USER_OWNER);
+    expect(await markChannelRead(ORG_A, USER_OWNER, open.id, message.id)).toBe(true);
+  });
+
   it('참여와 같은 순간에 온 메시지도 센다', async () => {
     // 커서 가지는 id로 동률을 가르는데 참여 가지만 gt면 그 한 건이 영영 안 세어진다.
     const at = new Date('2026-05-01T00:00:00.000Z');

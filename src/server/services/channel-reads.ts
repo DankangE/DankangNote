@@ -123,7 +123,13 @@ export async function markChannelRead(
       id: messageId,
       channelId,
       orgId,
-      channel: visibleWhere(orgId, userId),
+      // parentId: null — 커서가 가리킬 수 있는 것은 채널 본문에 뜨는 메시지뿐이다
+      // (countableWhere가 세는 것과 같은 집합). 답글은 본문에 없는데 createdAt은 뒤라,
+      // 답글 id로 커서를 세우면 아직 안 읽은 루트 메시지들을 건너뛰어 버린다.
+      parentId: null,
+      // 참여한 채널만. unreadCounts가 참여 채널만 세므로, 그렇지 않으면 둘러보기만 한
+      // 채널마다 아무도 안 읽는 커서 행이 쌓인다(두 함수의 대상 집합을 맞춘다).
+      channel: { ...visibleWhere(orgId, userId), members: { some: { userId } } },
     },
     select: { id: true, createdAt: true },
   });

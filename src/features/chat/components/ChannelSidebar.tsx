@@ -160,7 +160,9 @@ export function ChannelStrip({
       <div className="flex items-center gap-1 px-2 py-1.5">
         <nav aria-label="채널 목록" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {ordered.map((channel) => (
-            <div key={channel.id} className="shrink-0">
+            // 폭 상한이 없으면 링크가 max-content로 늘어 이름이 안 잘리고, ml-auto 뱃지가
+            // 가로 스크롤 밖으로 밀려 안읽음 표시가 아예 안 보인다(390px에서 실측).
+            <div key={channel.id} className="w-40 shrink-0">
               <ChannelLink
                 channel={channel}
                 active={channel.id === activeId}
