@@ -5,11 +5,12 @@ import { guarded, parseOrError } from '@/lib/action-result';
 import { resolveOrg } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
 import * as chatService from '@/server/services/chat';
+import * as channelReadService from '@/server/services/channel-reads';
 import type { ActionResult } from '@/lib/action-result';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import { NOTIFICATION_EVENT, notificationChannel } from '@/features/notifications/realtime';
 import type { ChatMessageView, ReactionDelta } from '@/features/chat/types';
-import { sendMessageSchema, toggleReactionSchema } from './validation';
+import { markChannelReadSchema, sendMessageSchema, toggleReactionSchema } from './validation';
 
 // 저장 커밋 이후의 브로드캐스트 실패는 전송 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 메시지를 만든다(notes revalidate와 같은 원칙). 로그만 남긴다.
@@ -104,6 +105,43 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
     await broadcast(sent.message);
     await broadcastNotifications(org.orgId, sent.notified);
     return { ok: true, data: sent.message };
+  });
+}
+
+/**
+ * 채널 읽음 커서를 이 메시지까지 올린다 (KAN-33).
+ *
+ * 사이드바를 재검증하지 않는다 — 읽는 동안 계속 불리는 액션이라, 매번 레이아웃을 다시
+ * 그리면 채널을 보고만 있어도 서버 렌더가 반복된다.
+ *
+ * 대신 뱃지는 클라이언트가 맞춘다. '다음 이동에서 서버 값이 온다'가 아니다 — Next는
+ * 이동만으로 레이아웃을 다시 렌더하지 않으므로 그 값은 페이지를 연 시점에 고정돼 있다.
+ * 보고 있는 채널은 0으로 두고, 나머지는 실시간 메시지로 올리고, 소켓이 끊겼다 붙거나
+ * 탭이 돌아오면 /api/chat/unread로 다시 맞춘다(use-channel-unread.ts).
+ */
+export async function markChannelReadAction(input: unknown): Promise<ActionResult<null>> {
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
+
+  const parsed = parseOrError(markChannelReadSchema, input);
+  if (!parsed.ok) {
+    return parsed;
+  }
+
+  return guarded('chat.markChannelRead', async () => {
+    const ok = await channelReadService.markChannelRead(
+      org.orgId,
+      org.userId,
+      parsed.data.channelId,
+      parsed.data.messageId,
+    );
+    // 접근할 수 없는 채널이나 그 채널의 것이 아닌 메시지 — 사용자가 할 수 있는 일이 없다.
+    if (!ok) {
+      return { ok: false, error: '읽음 처리를 할 수 없습니다.' };
+    }
+    return { ok: true, data: null };
   });
 }
 

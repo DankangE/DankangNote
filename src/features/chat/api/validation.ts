@@ -68,6 +68,8 @@ export const toggleReactionSchema = z.object({
   messageId: idSchema,
   emoji: z.enum(REACTION_EMOJIS),
 });
+// 읽음 커서 갱신 (KAN-33). 그 메시지가 정말 그 채널의 것인지는 서비스가 확인한다.
+export const markChannelReadSchema = z.object({ channelId: idSchema, messageId: idSchema });
 export const createChannelSchema = z.object({
   name: channelName,
   topic: channelTopic,

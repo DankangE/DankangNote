@@ -17,11 +17,18 @@ export const EMPTY_NOTIFICATION_PAGE: NotificationPage = {
 
 export async function fetchNotifications(before?: string): Promise<NotificationPage> {
   const query = before ? `?before=${encodeURIComponent(before)}` : '';
-  const response = await fetch(`/api/notifications${query}`);
-  if (!response.ok) {
+  try {
+    const response = await fetch(`/api/notifications${query}`);
+    if (!response.ok) {
+      return EMPTY_NOTIFICATION_PAGE;
+    }
+    return (await response.json()) as NotificationPage;
+  } catch {
+    // 네트워크 자체가 끊기면 fetch는 reject한다. 그대로 두면 호출부(NotificationBell)의
+    // refresh가 unhandled rejection으로 끝나고, 이미 올려 둔 요청 세대 때문에 뒤늦게
+    // 도착한 정상 응답까지 버려져 종이 영구히 '불러오는 중'에 멈춘다.
     return EMPTY_NOTIFICATION_PAGE;
   }
-  return (await response.json()) as NotificationPage;
 }
 
 export type { NotificationView };

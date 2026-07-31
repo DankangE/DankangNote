@@ -2,6 +2,9 @@ import { prisma } from '@/server/db';
 
 // 테스트 간 격리. FK 의존 순서를 신경 쓰지 않도록 CASCADE로 한 번에 비운다.
 //
+// ORDER BY가 있는 이유: 순서가 흔들리면 두 프로세스가 서로 다른 순서로 락을 잡아
+// TRUNCATE끼리 데드락이 난다(같은 체크아웃에서 세션을 병행할 때 실제로 발생).
+//
 // 테이블 목록을 손으로 적지 않고 DB에서 읽는 이유: 새 모델이 생겼을 때 목록에 추가하는
 // 걸 잊으면 그 테이블만 조용히 안 지워져, 테스트가 서로의 데이터를 물려받는 유령
 // 실패가 난다. 목록을 DB에서 가져오면 스키마가 늘어도 자동으로 따라온다.
@@ -9,6 +12,7 @@ export async function resetDatabase(): Promise<void> {
   const tables = await prisma.$queryRaw<{ tablename: string }[]>`
     SELECT tablename FROM pg_tables
     WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'
+    ORDER BY tablename
   `;
   if (tables.length === 0) return;
   // 식별자는 DB가 준 값이라 주입 위험이 없다. 대소문자 섞인 Prisma 테이블명이라 따옴표 필수.

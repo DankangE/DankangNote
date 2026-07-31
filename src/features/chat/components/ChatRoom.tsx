@@ -7,7 +7,7 @@ import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/lib/components/EmptyState';
-import { sendMessageAction } from '@/features/chat/api/actions';
+import { markChannelReadAction, sendMessageAction } from '@/features/chat/api/actions';
 import { fetchMentionCandidates, fetchOlderMessages } from '@/features/chat/api/history';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import type {
@@ -76,9 +76,21 @@ export function ChatRoom({
   // 알림에서 온 `?thread=` — 그 스레드를 열어 준다(KAN-32). URL을 상태의 원본으로 삼지
   // 않는 이유는 비용이다: 라우터로 replace하면 서버 컴포넌트가 다시 돌아 메시지 첫 페이지를
   // 통째로 다시 받는다. 여기서는 열고 나서 파라미터만 걷어 낸다.
+  //
+  // **렌더 중 setState에는 반드시 '값이 달라졌을 때만'이라는 가드가 필요하다.** 렌더 단계
+  // 업데이트는 값이 같아도 큐에 그대로 들어가고(react-dom: isRenderPhaseUpdate 분기에는
+  // eager 비교 bailout이 없다) 컴포넌트를 다시 돌린다. 조건이 파라미터 하나뿐이면 그 조건은
+  // 다음 렌더에도 참이라 루프가 되고, React가 상한에서 'Too many re-renders'로 던진다 —
+  // 답글 멘션 알림을 누르면 채팅 화면이 통째로 죽었다.
+  // 아래는 매번 seenThreadParam을 바꾸므로 최대 한 번만 다시 돌고 멈춘다.
   const threadParam = useSearchParams().get('thread');
-  if (threadParam) {
-    setOpenThreadId(threadParam);
+  const [seenThreadParam, setSeenThreadParam] = useState<string | null>(null);
+  if (threadParam !== seenThreadParam) {
+    setSeenThreadParam(threadParam);
+    // 파라미터가 지워질 때(아래 effect)는 열려 있는 스레드를 건드리지 않는다.
+    if (threadParam) {
+      setOpenThreadId(threadParam);
+    }
   }
 
   // 소비한 파라미터는 지운다. 남겨 두면 ① 스레드를 닫은 뒤 같은 알림을 다시 눌러도 URL이
@@ -158,7 +170,14 @@ export function ChatRoom({
   function handleListScroll() {
     const el = listRef.current;
     if (!el) return;
+    const wasStuck = stickToBottom.current;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    // 위로 올려 읽다가 하단으로 돌아온 순간 — 그 사이 쌓인 것을 방금 다 본 것이다.
+    // stickToBottom은 ref라 값이 바뀌어도 렌더가 없어서, 여기서 부르지 않으면 새 메시지가
+    // 한 건 더 오기 전까지 커서가 그대로 멈춰 있는다.
+    if (!wasStuck && stickToBottom.current) {
+      markReadIfCaughtUp(messages);
+    }
     if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) void loadOlder();
   }
 
@@ -319,6 +338,70 @@ export function ChatRoom({
     }
   }
 
+  /**
+   * 읽음 커서를 화면에 있는 가장 최신 메시지까지 올린다 (KAN-33).
+   *
+   * 조건이 셋이다. ① 하단에 붙어 있을 것 — 위로 올려 옛 메시지를 읽는 중이라면 그 아래는
+   * 아직 안 본 것이다. ② 탭이 보일 것 — 백그라운드 탭에 메시지가 쌓이는 것을 '읽었다'고
+   * 할 수 없다. ③ 낙관 말풍선이 아닐 것 — 서버에 없는 임시 id로는 커서를 세울 수 없다.
+   *
+   * 같은 메시지로 두 번 보내지 않도록 마지막으로 보낸 id를 기억하고, 실패하면 비워
+   * 다음 기회에 다시 시도한다({ok:false}도 실패다 — throw만 잡으면 그 메시지는 영영
+   * 재시도되지 않는다).
+   *
+   * 세 조건은 메시지 도착 말고도 **스크롤·탭 복귀**로 참이 될 수 있다. 그래서 effect가
+   * 아니라 함수로 두고 세 경로에서 부른다 — 상태를 흔들어 effect를 다시 돌리는 우회는
+   * 목록 전체를 다시 그리고 스크롤 앵커 계산까지 덩달아 태운다.
+   */
+  const lastMarked = useRef<string | null>(null);
+  const markReadIfCaughtUp = useCallback(
+    (list: RoomMessage[]) => {
+      const newest = [...list].reverse().find((message) => !message.pending);
+      if (!newest || !stickToBottom.current || document.visibilityState !== 'visible') {
+        return;
+      }
+      // 스레드가 열려 있으면 멈춘다. xl 미만에서는 본문이 display:none이라 스크롤 위치가
+      // 열던 순간 값으로 얼어붙고(브라우저가 이벤트를 안 준다), 그 사이 도착한 메시지가
+      // 화면에 뜬 적도 없이 읽음 처리된다.
+      if (openThreadId) {
+        return;
+      }
+      if (lastMarked.current === newest.id) {
+        return;
+      }
+      lastMarked.current = newest.id;
+      void markChannelReadAction({ channelId, messageId: newest.id })
+        .then((result) => {
+          if (!result.ok) lastMarked.current = null;
+        })
+        .catch(() => {
+          lastMarked.current = null;
+        });
+    },
+    // openThreadId를 ref가 아니라 의존성으로 받는다 — 그래야 스레드를 닫는 순간 이 콜백의
+    // 정체성이 바뀌고, 아래 effect가 그때 밀린 것을 이어서 처리한다.
+    [channelId, openThreadId],
+  );
+
+  // 스크롤·탭 복귀 핸들러가 최신 목록을 읽게 한다(핸들러는 구독 시점에 고정된다).
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+    markReadIfCaughtUp(messages);
+  }, [messages, markReadIfCaughtUp]);
+
+  // 백그라운드에 두고 온 탭으로 돌아오면 그때 밀린 것을 읽음 처리한다 — 숨겨진 동안
+  // 쌓인 뒤로는 새 메시지가 안 올 수 있어 목록 변화만으로는 영영 안 걸린다.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        markReadIfCaughtUp(messagesRef.current);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [markReadIfCaughtUp]);
+
   const handleToggleReaction = (messageId: string, emoji: string) =>
     void toggleReaction(
       messages.find((message) => message.id === messageId),
@@ -354,12 +437,14 @@ export function ChatRoom({
 
   return (
     <div className="flex min-h-0 flex-1">
-      {/* 스레드가 열리면 좁은 화면에서는 본문을 감추고 패널만 보인다(슬랙 모바일과 같다) —
-          두 컬럼을 나란히 두기엔 폭이 모자라 양쪽 다 못 읽게 된다. */}
+      {/* 스레드가 열리면 좁은 화면에서는 본문을 감추고 패널만 보인다(슬랙 모바일과 같다).
+          기준이 md(768)가 아니라 xl(1280)인 이유는 실측이다: 앱 레일 240 + 채널 사이드바 240
+          + 스레드 패널 384 = 864px이 본문 앞에 이미 서 있어서, 768에서는 본문 폭이 0이 되고
+          1008에서도 본문 텍스트가 한 글자씩 끊겨 내려간다. 나란히 세울 수 있을 때만 세운다. */}
       <div
         className={cn(
           'min-w-0 flex-1 flex-col',
-          openThreadId ? 'hidden md:flex' : 'flex',
+          openThreadId ? 'hidden xl:flex' : 'flex',
         )}
       >
         <div

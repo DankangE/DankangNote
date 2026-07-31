@@ -26,8 +26,10 @@ export async function fetchOlderMessages(
  * 실패해도 던지지 않고 빈 목록을 준다 — 자동완성이 안 뜰 뿐, 전송은 그대로 된다.
  */
 export async function fetchMentionCandidates(channelId: string): Promise<MentionCandidate[]> {
-  const response = await fetch(`/api/chat/members?channelId=${encodeURIComponent(channelId)}`);
-  if (!response.ok) {
+  const response = await fetch(`/api/chat/members?channelId=${encodeURIComponent(channelId)}`).catch(
+    () => null,
+  );
+  if (!response?.ok) {
     return [];
   }
   const people = (await response.json()) as ChannelPersonView[];
@@ -60,4 +62,21 @@ export async function fetchThread(
     return { ok: false, error: response.status === 404 ? THREAD_GONE_ERROR : GENERIC_ERROR };
   }
   return { ok: true, data: (await response.json()) as ThreadView };
+}
+
+/**
+ * 내 채널들의 안읽음 수 (KAN-33). 실패하면 null — 호출부가 지금 값을 그대로 둔다.
+ * 뱃지는 부가 정보라 못 맞췄다고 비우는 쪽이 더 나쁘다.
+ */
+export async function fetchUnreadCounts(): Promise<Record<string, number> | null> {
+  try {
+    const response = await fetch('/api/chat/unread');
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as Record<string, number>;
+  } catch {
+    // 네트워크가 끊긴 경우 — 지금 값을 그대로 둔다(호출부가 null을 그렇게 다룬다).
+    return null;
+  }
 }

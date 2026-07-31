@@ -4,6 +4,7 @@ import { prisma } from '@/server/db';
 import { Prisma } from '@/server/generated/prisma/client';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
+import { unreadCounts } from '@/server/services/channel-reads';
 
 /**
  * 워크스페이스의 기본 채널 이름. ensureDefaultChannel의 멱등 키이기도 하다 —
@@ -30,6 +31,8 @@ export interface ChannelView {
   /** 이름·주제 수정과 삭제가 가능한가(생성자 본인 또는 org:admin). */
   canManage: boolean;
   memberCount: number;
+  /** 안읽음 수 (KAN-33). 참여하지 않은 채널은 언제나 0이다. */
+  unread: number;
 }
 
 export interface ChannelInput {
@@ -60,14 +63,38 @@ const VIEW_INCLUDE = (userId: string) =>
   ({
     // 내 참여 행만 뽑아 isMember 판정에 쓴다(전체 멤버를 실어 오지 않는다).
     members: { where: { userId }, select: { userId: true } },
-    _count: { select: { members: true } },
   }) satisfies Prisma.ChannelInclude;
 
 type ChannelRow = Prisma.ChannelGetPayload<{
-  include: { members: { select: { userId: true } }; _count: { select: { members: true } } };
+  include: { members: { select: { userId: true } } };
 }>;
 
-function toView(channel: ChannelRow, actor: ChannelActor): ChannelView {
+/**
+ * 이 채널들의 참여자 수 (KAN-33 적대적 리뷰).
+ *
+ * 한때 `_count: { select: { members: true } }`였는데, 그건 KAN-30에서 걸러낸 것과 **정확히
+ * 같은 함정**이다 — 필터 없는 전 테이블 GROUP BY로 컴파일돼 비용이 전체 테넌트 합계에
+ * 비례한다. 남의 워크스페이스가 참여 행 20만 개를 쌓으면 내 채널 목록이 0.5ms에서 33ms로
+ * 느려졌다(실측 65배, 답은 그대로). 이번 페이지의 채널 id로 스코프한 groupBy 한 번이면 된다.
+ */
+async function countMembers(channelIds: string[]): Promise<Map<string, number>> {
+  if (channelIds.length === 0) {
+    return new Map();
+  }
+  const grouped = await prisma.channelMember.groupBy({
+    by: ['channelId'],
+    where: { channelId: { in: channelIds } },
+    _count: { _all: true },
+  });
+  return new Map(grouped.map((row) => [row.channelId, row._count._all]));
+}
+
+function toView(
+  channel: ChannelRow,
+  actor: ChannelActor,
+  memberCount: number,
+  unread = 0,
+): ChannelView {
   return {
     id: channel.id,
     name: channel.name,
@@ -76,18 +103,29 @@ function toView(channel: ChannelRow, actor: ChannelActor): ChannelView {
     isDefault: channel.isDefault,
     isMember: channel.members.length > 0,
     canManage: actor.isAdmin || channel.createdById === actor.userId,
-    memberCount: channel._count.members,
+    memberCount,
+    unread,
   };
 }
 
-/** 사이드바용 목록 — 기본 채널이 맨 위, 나머지는 이름순. */
+/**
+ * 사이드바용 목록 — 기본 채널이 맨 위, 나머지는 이름순.
+ * 안읽음 수를 함께 싣는다(KAN-33) — 사이드바가 목록과 뱃지를 따로 받으면 그 사이에
+ * 채널이 생기거나 사라졌을 때 뱃지만 남거나 채널만 남는 화면이 나온다.
+ */
 export async function listChannels(orgId: string, actor: ChannelActor): Promise<ChannelView[]> {
-  const channels = await prisma.channel.findMany({
-    where: visibleWhere(orgId, actor.userId),
-    orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-    include: VIEW_INCLUDE(actor.userId),
-  });
-  return channels.map((channel) => toView(channel, actor));
+  const [channels, unread] = await Promise.all([
+    prisma.channel.findMany({
+      where: visibleWhere(orgId, actor.userId),
+      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
+      include: VIEW_INCLUDE(actor.userId),
+    }),
+    unreadCounts(orgId, actor.userId),
+  ]);
+  const memberCounts = await countMembers(channels.map((channel) => channel.id));
+  return channels.map((channel) =>
+    toView(channel, actor, memberCounts.get(channel.id) ?? 0, unread.get(channel.id) ?? 0),
+  );
 }
 
 /** 단건 조회. 접근 권한이 없거나 없는 채널이면 null — '없음'과 '가려짐'을 구분하지 않는다. */
@@ -100,7 +138,12 @@ export async function getChannel(
     where: { id: channelId, ...visibleWhere(orgId, actor.userId) },
     include: VIEW_INCLUDE(actor.userId),
   });
-  return channel && toView(channel, actor);
+  if (!channel) {
+    return null;
+  }
+  // 단건이라 groupBy 대신 count 하나 — 여기서도 필터 없는 전 테이블 집계는 쓰지 않는다.
+  const memberCount = await prisma.channelMember.count({ where: { channelId: channel.id } });
+  return toView(channel, actor, memberCount);
 }
 
 /**
@@ -202,7 +245,8 @@ export async function createChannel(
     await prisma.channel.deleteMany({ where: { id: channel.id } });
   });
 
-  return { status: 'ok', channel: toView(channel, actor) };
+  // 방금 만든 채널이라 참여자는 만든 사람 하나뿐이고, 안읽음도 0이다.
+  return { status: 'ok', channel: toView(channel, actor, 1) };
 }
 
 /** 관리 권한 where — 보이는 채널 중 내가 만든 것, admin이면 보이는 채널 전부. */

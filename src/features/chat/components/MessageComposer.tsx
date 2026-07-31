@@ -168,6 +168,13 @@ export function MessageComposer({
       event.preventDefault();
       submit();
     }
+    // 글을 쓰는 중의 Escape는 위로 올리지 않는다. 스레드 패널이 Escape로 닫히는데
+    // (ThreadPanel), 패널은 rootId로 keying돼 있어 다시 열면 새로 마운트된다 — 즉 쓰던
+    // 답글이 복구 불가능하게 사라진다. 한국어 IME에서 Escape는 조합 취소로도 흔히 눌린다.
+    // 패널을 닫는 길은 남아 있다: 목록·제목·닫기 버튼 어디서든 Escape가 그대로 동작한다.
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+    }
   }
 
   return (
