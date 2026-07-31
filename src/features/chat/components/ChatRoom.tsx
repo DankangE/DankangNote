@@ -7,7 +7,7 @@ import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/lib/components/EmptyState';
-import { sendMessageAction } from '@/features/chat/api/actions';
+import { markChannelReadAction, sendMessageAction } from '@/features/chat/api/actions';
 import { fetchMentionCandidates, fetchOlderMessages } from '@/features/chat/api/history';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import type {
@@ -318,6 +318,44 @@ export function ChatRoom({
       return fail(GENERIC_ERROR);
     }
   }
+
+  /**
+   * 읽음 커서를 화면에 있는 가장 최신 메시지까지 올린다 (KAN-33).
+   *
+   * 조건이 셋이다. ① 하단에 붙어 있을 것 — 위로 올려 옛 메시지를 읽는 중이라면 그 아래는
+   * 아직 안 본 것이다. ② 탭이 보일 것 — 백그라운드 탭에 메시지가 쌓이는 것을 '읽었다'고
+   * 할 수 없다. ③ 낙관 말풍선이 아닐 것 — 서버에 없는 임시 id로는 커서를 세울 수 없다.
+   *
+   * 같은 메시지로 두 번 보내지 않도록 마지막으로 보낸 id를 기억한다. 실패는 조용히 넘긴다 —
+   * 읽음은 다음 메시지에서 다시 시도되고, 실패했다고 사용자가 할 일이 있는 것도 아니다.
+   */
+  const lastMarked = useRef<string | null>(null);
+  useEffect(() => {
+    const newest = [...messages].reverse().find((message) => !message.pending);
+    if (!newest || !stickToBottom.current || document.visibilityState !== 'visible') {
+      return;
+    }
+    if (lastMarked.current === newest.id) {
+      return;
+    }
+    lastMarked.current = newest.id;
+    void markChannelReadAction({ channelId, messageId: newest.id }).catch(() => {
+      lastMarked.current = null;
+    });
+  }, [messages, channelId]);
+
+  // 백그라운드에 두고 온 탭으로 돌아오면 그때 밀린 것을 읽음 처리한다 — 위 effect는
+  // 메시지가 바뀔 때만 도는데, 탭이 숨겨진 동안 쌓인 뒤로는 새 메시지가 안 올 수 있다.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        lastMarked.current = null;
+        setMessages((prev) => [...prev]);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   const handleToggleReaction = (messageId: string, emoji: string) =>
     void toggleReaction(

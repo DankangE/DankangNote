@@ -4,6 +4,7 @@ import { prisma } from '@/server/db';
 import { Prisma } from '@/server/generated/prisma/client';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
+import { unreadCounts } from '@/server/services/channel-reads';
 
 /**
  * 워크스페이스의 기본 채널 이름. ensureDefaultChannel의 멱등 키이기도 하다 —
@@ -30,6 +31,8 @@ export interface ChannelView {
   /** 이름·주제 수정과 삭제가 가능한가(생성자 본인 또는 org:admin). */
   canManage: boolean;
   memberCount: number;
+  /** 안읽음 수 (KAN-33). 참여하지 않은 채널은 언제나 0이다. */
+  unread: number;
 }
 
 export interface ChannelInput {
@@ -67,7 +70,7 @@ type ChannelRow = Prisma.ChannelGetPayload<{
   include: { members: { select: { userId: true } }; _count: { select: { members: true } } };
 }>;
 
-function toView(channel: ChannelRow, actor: ChannelActor): ChannelView {
+function toView(channel: ChannelRow, actor: ChannelActor, unread = 0): ChannelView {
   return {
     id: channel.id,
     name: channel.name,
@@ -77,17 +80,25 @@ function toView(channel: ChannelRow, actor: ChannelActor): ChannelView {
     isMember: channel.members.length > 0,
     canManage: actor.isAdmin || channel.createdById === actor.userId,
     memberCount: channel._count.members,
+    unread,
   };
 }
 
-/** 사이드바용 목록 — 기본 채널이 맨 위, 나머지는 이름순. */
+/**
+ * 사이드바용 목록 — 기본 채널이 맨 위, 나머지는 이름순.
+ * 안읽음 수를 함께 싣는다(KAN-33) — 사이드바가 목록과 뱃지를 따로 받으면 그 사이에
+ * 채널이 생기거나 사라졌을 때 뱃지만 남거나 채널만 남는 화면이 나온다.
+ */
 export async function listChannels(orgId: string, actor: ChannelActor): Promise<ChannelView[]> {
-  const channels = await prisma.channel.findMany({
-    where: visibleWhere(orgId, actor.userId),
-    orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
-    include: VIEW_INCLUDE(actor.userId),
-  });
-  return channels.map((channel) => toView(channel, actor));
+  const [channels, unread] = await Promise.all([
+    prisma.channel.findMany({
+      where: visibleWhere(orgId, actor.userId),
+      orderBy: [{ isDefault: 'desc' }, { name: 'asc' }],
+      include: VIEW_INCLUDE(actor.userId),
+    }),
+    unreadCounts(orgId, actor.userId),
+  ]);
+  return channels.map((channel) => toView(channel, actor, unread.get(channel.id) ?? 0));
 }
 
 /** 단건 조회. 접근 권한이 없거나 없는 채널이면 null — '없음'과 '가려짐'을 구분하지 않는다. */
