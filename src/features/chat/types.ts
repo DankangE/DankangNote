@@ -48,6 +48,19 @@ export type ReactionDelta = {
   added: boolean;
 };
 
+/**
+ * 클라이언트 내부용 — 도착 순번을 붙인 델타.
+ *
+ * ChatRoom이 모은 델타 피드를 스레드 패널이 훑어 자기 몫을 가져가는데, 피드가 바뀔 때마다
+ * 통째로 다시 접으면 **이미 반영한 옛 델타가 다시 적용된다**. count가 절대값이라 그건
+ * 덮어쓰기이고, 그 사이 올려 둔 낙관 값이나 더 최신 값을 과거로 되돌린다. seq가 '어디까지
+ * 봤는지'의 기준이 되어 새로 온 것만 접게 한다(답글 피드는 upsert가 단조라 이게 필요 없다).
+ */
+export type LiveReaction = {
+  seq: number;
+  delta: ReactionDelta;
+};
+
 // 현재 사용자의 표시 정보 — 낙관 전송 말풍선에 쓴다. 미러 테이블이 아직 동기화
 // 전일 수 있어 서버에서 Clerk 세션 기준으로 채워 내려보낸다.
 export type ChatViewer = {

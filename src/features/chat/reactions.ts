@@ -23,7 +23,3 @@ export const REACTION_LABELS: Record<ReactionEmoji, string> = {
   '✅': '완료',
   '🔥': '불',
 };
-
-export function isReactionEmoji(value: string): value is ReactionEmoji {
-  return (REACTION_EMOJIS as readonly string[]).includes(value);
-}

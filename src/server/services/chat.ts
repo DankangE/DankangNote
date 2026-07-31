@@ -6,7 +6,7 @@ import { visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
-import { REACTION_EMOJIS } from '@/features/chat/reactions';
+import { REACTION_EMOJIS, type ReactionEmoji } from '@/features/chat/reactions';
 import type { ChatMessageView, ReactionDelta, ReactionView } from '@/features/chat/types';
 
 type MessageRow = Prisma.ChatMessageGetPayload<object>;
@@ -46,19 +46,24 @@ function toView(
  */
 async function loadReactions(
   messageIds: string[],
+  orgId: string,
   viewerId: string,
 ): Promise<Map<string, ReactionView[]>> {
   if (messageIds.length === 0) {
     return new Map();
   }
+  // orgId는 논리적으로 중복이다 — 여기 오는 id는 이미 org·채널 가시성을 통과한 메시지의
+  // 것뿐이다. 그래도 싣는 이유는 listThread(답글 조회)와 같다: '테넌트 데이터 조회에는
+  // 예외 없이 orgId'를 이 한 곳에서만 비우면, 나중에 이 함수를 다른 데서 부를 때 방어선이
+  // 없다. 비용도 없다(선두가 messageId인 기본키 인덱스를 그대로 탄다).
   const [counts, mine] = await Promise.all([
     prisma.messageReaction.groupBy({
       by: ['messageId', 'emoji'],
-      where: { messageId: { in: messageIds } },
+      where: { orgId, messageId: { in: messageIds } },
       _count: { _all: true },
     }),
     prisma.messageReaction.findMany({
-      where: { messageId: { in: messageIds }, userId: viewerId },
+      where: { orgId, messageId: { in: messageIds }, userId: viewerId },
       select: { messageId: true, emoji: true },
     }),
   ]);
@@ -111,7 +116,11 @@ async function countReplies(rootIds: string[]): Promise<Map<string, number>> {
 
 // 여러 메시지의 작성자·답글 수·리액션을 한 번에 붙여 뷰로 만든다(N+1 방지).
 // viewerId는 리액션의 mine을 채우는 데 쓴다 — 같은 메시지도 보는 사람마다 다르게 보인다.
-async function toViews(messages: MessageRow[], viewerId: string): Promise<ChatMessageView[]> {
+async function toViews(
+  messages: MessageRow[],
+  orgId: string,
+  viewerId: string,
+): Promise<ChatMessageView[]> {
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
   const rootIds = messages.filter((message) => !message.parentId).map((message) => message.id);
   const [authors, replyCounts, reactions] = await Promise.all([
@@ -120,6 +129,7 @@ async function toViews(messages: MessageRow[], viewerId: string): Promise<ChatMe
     // 답글에도 리액션을 달 수 있으므로 루트만이 아니라 이 페이지 전부를 대상으로 한다.
     loadReactions(
       messages.map((message) => message.id),
+      orgId,
       viewerId,
     ),
   ]);
@@ -173,6 +183,7 @@ export function listMessages(
   return pageOf(
     { orgId, parentId: null, channel: { id: channelId, ...visibleWhere(orgId, userId) } },
     before,
+    orgId,
     userId,
   );
 }
@@ -184,6 +195,7 @@ export function listMessages(
 async function pageOf(
   scope: Prisma.ChatMessageWhereInput,
   before: string | undefined,
+  orgId: string,
   viewerId: string,
 ): Promise<MessagePage> {
   // 커서는 메시지 id 하나만 받고 기준 시각은 서버가 되찾는다 — 클라이언트가 보낸
@@ -238,7 +250,7 @@ async function pageOf(
   const hasMore = rows.length > MESSAGE_PAGE_SIZE;
   const messages = (hasMore ? rows.slice(0, MESSAGE_PAGE_SIZE) : rows).reverse();
 
-  return { messages: await toViews(messages, viewerId), hasMore };
+  return { messages: await toViews(messages, orgId, viewerId), hasMore };
 }
 
 /** 스레드 = 루트 메시지 + 그 답글 한 페이지. */
@@ -266,12 +278,17 @@ export async function listThread(
     return null;
   }
 
-  const [rootView] = await toViews([root], userId);
+  const [rootView] = await toViews([root], orgId, userId);
   // 답글도 테넌트 스코프를 스스로 갖는다. 루트에서 접근 판정이 끝났다는 논리만으로도
   // 막히지만, '테넌트 데이터 조회에는 예외 없이 orgId를 싣는다'(backend.md)를 여기서만
   // 비우면 나중에 이 함수를 다른 데서 부를 때 방어선이 없다. 답글의 channelId가 부모와
   // 같다는 불변식도 DB로는 표현돼 있지 않으므로 한 겹 더 건다.
-  const page = await pageOf({ parentId: rootId, orgId, channelId: root.channelId }, before, userId);
+  const page = await pageOf(
+    { parentId: rootId, orgId, channelId: root.channelId },
+    before,
+    orgId,
+    userId,
+  );
   return { root: rootView, page };
 }
 
@@ -360,14 +377,24 @@ export async function createMessage(
  * 리액션 토글 (KAN-31). 이미 눌러 둔 이모지면 취소하고, 아니면 추가한다.
  * 접근할 수 없는 메시지면 null — 액션이 '대상을 찾을 수 없습니다'로 바꾼다.
  *
- * 반환값의 count는 토글 직후 다시 센 절대값이다. 응답과 브로드캐스트가 같은 값을 싣기
- * 때문에 어느 경로로 먼저 도착하든, 몇 번 도착하든 수신 측 상태가 같은 곳에 수렴한다.
+ * 반환값의 count는 내 쓰기와 같은 트랜잭션에서 센 절대값이다. 응답과 브로드캐스트가 같은
+ * 값을 싣기 때문에 어느 경로로 도착하든, 몇 번 도착하든 결과가 같다.
+ *
+ * 한계 하나 — **서로 다른 요청 사이의 순서는 보장되지 않는다.** A가 세고 브로드캐스트를
+ * 쏘기 전에 B가 커밋하고 먼저 쏘면, 수신 측은 B(2) 다음 A(1)을 적용해 DB가 2인데 화면은
+ * 1로 남는다. 절대값이 '중복 배달'에는 면역이지만 '역순 배달'에는 아니다 — 그건 집계에
+ * 단조 증가하는 버전을 붙여야 풀리고, 그건 이 티켓의 범위를 넘는 설계 변경이다(KAN-52).
+ * 다음 리액션 한 번이나 새로고침이 값을 되돌려 놓는다.
+ *
+ * emoji를 ReactionEmoji로 좁힌 것은 서비스 경계에서의 마지막 방어선이다 — 지금은 액션이
+ * z.enum으로 거르지만, 나중에 다른 호출부가 생겼을 때 임의 문자열이 이 컬럼에 들어가면
+ * 그게 곧 남의 화면에 렌더된다.
  */
 export async function toggleReaction(
   orgId: string,
   userId: string,
   messageId: string,
-  emoji: string,
+  emoji: ReactionEmoji,
 ): Promise<ReactionDelta | null> {
   // 리액션의 접근 판정은 '그 메시지가 나에게 보이는가' 하나다 — 메시지를 볼 수 있으면
   // 리액션도 할 수 있다(슬랙과 같다). 채널 가시성 판정은 여기서도 visibleWhere를 통과한다.
@@ -382,32 +409,38 @@ export async function toggleReaction(
   // 삭제된 워크스페이스·사용자로의 쓰기를 막는다(createMessage와 같은 pre/post 이중 확인).
   await assertNotTombstoned([orgId, userId]);
 
-  // 먼저 지워 보고, 지워진 게 없으면 추가다. '조회 후 분기'로 하면 두 탭에서 동시에 누를 때
-  // 둘 다 '없음'을 보고 둘 다 추가로 가는데, 그때 두 번째는 유니크 위반으로 죽는다.
-  // deleteMany의 반환 count가 그 자체로 원자적인 판정이라 경합이 생기지 않는다.
-  const removed = await prisma.messageReaction.deleteMany({
-    where: { messageId, userId, emoji },
+  // 토글과 집계를 한 트랜잭션에 묶는다. 나눠 놓으면 세는 시점이 내 쓰기와 무관해져서,
+  // 내 요청이 돌려주는 count가 내 변경조차 반영하지 않은 값일 수 있다.
+  const { added, count } = await prisma.$transaction(async (tx) => {
+    // 먼저 지워 보고, 지워진 게 없으면 추가다. '조회 후 분기'로 하면 두 탭에서 동시에 누를
+    // 때 둘 다 '없음'을 보고 둘 다 추가로 가는데, 그때 두 번째는 유니크 위반으로 죽는다.
+    // deleteMany의 반환 count가 그 자체로 원자적인 판정이라 경합이 생기지 않는다.
+    const removed = await tx.messageReaction.deleteMany({ where: { messageId, userId, emoji } });
+    const isAdd = removed.count === 0;
+    if (isAdd) {
+      // skipDuplicates — 위 delete와 이 create 사이에 다른 탭이 같은 리액션을 넣었을 수 있다.
+      // 그 경우 '이미 눌린 상태'가 우리가 만들려던 상태와 같으므로 실패로 볼 이유가 없다.
+      await tx.messageReaction.createMany({
+        data: [{ messageId, userId, emoji, orgId }],
+        skipDuplicates: true,
+      });
+    }
+    return {
+      added: isAdd,
+      count: await tx.messageReaction.count({ where: { orgId, messageId, emoji } }),
+    };
   });
-  const added = removed.count === 0;
-  if (added) {
-    // skipDuplicates — 위 delete와 이 create 사이에 다른 탭이 같은 리액션을 넣었을 수 있다.
-    // 그 경우 '이미 눌린 상태'가 우리가 만들려던 상태와 같으므로 실패로 볼 이유가 없다.
-    await prisma.messageReaction.createMany({
-      data: [{ messageId, userId, emoji, orgId }],
-      skipDuplicates: true,
-    });
-  }
 
   // post-check — 확인과 쓰기 사이에 조직·계정 삭제가 커밋됐으면 방금 만든 행을 되돌린다.
   // org 삭제는 cascade가 이미 지웠을 수 있어 deleteMany는 멱등하게 동작한다.
+  // 여기서 throw하면 액션의 guarded가 받아 브로드캐스트 없이 실패로 끝난다 — 되돌린 뒤의
+  // 낡은 count가 남의 화면으로 나가지 않는다.
   if (added) {
     await assertNotTombstoned([orgId, userId], async () => {
       await prisma.messageReaction.deleteMany({ where: { messageId, userId, emoji } });
     });
   }
 
-  // 토글 직후 다시 센다 — 내 변경분만 더하면 그 사이 다른 사람이 누른 것이 빠진다.
-  const count = await prisma.messageReaction.count({ where: { messageId, emoji } });
   return {
     messageId,
     channelId: message.channelId,

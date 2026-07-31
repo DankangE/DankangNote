@@ -3,22 +3,31 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { sendMessageAction, toggleReactionAction } from '@/features/chat/api/actions';
+import { sendMessageAction } from '@/features/chat/api/actions';
 import { fetchThread } from '@/features/chat/api/history';
 import {
   applyReaction,
-  hasMyReaction,
   isGrouped,
   pendingMessage,
-  setMyReaction,
   upsert,
   type RoomMessage,
 } from '@/features/chat/room-state';
-import type { ChatMessageView, ChatViewer, ReactionDelta } from '@/features/chat/types';
+import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
+import type {
+  ChatMessageView,
+  ChatViewer,
+  LiveReaction,
+  ReactionDelta,
+} from '@/features/chat/types';
 import { ChatMessageRow } from './ChatMessageRow';
 import { MessageComposer } from './MessageComposer';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
+
+// 피드에서 가장 최근 순번. 마운트 시점의 기준선이자 '어디까지 봤는지'의 갱신값이다.
+function lastSeq(feed: readonly LiveReaction[]): number {
+  return feed.at(-1)?.seq ?? 0;
+}
 
 // 하단에서 이 픽셀 이내면 "붙어있다"고 보고 새 답글에 자동 스크롤한다(본문과 같은 규칙).
 const STICK_THRESHOLD_PX = 120;
@@ -43,7 +52,7 @@ export function ThreadPanel({
   channelId: string;
   viewer: ChatViewer;
   liveReplies: readonly ChatMessageView[];
-  liveReactions: readonly ReactionDelta[];
+  liveReactions: readonly LiveReaction[];
   onSyncReplyCount: (rootId: string, replyCount: number) => void;
   onReplyCreated: (reply: ChatMessageView) => void;
   onReactionApplied: (delta: ReactionDelta) => void;
@@ -128,19 +137,51 @@ export function ThreadPanel({
     setReplies(update);
   }, []);
 
-  // ChatRoom이 모아 주는 리액션 델타 중 이 패널에 있는 메시지의 것만 반영한다.
-  // liveReplies와 같은 이유로 effect가 아니라 렌더 중에 접는다(한 프레임 늦은 화면 방지).
-  const [seenReactions, setSeenReactions] = useState(liveReactions);
-  if (liveReactions !== seenReactions) {
-    setSeenReactions(liveReactions);
-    // 루트의 리액션도 이 패널 안에 그려지므로 messageId === rootId인 델타까지 받는다.
-    const mine = liveReactions.filter(
-      (delta) => delta.parentId === rootId || delta.messageId === rootId,
-    );
-    if (mine.length > 0) {
+  /**
+   * ChatRoom이 모아 주는 리액션 델타 중 이 패널에 있는 메시지의 것만 반영한다.
+   * liveReplies와 같은 이유로 effect가 아니라 렌더 중에 접는다(한 프레임 늦은 화면 방지).
+   *
+   * 답글 피드와 결정적으로 다른 점: 여기서는 **새로 온 것만** 접어야 한다. upsert는 단조라
+   * 다시 접어도 같은 결과지만 applyReaction은 절대값 덮어쓰기라, 옛 델타를 다시 적용하면
+   * 그 뒤에 올려 둔 낙관 값이나 더 최신 값이 과거로 되돌아간다. 채널 어디서든 리액션이
+   * 하나 생기면 피드 배열이 새로 만들어지므로, 그 트리거는 이 스레드와 무관해도 온다.
+   */
+  const [seen, setSeen] = useState(() => ({ feed: liveReactions, seq: lastSeq(liveReactions) }));
+  // 스레드를 아직 못 받은 사이에 온 델타. 빈 목록에 적용하면 그냥 사라지고, 뒤이어 도착한
+  // 서버 스냅샷이 옛 카운트로 화면을 굳혀 본문 목록과 영영 갈린다(답글은 upsert 병합으로
+  // 같은 창을 막아 뒀다). 루트가 올 때까지 들고 있다가 그 위에 얹는다.
+  const [queued, setQueued] = useState<readonly ReactionDelta[]>([]);
+
+  if (liveReactions !== seen.feed) {
+    const fresh = liveReactions
+      .filter((entry) => entry.seq > seen.seq)
+      .map((entry) => entry.delta)
+      // 루트의 리액션도 이 패널 안에 그려지므로 messageId === rootId인 델타까지 받는다.
+      .filter((delta) => delta.parentId === rootId || delta.messageId === rootId);
+    setSeen({ feed: liveReactions, seq: Math.max(seen.seq, lastSeq(liveReactions)) });
+    if (fresh.length > 0) {
+      if (root) {
+        applyToPanel((list) =>
+          fresh.reduce((acc, delta) => applyReaction(acc, delta, viewer.id), list),
+        );
+      } else {
+        setQueued((prev) => [...prev, ...fresh]);
+      }
+    }
+  }
+
+  // 루트가 도착하는 순간 기다리던 델타를 그 위에 얹는다. 위와 같은 이유로 effect가 아니라
+  // 렌더 중이다 — 서버 스냅샷이 한 프레임 먼저 보이면 그 사이 카운트가 눈에 띄게 튄다.
+  // 스냅샷보다 살짝 이른 델타가 섞이면 카운트가 잠깐 1 어긋날 수 있지만(브로드캐스트가
+  // 조회보다 먼저 나간 경우) 다음 델타가 바로잡는다 — 통째로 잃어 영영 갈리는 쪽이 나쁘다.
+  const [drained, setDrained] = useState(false);
+  if (root && !drained) {
+    setDrained(true);
+    if (queued.length > 0) {
       applyToPanel((list) =>
-        mine.reduce((acc, delta) => applyReaction(acc, delta, viewer.id), list),
+        queued.reduce((acc, delta) => applyReaction(acc, delta, viewer.id), list),
       );
+      setQueued([]);
     }
   }
 
@@ -228,32 +269,20 @@ export function ThreadPanel({
     }
   }
 
-  // 리액션 토글 — 본문과 같은 규칙(낙관 → 서버 절대값 확정 → 실패 시 내 몫만 롤백).
-  // 확정된 델타는 위로도 올려 보낸다: 루트에 단 리액션은 본문 목록에도 같은 행으로 떠 있다.
-  async function handleToggleReaction(messageId: string, emoji: string) {
-    const target = root?.id === messageId ? root : replies.find((reply) => reply.id === messageId);
-    if (!target) return;
-    const next = !hasMyReaction(target, emoji);
-    setError(null);
-    applyToPanel((list) => setMyReaction(list, messageId, emoji, viewer.id, next));
+  // 본문과 같은 훅을 쓴다 — 낙관·롤백 규칙이 두 화면에서 갈리지 않게. 확정된 델타는
+  // 위로도 올려 보낸다: 루트에 단 리액션은 본문 목록에도 같은 행으로 떠 있다.
+  const { toggle } = useReactionToggle({
+    viewerId: viewer.id,
+    apply: applyToPanel,
+    onConfirmed: onReactionApplied,
+    onError: setError,
+  });
 
-    const rollback = (message: string) => {
-      applyToPanel((list) => setMyReaction(list, messageId, emoji, viewer.id, !next));
-      setError(message);
-    };
-
-    try {
-      const result = await toggleReactionAction({ messageId, emoji });
-      if (!result.ok) {
-        rollback(result.error);
-        return;
-      }
-      applyToPanel((list) => applyReaction(list, result.data, viewer.id));
-      onReactionApplied(result.data);
-    } catch {
-      rollback(GENERIC_ERROR);
-    }
-  }
+  const handleToggleReaction = (messageId: string, emoji: string) =>
+    void toggle(
+      root?.id === messageId ? root : replies.find((reply) => reply.id === messageId),
+      emoji,
+    );
 
   // 답글 수 표시. 한 페이지 안에 다 들어왔으면 화면에 있는 것이 곧 전부라 그 길이가
   // 가장 정확하다(내 전송·실시간 답글이 즉시 반영된다). 더 있는 경우에만 서버 값을 쓴다.

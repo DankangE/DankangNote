@@ -673,3 +673,43 @@ describe('리액션 격리 · 수명 (KAN-31)', () => {
     expect(await prisma.messageReaction.count()).toBe(0);
   });
 });
+
+describe('리액션 자체 리뷰 반영 (KAN-31)', () => {
+  it('토글이 돌려주는 count는 자기 쓰기를 반드시 반영한다', async () => {
+    // 토글과 집계가 한 트랜잭션이 아니면, 내 요청이 내 변경조차 안 담긴 값을 돌려줄 수 있다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+
+    const add = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(add!.count).toBe(await prisma.messageReaction.count({ where: { messageId: id } }));
+
+    const remove = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    expect(remove!.count).toBe(0);
+  });
+
+  it('조회의 리액션 집계도 org로 스코프된다', async () => {
+    // orgId와 messageId가 어긋난 행은 서비스만 거치면 안 생긴다. 조회 조건에서 orgId를
+    // 빼도 messageId만으로 통과해 버리는지는 이물 행을 심어야만 드러난다(스레드와 같은 이유).
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍');
+    await prisma.messageReaction.create({
+      data: { messageId: sent!.message.id, userId: USER_OTHER, emoji: '🎉', orgId: ORG_B },
+    });
+
+    const page = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
+
+    expect(page.messages[0].reactions).toEqual([{ emoji: '👍', count: 1, mine: true }]);
+  });
+
+  it('조직을 지워도 남의 org 리액션은 그 메시지에 남지 않는다', async () => {
+    // 위 이물 행이 org 삭제 cascade를 타는지 — orgId FK가 실제로 걸려 있는지 확인한다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await prisma.messageReaction.create({
+      data: { messageId: sent!.message.id, userId: USER_OTHER, emoji: '🎉', orgId: ORG_B },
+    });
+
+    await prisma.organization.delete({ where: { id: ORG_B } });
+
+    expect(await prisma.messageReaction.count()).toBe(0);
+  });
+});

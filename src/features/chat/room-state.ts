@@ -152,7 +152,37 @@ export function setMyReaction(
   });
 }
 
+/**
+ * count는 그대로 두고 내 표시만 되돌린다.
+ *
+ * 낙관 적용과 롤백 사이에 서버 절대값이 도착했을 때 쓴다. 그 값은 실패한 내 토글을
+ * 포함하지 않은 진짜 카운트라, 여기서 setMyReaction으로 또 ∓1 하면 그만큼 어긋난 채
+ * 굳는다(다음 델타가 올 때까지). 되돌릴 것은 이미 덮인 count가 아니라 내 표시뿐이다.
+ */
+export function markMyReaction(
+  list: RoomMessage[],
+  messageId: string,
+  emoji: string,
+  mine: boolean,
+): RoomMessage[] {
+  return list.map((message) =>
+    message.id === messageId
+      ? {
+          ...message,
+          reactions: message.reactions.map((reaction) =>
+            reaction.emoji === emoji ? { ...reaction, mine } : reaction,
+          ),
+        }
+      : message,
+  );
+}
+
 /** 이 메시지에 내가 그 이모지를 눌러 뒀는지 — 다음 클릭의 방향을 정한다. */
 export function hasMyReaction(message: RoomMessage, emoji: string): boolean {
   return message.reactions.some((reaction) => reaction.emoji === emoji && reaction.mine);
+}
+
+/** 델타·in-flight 추적의 키. 리액션은 (메시지, 이모지)마다 독립이다. */
+export function reactionKey(messageId: string, emoji: string): string {
+  return `${messageId}:${emoji}`;
 }
