@@ -61,3 +61,15 @@ export async function fetchThread(
   }
   return { ok: true, data: (await response.json()) as ThreadView };
 }
+
+/**
+ * 내 채널들의 안읽음 수 (KAN-33). 실패하면 null — 호출부가 지금 값을 그대로 둔다.
+ * 뱃지는 부가 정보라 못 맞췄다고 비우는 쪽이 더 나쁘다.
+ */
+export async function fetchUnreadCounts(): Promise<Record<string, number> | null> {
+  const response = await fetch('/api/chat/unread');
+  if (!response.ok) {
+    return null;
+  }
+  return (await response.json()) as Record<string, number>;
+}

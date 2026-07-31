@@ -22,7 +22,10 @@ type Baseline =
  */
 function afterBaseline(baseline: Baseline): Prisma.ChatMessageWhereInput {
   if (baseline.kind === 'joined') {
-    return { createdAt: { gt: baseline.at } };
+    // gte인 이유: 참여 행과 **정확히 같은 ms**에 들어온 메시지는 참여 직후에 온 것이다.
+    // gt로 두면 그 한 건이 영영 안 세어진다(커서 가지는 id로 동률을 가르는데 여기만
+    // 비대칭이면 규칙이 갈린다).
+    return { createdAt: { gte: baseline.at } };
   }
   return {
     // 인덱스 시작 경계. 아래 키셋만으로는 (channelId, createdAt) 인덱스의 출발점을 못 잡는다.
@@ -80,9 +83,14 @@ export async function unreadCounts(orgId: string, userId: string): Promise<Unrea
   const cursorByChannel = new Map(cursors.map((row) => [row.channelId, row]));
   const branches = memberships.map(({ channelId, createdAt }) => {
     const cursor = cursorByChannel.get(channelId);
-    const baseline: Baseline = cursor
-      ? { kind: 'cursor', at: cursor.lastReadAt, id: cursor.lastReadId }
-      : { kind: 'joined', at: createdAt };
+    // 커서가 참여 시각보다 **뒤일 때만** 커서를 쓴다. 나갔다 다시 들어오면 옛 커서가
+    // 남아 있는데(leaveChannel은 참여 행만 지운다), 그걸 그대로 믿으면 내가 없던 동안의
+    // 대화가 통째로 안읽음으로 되살아난다 — '참여 이전 이력은 안읽음이 아니다'라는
+    // 규칙이 재참여 경로에서만 깨지는 것이다.
+    const baseline: Baseline =
+      cursor && cursor.lastReadAt >= createdAt
+        ? { kind: 'cursor', at: cursor.lastReadAt, id: cursor.lastReadId }
+        : { kind: 'joined', at: createdAt };
     return { channelId, ...afterBaseline(baseline) };
   });
 
@@ -125,27 +133,35 @@ export async function markChannelRead(
 
   // 먼저 '더 앞으로 가는 경우'만 갱신해 본다. where에 전진 조건을 실었으므로 동시에 들어온
   // 옛 커서는 매칭 자체가 안 된다 — 읽고 비교하는 방식과 달리 경합이 생기지 않는다.
-  const advanced = await prisma.channelRead.updateMany({
-    where: {
-      channelId,
-      userId,
-      OR: [
-        { lastReadAt: { lt: message.createdAt } },
-        { lastReadAt: message.createdAt, lastReadId: { lt: message.id } },
-      ],
-    },
-    data: { lastReadAt: message.createdAt, lastReadId: message.id },
-  });
-  if (advanced.count > 0) {
+  const advance = () =>
+    prisma.channelRead.updateMany({
+      where: {
+        channelId,
+        userId,
+        orgId,
+        OR: [
+          { lastReadAt: { lt: message.createdAt } },
+          { lastReadAt: message.createdAt, lastReadId: { lt: message.id } },
+        ],
+      },
+      data: { lastReadAt: message.createdAt, lastReadId: message.id },
+    });
+
+  if ((await advance()).count > 0) {
     return true;
   }
 
   // 갱신되지 않은 이유는 둘이다: 행이 없거나(첫 읽음), 이미 더 앞서 있거나.
-  // 전자만 만든다 — createMany + skipDuplicates라 동시 첫 읽음에도 유니크 위반으로 죽지 않고,
-  // 후자는 '이미 더 읽은 상태'라 아무 일도 일어나지 않는 것이 맞다.
-  await prisma.channelRead.createMany({
+  // 전자만 만든다 — createMany + skipDuplicates라 동시 첫 읽음에도 유니크 위반으로 죽지 않는다.
+  const created = await prisma.channelRead.createMany({
     data: [{ channelId, userId, orgId, lastReadAt: message.createdAt, lastReadId: message.id }],
     skipDuplicates: true,
   });
+  if (created.count === 0) {
+    // 방금 다른 요청이 첫 행을 만들었다. 그게 나보다 옛 메시지였다면 내 전진이 통째로
+    // 사라지므로(skipDuplicates는 조용히 넘어간다) 한 번 더 밀어 본다. 이미 더 앞서
+    // 있으면 where가 매칭되지 않아 아무 일도 일어나지 않는다.
+    await advance();
+  }
   return true;
 }

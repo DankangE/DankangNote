@@ -158,7 +158,14 @@ export function ChatRoom({
   function handleListScroll() {
     const el = listRef.current;
     if (!el) return;
+    const wasStuck = stickToBottom.current;
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    // 위로 올려 읽다가 하단으로 돌아온 순간 — 그 사이 쌓인 것을 방금 다 본 것이다.
+    // stickToBottom은 ref라 값이 바뀌어도 렌더가 없어서, 여기서 부르지 않으면 새 메시지가
+    // 한 건 더 오기 전까지 커서가 그대로 멈춰 있는다.
+    if (!wasStuck && stickToBottom.current) {
+      markReadIfCaughtUp(messages);
+    }
     if (el.scrollTop < LOAD_MORE_THRESHOLD_PX) void loadOlder();
   }
 
@@ -326,36 +333,54 @@ export function ChatRoom({
    * 아직 안 본 것이다. ② 탭이 보일 것 — 백그라운드 탭에 메시지가 쌓이는 것을 '읽었다'고
    * 할 수 없다. ③ 낙관 말풍선이 아닐 것 — 서버에 없는 임시 id로는 커서를 세울 수 없다.
    *
-   * 같은 메시지로 두 번 보내지 않도록 마지막으로 보낸 id를 기억한다. 실패는 조용히 넘긴다 —
-   * 읽음은 다음 메시지에서 다시 시도되고, 실패했다고 사용자가 할 일이 있는 것도 아니다.
+   * 같은 메시지로 두 번 보내지 않도록 마지막으로 보낸 id를 기억하고, 실패하면 비워
+   * 다음 기회에 다시 시도한다({ok:false}도 실패다 — throw만 잡으면 그 메시지는 영영
+   * 재시도되지 않는다).
+   *
+   * 세 조건은 메시지 도착 말고도 **스크롤·탭 복귀**로 참이 될 수 있다. 그래서 effect가
+   * 아니라 함수로 두고 세 경로에서 부른다 — 상태를 흔들어 effect를 다시 돌리는 우회는
+   * 목록 전체를 다시 그리고 스크롤 앵커 계산까지 덩달아 태운다.
    */
   const lastMarked = useRef<string | null>(null);
-  useEffect(() => {
-    const newest = [...messages].reverse().find((message) => !message.pending);
-    if (!newest || !stickToBottom.current || document.visibilityState !== 'visible') {
-      return;
-    }
-    if (lastMarked.current === newest.id) {
-      return;
-    }
-    lastMarked.current = newest.id;
-    void markChannelReadAction({ channelId, messageId: newest.id }).catch(() => {
-      lastMarked.current = null;
-    });
-  }, [messages, channelId]);
+  const markReadIfCaughtUp = useCallback(
+    (list: RoomMessage[]) => {
+      const newest = [...list].reverse().find((message) => !message.pending);
+      if (!newest || !stickToBottom.current || document.visibilityState !== 'visible') {
+        return;
+      }
+      if (lastMarked.current === newest.id) {
+        return;
+      }
+      lastMarked.current = newest.id;
+      void markChannelReadAction({ channelId, messageId: newest.id })
+        .then((result) => {
+          if (!result.ok) lastMarked.current = null;
+        })
+        .catch(() => {
+          lastMarked.current = null;
+        });
+    },
+    [channelId],
+  );
 
-  // 백그라운드에 두고 온 탭으로 돌아오면 그때 밀린 것을 읽음 처리한다 — 위 effect는
-  // 메시지가 바뀔 때만 도는데, 탭이 숨겨진 동안 쌓인 뒤로는 새 메시지가 안 올 수 있다.
+  // 스크롤·탭 복귀 핸들러가 최신 목록을 읽게 한다(핸들러는 구독 시점에 고정된다).
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+    markReadIfCaughtUp(messages);
+  }, [messages, markReadIfCaughtUp]);
+
+  // 백그라운드에 두고 온 탭으로 돌아오면 그때 밀린 것을 읽음 처리한다 — 숨겨진 동안
+  // 쌓인 뒤로는 새 메시지가 안 올 수 있어 목록 변화만으로는 영영 안 걸린다.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        lastMarked.current = null;
-        setMessages((prev) => [...prev]);
+        markReadIfCaughtUp(messagesRef.current);
       }
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  }, [markReadIfCaughtUp]);
 
   const handleToggleReaction = (messageId: string, emoji: string) =>
     void toggleReaction(

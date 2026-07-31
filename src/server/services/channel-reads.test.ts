@@ -191,3 +191,31 @@ describe('읽음 커서 격리·전진 (KAN-33)', () => {
     expect(await prisma.channelRead.count()).toBe(0);
   });
 });
+
+describe('자체 리뷰 반영 (KAN-33)', () => {
+  it('나갔다 다시 들어오면 그 사이 대화는 안읽음이 아니다', async () => {
+    // leaveChannel은 참여 행만 지우고 읽음 커서는 남긴다. 그 옛 커서를 그대로 믿으면
+    // 내가 없던 동안의 대화가 통째로 안읽음으로 되살아난다.
+    await join(CHANNEL_A, USER_OWNER, new Date('2026-01-01T00:00:00.000Z'));
+    const first = await say(CHANNEL_A, USER_OTHER, '있을 때 한 말');
+    await markChannelRead(ORG_A, USER_OWNER, CHANNEL_A, first.id);
+
+    await prisma.channelMember.deleteMany({ where: { channelId: CHANNEL_A, userId: USER_OWNER } });
+    await say(CHANNEL_A, USER_OTHER, '없는 동안 1');
+    await say(CHANNEL_A, USER_OTHER, '없는 동안 2');
+    await join(CHANNEL_A, USER_OWNER, new Date());
+
+    expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBeUndefined();
+  });
+
+  it('참여와 같은 순간에 온 메시지도 센다', async () => {
+    // 커서 가지는 id로 동률을 가르는데 참여 가지만 gt면 그 한 건이 영영 안 세어진다.
+    const at = new Date('2026-05-01T00:00:00.000Z');
+    await join(CHANNEL_A, USER_OWNER, at);
+    await prisma.chatMessage.create({
+      data: { id: 'same_ms', orgId: ORG_A, channelId: CHANNEL_A, authorId: USER_OTHER, body: '동시', createdAt: at },
+    });
+
+    expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
+  });
+});

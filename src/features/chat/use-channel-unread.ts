@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import PusherClient from 'pusher-js';
+import { fetchUnreadCounts } from '@/features/chat/api/history';
 import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChannelView } from '@/features/chat/types';
 
@@ -10,12 +11,10 @@ const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
 
 type Counts = Record<string, number>;
 
-function seed(channels: ChannelView[], activeId: string | null): Counts {
+function seed(channels: ChannelView[]): Counts {
   const counts: Counts = {};
   for (const channel of channels) {
-    // 보고 있는 채널은 0이다 — ChatRoom이 계속 읽음 처리하고 있어서, 서버가 준 값은
-    // 이미 낡았다(그 값을 그대로 두면 열자마자 뱃지가 잠깐 떴다 사라진다).
-    counts[channel.id] = channel.id === activeId ? 0 : channel.unread;
+    counts[channel.id] = channel.unread;
   }
   return counts;
 }
@@ -37,29 +36,51 @@ export function useChannelUnread(
   activeId: string | null,
   viewerId: string,
 ): Counts {
-  const [counts, setCounts] = useState<Counts>(() => seed(channels, activeId));
+  const [counts, setCounts] = useState<Counts>(() => seed(channels));
 
-  // 목록이나 활성 채널이 바뀌면 서버 값으로 다시 시드한다. effect가 아니라 렌더 중인 이유는
-  // 한 프레임 늦으면 채널을 옮긴 직후 이전 채널의 뱃지가 잠깐 남기 때문이다.
-  const [seen, setSeen] = useState({ channels, activeId });
-  if (seen.channels !== channels || seen.activeId !== activeId) {
-    setSeen({ channels, activeId });
-    setCounts(seed(channels, activeId));
+  /**
+   * **서버 값으로 다시 시드하는 것은 `channels`가 실제로 바뀐 경우뿐이다.**
+   *
+   * 한때 activeId가 바뀔 때도 통째로 재시드했는데, 그건 다른 채널의 실시간 증가분을
+   * 전부 날렸다. 레이아웃은 채널을 옮겨도 다시 돌지 않으므로(Next: "shared layouts won't
+   * automatically be refetched on every navigation") `channels`는 같은 객체 그대로고,
+   * 그 안의 unread는 페이지를 연 시점의 낡은 값이다 — 재시드는 최신 뱃지를 과거로
+   * 되돌리기만 한다. A를 보다가 C로 갈 때 읽지도 않은 B의 뱃지가 사라지는 경로였다.
+   */
+  const [seenChannels, setSeenChannels] = useState(channels);
+  if (seenChannels !== channels) {
+    setSeenChannels(channels);
+    setCounts(seed(channels));
   }
 
+  /**
+   * 채널을 옮기면 **떠난 채널과 새로 연 채널만** 0으로 내린다.
+   * 떠난 쪽은 보는 동안 ChatRoom이 읽음 처리를 해 왔고, 새로 연 쪽은 지금부터 읽는다.
+   */
+  const [seenActive, setSeenActive] = useState(activeId);
+  if (seenActive !== activeId) {
+    setSeenActive(activeId);
+    setCounts((prev) => {
+      const next = { ...prev };
+      if (seenActive) next[seenActive] = 0;
+      if (activeId) next[activeId] = 0;
+      return next;
+    });
+  }
+
+  // 서버 값으로 다시 맞춘다. 실패하면 지금 값을 그대로 둔다 — 뱃지는 부가 정보라
+  // 못 맞췄다고 비우는 쪽이 더 나쁘다.
+  const resync = useCallback(async () => {
+    const fresh = await fetchUnreadCounts();
+    if (fresh) setCounts(fresh);
+  }, []);
+
   // 구독 대상은 '내 채널' 전부다. 활성 채널까지 포함해 두는 이유는 구독 목록을 이동마다
-  // 갈아엎지 않기 위해서고, 활성 채널의 이벤트는 아래에서 무시한다.
+  // 갈아엎지 않기 위해서다.
   const memberIds = channels
     .filter((channel) => channel.isMember)
     .map((channel) => channel.id)
     .join(',');
-
-  // 구독 핸들러가 재구독 없이 '지금 보고 있는 채널'을 읽게 하는 상자. 렌더에는 쓰지 않고
-  // 갱신도 effect에서 한다 — 렌더 중 ref 대입은 동시성 렌더에서 버려질 수 있다.
-  const activeIdRef = useRef(activeId);
-  useEffect(() => {
-    activeIdRef.current = activeId;
-  }, [activeId]);
 
   useEffect(() => {
     if (!PUSHER_KEY || !PUSHER_CLUSTER || memberIds === '') {
@@ -76,25 +97,53 @@ export function useChannelUnread(
         // 안읽음의 정의는 서버(channel-reads.countableWhere)와 같아야 한다 —
         // 답글은 채널 본문에 안 보이고, 내 말은 나에게 안읽음이 아니다.
         if (message.parentId || message.authorId === viewerId) return;
-        setCounts((prev) => {
-          // 보고 있는 채널은 읽는 중이라 올리지 않는다.
-          if (message.channelId === activeIdRef.current) return prev;
-          return { ...prev, [message.channelId]: (prev[message.channelId] ?? 0) + 1 };
-        });
+        // 보고 있는 채널이어도 그냥 올린다. 여기서 activeId를 보려면 ref가 필요한데,
+        // ref는 렌더보다 한 틱 늦어 전환 순간의 이벤트를 엉뚱한 채널 기준으로 판정한다.
+        // 대신 보고 있는 채널은 아래 unreadOf가 렌더 시점에 0으로 가리고, 떠날 때
+        // 위에서 0으로 내린다 — 판정 시점을 렌더로 미루면 경합 자체가 없다.
+        setCounts((prev) => ({
+          ...prev,
+          [message.channelId]: (prev[message.channelId] ?? 0) + 1,
+        }));
       };
       channel.bind(CHAT_MESSAGE_EVENT, onMessage);
       return { id, onMessage };
     });
+    // 소켓이 끊긴 사이에 온 메시지는 이 클라이언트에 영영 안 온다 — 다시 붙는 순간
+    // 서버 값으로 맞춘다. 첫 connected는 시드가 이미 최신이라 건너뛴다.
+    let everConnected = false;
+    const onConnected = () => {
+      if (everConnected) {
+        void resync();
+      }
+      everConnected = true;
+    };
+    client.connection.bind('connected', onConnected);
+
     return () => {
       for (const { id, onMessage } of bound) {
         client.unbind(CHAT_MESSAGE_EVENT, onMessage);
         client.unsubscribe(chatChannel(id));
       }
+      client.connection.unbind('connected', onConnected);
       client.disconnect();
     };
-    // activeId는 의존성에 넣지 않는다 — 채널을 옮길 때마다 전 채널을 재구독하면 이동마다
-    // 인증 요청이 채널 수만큼 다시 나간다. 대신 ref로 최신 값을 읽는다.
-  }, [memberIds, viewerId, activeIdRef]);
+    // activeId는 의존성에 없다 — 채널을 옮길 때마다 전 채널을 재구독하면 이동마다
+    // 인증 요청이 채널 수만큼 다시 나간다. 활성 채널 판정은 렌더에서 한다(위 주석).
+  }, [memberIds, viewerId, resync]);
 
-  return counts;
+  // 탭을 오래 두고 온 경우에도 맞춘다 — 브라우저가 백그라운드 소켓을 끊었다 조용히
+  // 되살리면 위 connected 훅이 안 걸릴 수 있다.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void resync();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [resync]);
+
+  // 보고 있는 채널은 언제나 0으로 보인다 — 읽는 중이니 뱃지가 뜰 이유가 없다.
+  return Object.fromEntries(
+    Object.entries(counts).map(([id, count]) => [id, id === activeId ? 0 : count]),
+  );
 }
