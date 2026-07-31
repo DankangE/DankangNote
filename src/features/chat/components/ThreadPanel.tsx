@@ -12,6 +12,7 @@ import {
   upsert,
   type RoomMessage,
 } from '@/features/chat/room-state';
+import type { MentionSpan } from '@/features/chat/mentions';
 import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
 import type {
   ChatMessageView,
@@ -20,6 +21,7 @@ import type {
   ReactionDelta,
 } from '@/features/chat/types';
 import { ChatMessageRow } from './ChatMessageRow';
+import type { MentionCandidate } from './MentionSuggestions';
 import { MessageComposer } from './MessageComposer';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
@@ -43,6 +45,7 @@ export function ThreadPanel({
   viewer,
   liveReplies,
   liveReactions,
+  people,
   onSyncReplyCount,
   onReplyCreated,
   onReactionApplied,
@@ -53,6 +56,8 @@ export function ThreadPanel({
   viewer: ChatViewer;
   liveReplies: readonly ChatMessageView[];
   liveReactions: readonly LiveReaction[];
+  /** 멘션 후보 — 본문과 같은 채널이라 ChatRoom이 받은 것을 그대로 쓴다(KAN-32). */
+  people: MentionCandidate[];
   onSyncReplyCount: (rootId: string, replyCount: number) => void;
   onReplyCreated: (reply: ChatMessageView) => void;
   onReactionApplied: (delta: ReactionDelta) => void;
@@ -242,10 +247,10 @@ export function ThreadPanel({
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [replies, root]);
 
-  async function handleSend(body: string): Promise<boolean> {
+  async function handleSend(body: string, mentions: MentionSpan[]): Promise<boolean> {
     setError(null);
     stickToBottom.current = true;
-    const optimistic = pendingMessage(viewer, channelId, body, rootId);
+    const optimistic = pendingMessage(viewer, channelId, body, rootId, mentions);
     setReplies((prev) => [...prev, optimistic]);
 
     const fail = (message: string) => {
@@ -255,7 +260,7 @@ export function ThreadPanel({
     };
 
     try {
-      const result = await sendMessageAction({ channelId, body, parentId: rootId });
+      const result = await sendMessageAction({ channelId, body, parentId: rootId, mentions });
       if (!result.ok) {
         return fail(result.error);
       }
@@ -316,7 +321,12 @@ export function ThreadPanel({
 
         {root && (
           <>
-            <ChatMessageRow message={root} grouped={false} onToggleReaction={handleToggleReaction} />
+            <ChatMessageRow
+              message={root}
+              grouped={false}
+              viewerId={viewer.id}
+              onToggleReaction={handleToggleReaction}
+            />
             <div className="my-2 flex items-center gap-2 px-2 text-xs text-muted-foreground">
               <span className="shrink-0">답글 {replyCount}개</span>
               <span aria-hidden className="h-px flex-1 bg-border" />
@@ -342,6 +352,7 @@ export function ThreadPanel({
             key={reply.id}
             message={reply}
             grouped={isGrouped(replies[index - 1], reply)}
+            viewerId={viewer.id}
             onToggleReaction={handleToggleReaction}
           />
         ))}
@@ -356,8 +367,9 @@ export function ThreadPanel({
         {/* 스레드를 못 불러왔으면 보낼 곳도 없다 — 눌러 봐야 같은 실패가 한 번 더 난다. */}
         <MessageComposer
           label="답글"
-          placeholder="답글을 입력하세요 (Shift+Enter 줄바꿈)"
+          placeholder="답글을 입력하세요 (@로 멘션, Shift+Enter 줄바꿈)"
           disabled={failedToLoad}
+          people={people}
           onSend={handleSend}
         />
       </div>

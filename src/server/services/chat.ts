@@ -6,6 +6,8 @@ import { visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
+import { mentionRecipients, resolveMentions } from '@/server/services/notifications';
+import type { MentionSpan } from '@/features/chat/mentions';
 import { REACTION_EMOJIS, type ReactionEmoji } from '@/features/chat/reactions';
 import type { ChatMessageView, ReactionDelta, ReactionView } from '@/features/chat/types';
 
@@ -18,6 +20,7 @@ function toView(
   author: User | null,
   replyCount: number,
   reactions: ReactionView[],
+  mentions: MentionSpan[],
 ): ChatMessageView {
   return {
     id: message.id,
@@ -30,7 +33,37 @@ function toView(
     createdAt: message.createdAt.toISOString(),
     replyCount,
     reactions,
+    mentions,
   };
+}
+
+/**
+ * 이 메시지들의 멘션 스팬을 한 번에 읽는다 (KAN-32).
+ * 리액션과 같은 이유로 페이지의 messageId로 스코프하고 orgId를 함께 싣는다.
+ */
+async function loadMentions(
+  messageIds: string[],
+  orgId: string,
+): Promise<Map<string, MentionSpan[]>> {
+  if (messageIds.length === 0) {
+    return new Map();
+  }
+  const rows = await prisma.messageMention.findMany({
+    where: { orgId, messageId: { in: messageIds } },
+    orderBy: { start: 'asc' },
+  });
+  const byMessage = new Map<string, MentionSpan[]>();
+  for (const row of rows) {
+    const list = byMessage.get(row.messageId) ?? [];
+    list.push({
+      kind: row.kind === 'channel' ? 'channel' : 'user',
+      userId: row.userId,
+      start: row.start,
+      length: row.length,
+    });
+    byMessage.set(row.messageId, list);
+  }
+  return byMessage;
 }
 
 /**
@@ -123,15 +156,13 @@ async function toViews(
 ): Promise<ChatMessageView[]> {
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
   const rootIds = messages.filter((message) => !message.parentId).map((message) => message.id);
-  const [authors, replyCounts, reactions] = await Promise.all([
+  const messageIds = messages.map((message) => message.id);
+  const [authors, replyCounts, reactions, mentions] = await Promise.all([
     prisma.user.findMany({ where: { id: { in: authorIds } } }),
     countReplies(rootIds),
     // 답글에도 리액션을 달 수 있으므로 루트만이 아니라 이 페이지 전부를 대상으로 한다.
-    loadReactions(
-      messages.map((message) => message.id),
-      orgId,
-      viewerId,
-    ),
+    loadReactions(messageIds, orgId, viewerId),
+    loadMentions(messageIds, orgId),
   ]);
   const authorById = new Map(authors.map((author) => [author.id, author]));
   return messages.map((message) =>
@@ -140,6 +171,7 @@ async function toViews(
       authorById.get(message.authorId) ?? null,
       replyCounts.get(message.id) ?? 0,
       reactions.get(message.id) ?? [],
+      mentions.get(message.id) ?? [],
     ),
   );
 }
@@ -300,6 +332,8 @@ export async function listThread(
 export interface SendResult {
   message: ChatMessageView;
   joined: boolean;
+  /** 이번 전송으로 알림이 생긴 사람들 — 액션이 각자에게 실시간으로 쏜다(KAN-32). */
+  notified: string[];
 }
 
 /**
@@ -314,6 +348,7 @@ export async function createMessage(
   channelId: string,
   body: string,
   parentId?: string,
+  claimedMentions: MentionSpan[] = [],
 ): Promise<SendResult | null> {
   // 대상 채널이 이 워크스페이스의 것이고 내가 접근할 수 있는지 — 전송의 테넌트 경계다.
   const channel = await prisma.channel.findFirst({
@@ -350,12 +385,49 @@ export async function createMessage(
   // ON CONFLICT DO NOTHING으로 아무 일도 일어나지 않는다.
   // userSkeleton이 필요한 것도 이 문장 때문이다 — ChannelMember.userId에는 FK가 있어,
   // user.created 웹훅이 늦은 새 멤버의 첫 발언이 FK 위반으로 죽지 않게 한다.
+  // 멘션은 쓰기 전에 확정한다(KAN-32) — 클라이언트가 주장한 스팬 중 '조직 멤버이고 본문에
+  // 정말 그 이름으로 적힌' 것만 남는다. 조회는 트랜잭션 밖이라도 안전하다: 여기서 걸러진
+  // 결과만 아래에서 함께 커밋되고, 검증에 쓰는 멤버십은 알림 대상 판정의 근거일 뿐
+  // 접근 게이트가 아니다(게이트는 알림을 여는 쪽에서 다시 걸린다).
+  const mentions = await resolveMentions(orgId, body, claimedMentions);
+  const recipients = await mentionRecipients(channelId, authorId, mentions);
+
   const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
     prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
     prisma.chatMessage.create({ data: { orgId, channelId, authorId, body, parentId } }),
   ]);
   const joined = join.count > 0;
+
+  // 멘션 행과 알림을 메시지와 같은 트랜잭션에 넣지 않는 이유는 messageId가 필요해서다.
+  // 여기서 실패하면 메시지는 남고 알림만 빠지는데, 그게 반대(알림은 갔는데 메시지가 없는)
+  // 보다 낫다. createMany + skipDuplicates라 재시도에도 중복되지 않는다.
+  if (mentions.length > 0) {
+    await prisma.$transaction([
+      prisma.messageMention.createMany({
+        data: mentions.map((span) => ({
+          messageId: message.id,
+          orgId,
+          start: span.start,
+          length: span.length,
+          kind: span.kind,
+          userId: span.userId,
+        })),
+        skipDuplicates: true,
+      }),
+      prisma.notification.createMany({
+        data: recipients.map(({ userId, kind }) => ({
+          orgId,
+          userId,
+          actorId: authorId,
+          kind,
+          channelId,
+          messageId: message.id,
+        })),
+        skipDuplicates: true,
+      }),
+    ]);
+  }
 
   // post-check — 방금 되살렸을 수 있는 org·user를 자가 정리한다. org tombstone이면 cascade로
   // 메시지까지 지워지지만, user tombstone 경로에서는 메시지가 남으므로 명시적으로 지운다.
@@ -369,8 +441,12 @@ export async function createMessage(
 
   const author = await prisma.user.findUnique({ where: { id: authorId } });
   // 새로 만든 메시지의 답글 수는 언제나 0이다(방금 생겼고, 답글은 1단계라 답글의 답글도 없다).
-  // 리액션도 마찬가지로 아직 없다.
-  return { message: toView(message, author, 0, []), joined };
+  // 리액션도 마찬가지로 아직 없다. 멘션은 방금 확정한 것을 그대로 싣는다.
+  return {
+    message: toView(message, author, 0, [], mentions),
+    joined,
+    notified: recipients.map(({ userId }) => userId),
+  };
 }
 
 /**

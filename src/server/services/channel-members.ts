@@ -6,10 +6,15 @@ import { visibleWhere } from '@/server/services/channels';
 import { userSkeleton } from '@/server/services/skeleton';
 import { displayName } from '@/server/services/user-display';
 
-/** 초대 후보·현재 참여자 표시용 최소 정보. */
+/**
+ * 초대 후보·현재 참여자 표시용 최소 정보.
+ * email은 동명이인을 가르는 단서다(멘션 후보 목록, KAN-32) — 조직 멤버 페이지가 이미
+ * 같은 기준으로 노출하고 있어 새로 열리는 정보는 없다.
+ */
 export interface ChannelPersonView {
   id: string;
   name: string;
+  email: string | null;
   imageUrl: string | null;
 }
 
@@ -145,6 +150,7 @@ export async function listChannelMembers(
   return members.map(({ user }) => ({
     id: user.id,
     name: displayName(user),
+    email: user.email,
     imageUrl: user.imageUrl,
   }));
 }
@@ -171,6 +177,7 @@ export async function listInvitableMembers(
   return candidates.map(({ user }) => ({
     id: user.id,
     name: displayName(user),
+    email: user.email,
     imageUrl: user.imageUrl,
   }));
 }

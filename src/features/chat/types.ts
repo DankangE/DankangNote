@@ -1,3 +1,5 @@
+import type { MentionSpan } from '@/features/chat/mentions';
+
 // 서버 조회·Pusher 이벤트·클라이언트 상태가 공유하는 메시지 뷰 모델.
 // createdAt은 ISO 문자열 — Pusher 페이로드(JSON)와 RSC prop의 형태를 통일한다.
 // channelId는 브로드캐스트 수신 측이 '지금 보고 있는 채널의 메시지인지' 판별하는 데 쓴다
@@ -16,6 +18,8 @@ export type ChatMessageView = {
   replyCount: number;
   /** 이 메시지에 눌린 리액션. 아무도 안 눌렀으면 빈 배열이다(KAN-31). */
   reactions: ReactionView[];
+  /** 본문 안 멘션의 위치와 대상. 렌더러가 이 구간만 강조한다(KAN-32). */
+  mentions: MentionSpan[];
 };
 
 /** 이모지 하나에 대한 집계. mine은 보는 사람마다 다르므로 조회 시점에 서버가 채운다. */

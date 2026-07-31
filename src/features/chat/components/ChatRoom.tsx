@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { MessageSquare } from 'lucide-react';
 import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { sendMessageAction } from '@/features/chat/api/actions';
-import { fetchOlderMessages } from '@/features/chat/api/history';
+import { fetchMentionCandidates, fetchOlderMessages } from '@/features/chat/api/history';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import type {
   ChatMessageView,
@@ -23,8 +24,10 @@ import {
   upsert,
   type RoomMessage,
 } from '@/features/chat/room-state';
+import type { MentionSpan } from '@/features/chat/mentions';
 import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
 import { ChatMessageRow } from './ChatMessageRow';
+import type { MentionCandidate } from './MentionSuggestions';
 import { MessageComposer } from './MessageComposer';
 import { ThreadPanel } from './ThreadPanel';
 
@@ -70,12 +73,24 @@ export function ChatRoom({
   // 한 건짜리 슬롯이 아니라 목록인 이유: 같은 태스크에 두 건이 도착하면 prop이 한 번만
   // 바뀌어 앞의 것이 패널에서 조용히 사라진다(WS 폴백 전송에서 실제로 가능하다).
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  // 알림에서 온 `?thread=` — 그 스레드를 열어 준다(KAN-32). URL을 상태의 원본으로 삼지
+  // 않는 이유는 비용이다: 같은 라우트로 replace해도 서버 컴포넌트가 다시 돌아 메시지 첫
+  // 페이지를 통째로 다시 받는다. 여기서는 '한 번 적용했다'만 기억하고 로컬 상태로 연다.
+  const threadParam = useSearchParams().get('thread');
+  const [appliedThreadParam, setAppliedThreadParam] = useState<string | null>(null);
+  if (threadParam && threadParam !== appliedThreadParam) {
+    setAppliedThreadParam(threadParam);
+    setOpenThreadId(threadParam);
+  }
   const [liveReplies, setLiveReplies] = useState<readonly ChatMessageView[]>([]);
   // 리액션 델타 피드 — 열려 있는 스레드 패널이 자기 몫(루트·답글)을 골라 간다.
   // 순번을 붙여 보내는 이유는 LiveReaction 주석 참조(옛 델타 재적용 방지).
   const [liveReactions, setLiveReactions] = useState<readonly LiveReaction[]>([]);
   const reactionSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
+  // 멘션 후보(채널 참여자). 못 받아도 전송은 되고 자동완성만 안 뜬다 — 컴포저를 막을
+  // 이유가 없다. 채널이 바뀌면 다시 받는다.
+  const [people, setPeople] = useState<MentionCandidate[]>([]);
   // 하단에 붙어있을 때만 새 메시지에 자동 스크롤한다 — 위로 올려 이력을 읽는 중이면
   // 끌어당기지 않는다. 초기 마운트는 붙어있는 상태(true)라 최신이 보인다.
   const listRef = useRef<HTMLDivElement>(null);
@@ -217,6 +232,20 @@ export function ChatRoom({
   );
 
   useEffect(() => {
+    let cancelled = false;
+    fetchMentionCandidates(channelId)
+      .then((list) => {
+        if (!cancelled) setPeople(list);
+      })
+      .catch(() => {
+        // 자동완성이 없을 뿐이라 사용자에게 알리지 않는다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [channelId]);
+
+  useEffect(() => {
     if (!PUSHER_KEY || !PUSHER_CLUSTER) {
       return;
     }
@@ -255,12 +284,12 @@ export function ChatRoom({
 
   // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공하면 서버 확정본으로 교체한다.
   // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문을 되돌리게 한다.
-  async function handleSend(body: string): Promise<boolean> {
+  async function handleSend(body: string, mentions: MentionSpan[]): Promise<boolean> {
     setError(null);
     // 내가 보낸 메시지는 항상 하단으로 스크롤해 보이게 한다.
     stickToBottom.current = true;
 
-    const optimistic = pendingMessage(viewer, channelId, body, null);
+    const optimistic = pendingMessage(viewer, channelId, body, null, mentions);
     setMessages((prev) => [...prev, optimistic]);
 
     const fail = (message: string) => {
@@ -270,7 +299,7 @@ export function ChatRoom({
     };
 
     try {
-      const result = await sendMessageAction({ channelId, body });
+      const result = await sendMessageAction({ channelId, body, mentions });
       if (!result.ok) {
         return fail(result.error);
       }
@@ -366,6 +395,7 @@ export function ChatRoom({
                   key={message.id}
                   message={message}
                   grouped={isGrouped(messages[index - 1], message)}
+                  viewerId={viewer.id}
                   onOpenThread={setOpenThreadId}
                   onToggleReaction={handleToggleReaction}
                 />
@@ -390,7 +420,8 @@ export function ChatRoom({
           )}
           <MessageComposer
             label="메시지"
-            placeholder="메시지를 입력하세요 (Shift+Enter 줄바꿈)"
+            placeholder="메시지를 입력하세요 (@로 멘션, Shift+Enter 줄바꿈)"
+            people={people}
             onSend={handleSend}
           />
         </div>
@@ -405,6 +436,7 @@ export function ChatRoom({
           viewer={viewer}
           liveReplies={liveReplies}
           liveReactions={liveReactions}
+          people={people}
           onSyncReplyCount={syncReplyCount}
           onReplyCreated={countReply}
           onReactionApplied={receiveReaction}
