@@ -39,6 +39,9 @@ async function broadcastReaction(delta: ReactionDelta): Promise<void> {
   }
 }
 
+// pusher-http-node가 한 번의 trigger에 허용하는 채널 수 상한(라이브러리 하드코딩 값).
+const PUSHER_CHANNEL_LIMIT = 100;
+
 /**
  * 멘션된 사람들에게 '새 알림이 있다'만 알린다 (KAN-32).
  *
@@ -51,12 +54,17 @@ async function broadcastNotifications(orgId: string, userIds: string[]): Promise
     return;
   }
   try {
-    // 한 번의 호출로 여러 채널에 쏜다 — @channel이면 참여자 수만큼 트리거가 나간다.
-    await pusherServer.trigger(
-      userIds.map((userId) => notificationChannel(orgId, userId)),
-      NOTIFICATION_EVENT,
-      {},
-    );
+    // Pusher는 한 번의 trigger에 100채널까지만 받고, 넘기면 **동기 throw**다 —
+    // 초과분만 빠지는 게 아니라 전부 실패한다. @channel 한 번이면 참여자 수만큼 채널이
+    // 생기므로 100명이 넘는 채널에서는 아무도 실시간 핑을 못 받게 된다. 잘라서 보낸다.
+    for (let index = 0; index < userIds.length; index += PUSHER_CHANNEL_LIMIT) {
+      const chunk = userIds.slice(index, index + PUSHER_CHANNEL_LIMIT);
+      await pusherServer.trigger(
+        chunk.map((userId) => notificationChannel(orgId, userId)),
+        NOTIFICATION_EVENT,
+        {},
+      );
+    }
   } catch (error) {
     console.error('[chat] notification broadcast failed:', error);
   }

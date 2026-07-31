@@ -76,7 +76,9 @@ export function MentionSuggestions({
               <AtSign className="size-3.5" />
             </span>
           ) : (
-            <Avatar className="size-6 shrink-0">
+            // 폴백은 이름 첫 글자를 텍스트로 그린다 — 숨기지 않으면 옵션의 접근 가능한
+            // 이름이 "단 단 강 dan@x.com"처럼 첫 글자가 겹쳐 읽힌다.
+            <Avatar aria-hidden className="size-6 shrink-0">
               <AvatarImage src={candidate.imageUrl ?? undefined} alt="" />
               <AvatarFallback>{candidate.label.trim().charAt(0).toUpperCase() || '?'}</AvatarFallback>
             </Avatar>

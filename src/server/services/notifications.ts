@@ -6,6 +6,7 @@ import { visibleWhere } from '@/server/services/channels';
 import { displayName } from '@/server/services/user-display';
 import {
   CHANNEL_MENTION,
+  normalizeSpans,
   spanMatches,
   type MentionKind,
   type MentionSpan,
@@ -47,10 +48,18 @@ export async function resolveMentions(
       : [];
   const labelById = new Map(members.map(({ user }) => [user.id, displayName(user)]));
 
-  return claimed.filter((span) => {
+  const verified = claimed.flatMap((span) => {
     const label = span.kind === 'channel' ? CHANNEL_MENTION : labelById.get(span.userId ?? '');
-    return label !== undefined && spanMatches(body, span, label);
+    if (label === undefined || !spanMatches(body, span, label)) {
+      return [];
+    }
+    // channel 멘션에 실려 온 userId는 버린다 — 검증한 적 없는 외래 id가 그대로 저장되고
+    // 뷰에 실려 채널의 모든 사람에게 나가는 것을 막는다(지금은 무해해도 남길 이유가 없다).
+    return [{ ...span, userId: span.kind === 'channel' ? null : span.userId }];
   });
+  // 서버도 정규화한다. 클라이언트만 하면, 같은 start를 여럿 보냈을 때 DB에는 복합 기본키로
+  // 한 행만 남는데 응답과 브로드캐스트에는 보낸 만큼 실려 나가 화면이 새로고침 전후로 달라진다.
+  return normalizeSpans(verified);
 }
 
 /**
@@ -61,6 +70,7 @@ export async function resolveMentions(
  * 보낸 사람 자신은 언제나 뺀다(자기 말에 자기가 호출되지 않는다).
  */
 export async function mentionRecipients(
+  orgId: string,
   channelId: string,
   authorId: string,
   spans: MentionSpan[],
@@ -69,7 +79,9 @@ export async function mentionRecipients(
 
   if (spans.some((span) => span.kind === 'channel')) {
     const members = await prisma.channelMember.findMany({
-      where: { channelId },
+      // channelId만으로도 결과는 같지만(호출부가 이미 채널을 org로 검증했다) 테넌트
+      // 조회에는 예외 없이 orgId를 싣는다 — 이 함수가 다른 데서 불릴 때의 방어선이다.
+      where: { channelId, channel: { orgId } },
       select: { userId: true },
     });
     for (const { userId } of members) {
@@ -84,7 +96,42 @@ export async function mentionRecipients(
   }
 
   byUser.delete(authorId);
-  return [...byUser].map(([userId, kind]) => ({ userId, kind }));
+  return withChannelAccess(orgId, channelId, [...byUser].map(([userId, kind]) => ({ userId, kind })));
+}
+
+/**
+ * 그 채널을 **볼 수 있는** 사람만 남긴다.
+ *
+ * 없으면 참여하지 않은 비공개 채널의 사람을 멘션해 알림 행을 만들 수 있다. 조회는
+ * visibleWhere를 통과하므로 유출은 아니지만 두 가지가 남는다: 알림 한 건마다 그 사람에게
+ * 공짜 왕복(실시간 핑 → 재조회)을 강제할 수 있고, 가시성은 **읽는 시점**에 판정되므로
+ * 나중에 그 채널에 초대되면 과거 알림이 뒤늦게 튀어나온다.
+ *
+ * 공개 채널은 조직 멤버 전체가 보므로 걸러 낼 것이 없다 — resolveMentions가 이미 조직
+ * 멤버만 남겼다. 비공개 채널에서만 참여자와 교집합한다(channels.visibleWhere의 두 갈래를
+ * 여러 사람에 대해 한 번에 물은 것이고, 그 규칙이 바뀌면 여기도 같이 고쳐야 한다).
+ */
+async function withChannelAccess(
+  orgId: string,
+  channelId: string,
+  recipients: { userId: string; kind: MentionKind }[],
+): Promise<{ userId: string; kind: MentionKind }[]> {
+  if (recipients.length === 0) {
+    return recipients;
+  }
+  const channel = await prisma.channel.findFirst({
+    where: { id: channelId, orgId },
+    select: { isPrivate: true },
+  });
+  if (!channel?.isPrivate) {
+    return recipients;
+  }
+  const members = await prisma.channelMember.findMany({
+    where: { channelId, userId: { in: recipients.map((r) => r.userId) } },
+    select: { userId: true },
+  });
+  const allowed = new Set(members.map((member) => member.userId));
+  return recipients.filter((recipient) => allowed.has(recipient.userId));
 }
 
 /** 알림 목록 한 줄. 클릭하면 그 채널로 가고, 답글이면 스레드까지 연다. */

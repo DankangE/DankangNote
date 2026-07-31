@@ -20,6 +20,9 @@ const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
 // 뱃지에 표시할 최대 숫자. 그 이상은 "99+"로 접는다.
 const BADGE_MAX = 99;
 
+// 실시간 신호를 묶는 창. 사람이 체감하지 못할 만큼 짧으면서 @channel 폭주는 한 번으로 접는다.
+const REFRESH_COALESCE_MS = 300;
+
 /**
  * 상단바의 알림 종 (KAN-32).
  *
@@ -39,12 +42,46 @@ export function NotificationBell() {
   // 동기적으로 setState하게 되는데, 그건 effect 안에서 부를 수 없다(cascading render).
   const [loaded, setLoaded] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const bellRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
 
-  const refresh = useCallback(async () => {
-    const next = await fetchNotifications();
+  // 패널이 닫히면 종으로 포커스를 되돌린다 — 패널이 언마운트되면서 포커스 소유자가
+  // 사라지면 키보드 사용자는 문서 맨 위부터 다시 Tab해야 한다(ChatRoom.closeThread와 같다).
+  const closePanel = useCallback(() => {
+    setOpen(false);
+    bellRef.current?.focus();
+  }, []);
+
+  // 응답 경합 가드. 조직을 바꾸는 순간에도 이전 조직으로 나간 요청이 뒤늦게 도착할 수
+  // 있고, 그걸 그대로 쓰면 새 워크스페이스 화면에 남의 안읽음 수와 발췌가 뜬다.
+  // 마운트 조회와 refresh가 같은 카운터를 쓰므로 어느 쪽이 늦게 와도 최신만 반영된다.
+  const requestSeq = useRef(0);
+  const applyPage = useCallback((seq: number, next: NotificationPage) => {
+    if (seq !== requestSeq.current) return;
     setPage(next);
     setLoaded(true);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    applyPage(seq, await fetchNotifications());
+  }, [applyPage]);
+
+  // 실시간 신호를 그대로 조회로 바꾸면 @channel 한 번에 참여자 수만큼의 요청이 동시에
+  // 튄다(각자 목록+카운트 쿼리를 돈다). 짧게 묶어 한 번만 물어본다.
+  const coalescing = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRefresh = useCallback(() => {
+    if (coalescing.current) return;
+    coalescing.current = setTimeout(() => {
+      coalescing.current = null;
+      void refresh();
+    }, REFRESH_COALESCE_MS);
+  }, [refresh]);
+
+  useEffect(() => {
+    return () => {
+      if (coalescing.current) clearTimeout(coalescing.current);
+    };
   }, []);
 
   // 조직이 바뀌면 뱃지를 **즉시** 비운다. effect로 미루면 새 조직의 응답이 올 때까지 남의
@@ -53,6 +90,9 @@ export function NotificationBell() {
   if (orgId !== seenOrg) {
     setSeenOrg(orgId);
     setPage(EMPTY_NOTIFICATION_PAGE);
+    // loaded도 함께 내린다 — 안 내리면 새 조직을 조회하는 동안 패널이 '불러오는 중'이
+    // 아니라 '아직 알림이 없어요'라고 단정한다.
+    setLoaded(false);
   }
 
   // 첫 로드. refresh를 그대로 부르지 않고 여기서 직접 받는 이유는 취소 때문이다 —
@@ -61,20 +101,13 @@ export function NotificationBell() {
     if (!orgId || !userId) {
       return;
     }
-    let cancelled = false;
+    const seq = ++requestSeq.current;
     fetchNotifications()
-      .then((next) => {
-        if (cancelled) return;
-        setPage(next);
-        setLoaded(true);
-      })
+      .then((next) => applyPage(seq, next))
       .catch(() => {
         // 조회 실패는 빈 상태로 둔다(fetchNotifications가 이미 빈 페이지로 흡수한다).
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [orgId, userId]);
+  }, [orgId, userId, applyPage]);
 
   useEffect(() => {
     if (!orgId || !userId || !PUSHER_KEY || !PUSHER_CLUSTER) {
@@ -86,14 +119,14 @@ export function NotificationBell() {
     });
     const name = notificationChannel(orgId, userId);
     const channel = client.subscribe(name);
-    const onNew = () => void refresh();
+    const onNew = () => scheduleRefresh();
     channel.bind(NOTIFICATION_EVENT, onNew);
     return () => {
       channel.unbind(NOTIFICATION_EVENT, onNew);
       client.unsubscribe(name);
       client.disconnect();
     };
-  }, [orgId, userId, refresh]);
+  }, [orgId, userId, scheduleRefresh]);
 
   // 바깥을 누르면 닫는다(리액션 팔레트와 같은 이유로 click이 아니라 pointerdown).
   useEffect(() => {
@@ -115,8 +148,14 @@ export function NotificationBell() {
         !ids || ids.includes(item.id) ? { ...item, read: true } : item,
       ),
     }));
-    const result = await markNotificationsReadAction({ ids });
-    if (!result.ok) {
+    try {
+      const result = await markNotificationsReadAction({ ids });
+      if (!result.ok) {
+        void refresh();
+      }
+    } catch {
+      // 오프라인 등으로 액션 호출 자체가 실패하면 낙관 감산이 그대로 굳는다 —
+      // 서버 값으로 되돌린다(ChatRoom.handleSend와 같은 처리).
       void refresh();
     }
   }
@@ -130,6 +169,7 @@ export function NotificationBell() {
   return (
     <div ref={rootRef} className="relative">
       <Button
+        ref={bellRef}
         variant="ghost"
         size="icon"
         aria-label={page.unread > 0 ? `알림 ${page.unread}건 안읽음` : '알림'}
@@ -160,7 +200,7 @@ export function NotificationBell() {
           page={page}
           loading={!loaded}
           onMarkRead={markRead}
-          onClose={() => setOpen(false)}
+          onClose={closePanel}
         />
       )}
     </div>

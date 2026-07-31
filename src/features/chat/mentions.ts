@@ -74,10 +74,16 @@ export type PickedMention = {
  * 본문에서 다시 찾으면 그 사이 무슨 편집이 있었든 정확하고, 지워진 멘션은 자연히 빠진다.
  *
  * 같은 사람을 두 번 골랐으면 서로 다른 occurrence를 하나씩 집는다(이미 쓴 자리는 건너뛴다).
+ *
+ * **긴 라벨부터 자리를 잡는다.** 한 이름이 다른 이름의 접두사이면(`단` / `단 강`) 짧은
+ * 쪽이 긴 쪽 안쪽에 매칭돼 자리를 먼저 차지한다 — 그러면 본문에 이름이 적힌 `단 강`은
+ * 알림을 못 받고, 본문에 나오지도 않는 `단`이 받는다. picked는 삽입한 텍스트를 지워도
+ * 정리되지 않으므로(보낼 때 한 번에 찾는 설계의 대가) 실제로 일어난다.
  */
 export function spansForPicked(body: string, picked: PickedMention[]): MentionSpan[] {
   const spans: MentionSpan[] = [];
-  for (const pick of picked) {
+  const byLongestLabel = [...picked].sort((a, b) => b.label.length - a.label.length);
+  for (const pick of byLongestLabel) {
     const needle = mentionText(pick.label);
     let from = 0;
     for (;;) {

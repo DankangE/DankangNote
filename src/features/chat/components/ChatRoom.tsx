@@ -74,14 +74,23 @@ export function ChatRoom({
   // 바뀌어 앞의 것이 패널에서 조용히 사라진다(WS 폴백 전송에서 실제로 가능하다).
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   // 알림에서 온 `?thread=` — 그 스레드를 열어 준다(KAN-32). URL을 상태의 원본으로 삼지
-  // 않는 이유는 비용이다: 같은 라우트로 replace해도 서버 컴포넌트가 다시 돌아 메시지 첫
-  // 페이지를 통째로 다시 받는다. 여기서는 '한 번 적용했다'만 기억하고 로컬 상태로 연다.
+  // 않는 이유는 비용이다: 라우터로 replace하면 서버 컴포넌트가 다시 돌아 메시지 첫 페이지를
+  // 통째로 다시 받는다. 여기서는 열고 나서 파라미터만 걷어 낸다.
   const threadParam = useSearchParams().get('thread');
-  const [appliedThreadParam, setAppliedThreadParam] = useState<string | null>(null);
-  if (threadParam && threadParam !== appliedThreadParam) {
-    setAppliedThreadParam(threadParam);
+  if (threadParam) {
     setOpenThreadId(threadParam);
   }
+
+  // 소비한 파라미터는 지운다. 남겨 두면 ① 스레드를 닫은 뒤 같은 알림을 다시 눌러도 URL이
+  // 그대로라 아무 일도 안 일어나고, ② 뒤로 가기로 파라미터 없는 주소에 와도 스레드가 열린
+  // 채 남는다. 라우터가 아니라 네이티브 History API를 쓰는 이유는 서버 컴포넌트를 다시
+  // 돌리지 않기 위해서다 — Next가 pushState/replaceState를 라우터·useSearchParams와
+  // 동기화해 준다(01-app/01-getting-started/04-linking-and-navigating.md).
+  useEffect(() => {
+    if (threadParam) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [threadParam]);
   const [liveReplies, setLiveReplies] = useState<readonly ChatMessageView[]>([]);
   // 리액션 델타 피드 — 열려 있는 스레드 패널이 자기 몫(루트·답글)을 골라 간다.
   // 순번을 붙여 보내는 이유는 LiveReaction 주석 참조(옛 델타 재적용 방지).

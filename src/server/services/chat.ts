@@ -390,7 +390,7 @@ export async function createMessage(
   // 결과만 아래에서 함께 커밋되고, 검증에 쓰는 멤버십은 알림 대상 판정의 근거일 뿐
   // 접근 게이트가 아니다(게이트는 알림을 여는 쪽에서 다시 걸린다).
   const mentions = await resolveMentions(orgId, body, claimedMentions);
-  const recipients = await mentionRecipients(channelId, authorId, mentions);
+  const recipients = await mentionRecipients(orgId, channelId, authorId, mentions);
 
   const [, join, message] = await prisma.$transaction([
     userSkeleton(authorId),
@@ -400,33 +400,40 @@ export async function createMessage(
   const joined = join.count > 0;
 
   // 멘션 행과 알림을 메시지와 같은 트랜잭션에 넣지 않는 이유는 messageId가 필요해서다.
-  // 여기서 실패하면 메시지는 남고 알림만 빠지는데, 그게 반대(알림은 갔는데 메시지가 없는)
-  // 보다 낫다. createMany + skipDuplicates라 재시도에도 중복되지 않는다.
+  //
+  // 실패를 삼키는 것은 의도적이다. 여기서 던지면 메시지는 이미 커밋됐는데 액션은 실패로
+  // 답하고, 사용자는 안 갔다고 보고 다시 보낸다 — 알림 한 건을 잃는 대신 같은 메시지가
+  // 두 번 남는다. 브로드캐스트 실패를 삼키는 것과 같은 판단이다(actions.ts).
+  // createMany + skipDuplicates라 나중에 재시도를 붙여도 중복되지 않는다.
   if (mentions.length > 0) {
-    await prisma.$transaction([
-      prisma.messageMention.createMany({
-        data: mentions.map((span) => ({
-          messageId: message.id,
-          orgId,
-          start: span.start,
-          length: span.length,
-          kind: span.kind,
-          userId: span.userId,
-        })),
-        skipDuplicates: true,
-      }),
-      prisma.notification.createMany({
-        data: recipients.map(({ userId, kind }) => ({
-          orgId,
-          userId,
-          actorId: authorId,
-          kind,
-          channelId,
-          messageId: message.id,
-        })),
-        skipDuplicates: true,
-      }),
-    ]);
+    try {
+      await prisma.$transaction([
+        prisma.messageMention.createMany({
+          data: mentions.map((span) => ({
+            messageId: message.id,
+            orgId,
+            start: span.start,
+            length: span.length,
+            kind: span.kind,
+            userId: span.userId,
+          })),
+          skipDuplicates: true,
+        }),
+        prisma.notification.createMany({
+          data: recipients.map(({ userId, kind }) => ({
+            orgId,
+            userId,
+            actorId: authorId,
+            kind,
+            channelId,
+            messageId: message.id,
+          })),
+          skipDuplicates: true,
+        }),
+      ]);
+    } catch (error) {
+      console.error('[chat] mention/notification write failed:', error);
+    }
   }
 
   // post-check — 방금 되살렸을 수 있는 org·user를 자가 정리한다. org tombstone이면 cascade로

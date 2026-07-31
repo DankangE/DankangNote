@@ -32,8 +32,13 @@ function formatWhen(iso: string): string {
  * 없으므로(KAN-30) 사용자는 자기가 왜 불렸는지 못 찾는다.
  */
 function targetHref(item: NotificationView): string {
-  const thread = item.threadRootId ?? item.messageId;
-  return `/chat/${item.channelId}?thread=${encodeURIComponent(thread)}`;
+  // 루트 메시지 멘션은 채널만 연다. threadRootId가 없을 때 그 메시지 id로 스레드를 열면
+  // '답글 0개'짜리 빈 패널이 뜨고, md 미만에서는 본문이 감춰져 있어(hidden md:flex)
+  // 모바일 사용자는 정작 대화를 못 본다.
+  if (!item.threadRootId) {
+    return `/chat/${item.channelId}`;
+  }
+  return `/chat/${item.channelId}?thread=${encodeURIComponent(item.threadRootId)}`;
 }
 
 export function NotificationPanel({
@@ -65,10 +70,11 @@ export function NotificationPanel({
       onKeyDown={(event) => {
         if (event.key === 'Escape') onClose();
       }}
-      // 포커스가 패널 밖으로 나가면 닫는다 — 열린 채 뒤에 남으면 Escape가 엉뚱한 곳으로 간다.
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) onClose();
-      }}
+      // 포커스 이탈로는 닫지 않는다. 이 패널은 마운트하며 제목으로 포커스를 옮기는데,
+      // 포커스 불가 영역(헤더 여백·빈 상태 문구)을 클릭하면 포커스가 body로 떨어져
+      // relatedTarget이 null이 된다 — 자기 패널 안을 클릭했는데 닫히는 셈이다. 종 버튼을
+      // 다시 눌러도 같은 이유로 먼저 닫히고, 이어지는 click이 도로 열어 토글이 안 된다.
+      // 바깥 클릭은 종과 패널을 함께 감싼 rootRef의 pointerdown 핸들러가 이미 처리한다.
       className="absolute top-full right-0 z-30 mt-1 flex max-h-[70svh] w-80 flex-col rounded-lg border bg-popover shadow-md sm:w-96"
     >
       <header className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">

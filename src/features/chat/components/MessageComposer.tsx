@@ -82,7 +82,19 @@ export function MessageComposer({
   // 후보가 줄어 인덱스가 밖으로 나갈 수 있다 — 렌더 시점에 접어 둔다.
   const active = Math.min(activeIndex, candidates.length - 1);
 
+  // 방금 고르고 나서 캐럿을 옮겨 놓은 위치. 그 자리에서는 목록을 열지 않는다 —
+  // 안 그러면 pick이 setSelectionRange로 캐럿을 옮기는 순간 onSelect가 돌고, 그 시점의
+  // 질의("단 강 ")가 방금 고른 후보와 다시 매칭돼 목록이 되살아난다. 그러면 이어지는
+  // Enter가 전송이 아니라 '같은 후보를 다시 고르기'가 되어, 멘션으로 끝나는 메시지는
+  // Enter를 세 번 눌러야 나간다(Tab도 같은 이유로 먹힌다).
+  const settledCaret = useRef<number | null>(null);
+
   function syncQuery(value: string, caret: number) {
+    if (settledCaret.current === caret) {
+      setQuery(null);
+      return;
+    }
+    settledCaret.current = null;
     setQuery(activeQuery(value, caret));
     setActiveIndex(0);
   }
@@ -98,6 +110,7 @@ export function MessageComposer({
     setQuery(null);
     // 캐럿을 삽입한 이름 뒤로 옮긴다 — 안 옮기면 이어서 친 글자가 이름 앞에 끼어든다.
     const caret = query.start + inserted.length;
+    settledCaret.current = caret;
     requestAnimationFrame(() => {
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(caret, caret);
@@ -126,19 +139,26 @@ export function MessageComposer({
     // 목록이 떠 있는 동안에는 방향키·Enter·Escape가 목록의 것이다. IME 조합 중에는
     // 넘기지 않는다 — 한글 입력에서 Enter는 조합 확정이지 선택이 아니다.
     if (open && !event.nativeEvent.isComposing) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      // 목록이 먹은 키는 위로 올리지 않는다. 특히 Escape — 스레드 패널이 Escape로 닫히므로
+      // (ThreadPanel), 후보 목록을 닫으려던 키가 패널을 통째로 닫고 작성 중이던 답글을
+      // 날려 버린다. 리액션 팔레트에서 같은 이유로 이미 한 번 겪은 문제다(KAN-31).
+      const consume = () => {
         event.preventDefault();
+        event.stopPropagation();
+      };
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        consume();
         const delta = event.key === 'ArrowDown' ? 1 : -1;
         setActiveIndex((prev) => (prev + delta + candidates.length) % candidates.length);
         return;
       }
       if (event.key === 'Enter' || event.key === 'Tab') {
-        event.preventDefault();
+        consume();
         pick(candidates[active]);
         return;
       }
       if (event.key === 'Escape') {
-        event.preventDefault();
+        consume();
         setQuery(null);
         return;
       }
@@ -152,6 +172,11 @@ export function MessageComposer({
 
   return (
     <div className="relative">
+      {/* 목록이 떴다는 것과 지금 무엇이 선택돼 있는지를 말로 알린다 — 시각적으로는 목록
+          자체가 피드백이지만, role을 못 붙이는 입력에서는 이게 유일한 단서다. */}
+      <p aria-live="polite" className="sr-only">
+        {open ? `멘션 후보 ${candidates.length}명, ${candidates[active]?.label} 선택됨` : ''}
+      </p>
       {open && (
         <MentionSuggestions
           candidates={candidates}
@@ -164,12 +189,13 @@ export function MessageComposer({
         <Textarea
           ref={textareaRef}
           aria-label={label}
-          // combobox 패턴 — 포커스는 입력에 남고 활성 항목만 가리킨다.
-          role="combobox"
-          aria-expanded={open}
-          aria-controls={open ? listboxId : undefined}
+          // role="combobox"를 붙이지 않는다. ARIA in HTML은 textarea에 role 재지정을
+          // 허용하지 않고(axe aria-allowed-role), 실제로도 스크린리더가 '여러 줄 편집'이
+          // 아니라 '콤보 상자'로 읽어 Shift+Enter 줄바꿈 안내와 어긋난다. 자동완성되는
+          // 멀티라인 입력에 맞는 role이 ARIA에 없다 — 그래서 textbox에도 유효한
+          // aria-activedescendant로 활성 항목만 가리키고, 목록의 존재는 아래 live region이
+          // 말로 알린다.
           aria-activedescendant={open ? optionId(listboxId, active) : undefined}
-          aria-autocomplete="list"
           value={draft}
           disabled={disabled}
           placeholder={placeholder}

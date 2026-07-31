@@ -205,3 +205,57 @@ describe('읽음 처리 (KAN-32)', () => {
     expect(page.notifications[0].read).toBe(true);
   });
 });
+
+describe('자체 리뷰 반영 (KAN-32)', () => {
+  it('볼 수 없는 비공개 채널의 사람은 멘션해도 알림이 생기지 않는다', async () => {
+    // 조회는 visibleWhere를 통과하므로 유출은 아니지만, 알림 행 하나가 그 사람에게
+    // 공짜 왕복(실시간 핑 → 재조회)을 강제하고, 나중에 그 채널에 초대되면 과거 알림이
+    // 뒤늦게 튀어나온다.
+    const secret = await prisma.channel.create({
+      data: { orgId: ORG_A, name: '비밀', isPrivate: true, members: { create: { userId: USER_OWNER } } },
+    });
+    const body = '@김 주니 여기 좀';
+    const sent = await createMessage(ORG_A, USER_OWNER, secret.id, body, undefined, [
+      span(body, '김 주니', USER_OTHER),
+    ]);
+
+    expect(sent?.notified).toEqual([]);
+    expect(await prisma.notification.count()).toBe(0);
+    // 멘션 강조 자체는 남는다 — 본문에 그렇게 적혀 있으니 사실이다.
+    expect(sent?.message.mentions).toHaveLength(1);
+  });
+
+  it('공개 채널에서는 미참여 조직 멤버도 멘션으로 부를 수 있다', async () => {
+    const body = '@김 주니 이리 와요';
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, body, undefined, [
+      span(body, '김 주니', USER_OTHER),
+    ]);
+
+    expect(sent?.notified).toEqual([USER_OTHER]);
+  });
+
+  it('channel 멘션에 실린 userId는 저장되지 않는다', async () => {
+    const body = '@channel 공지';
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, body, undefined, [
+      { ...span(body, 'channel', null, 'channel'), userId: 'user_지어낸_id' },
+    ]);
+
+    expect(sent?.message.mentions).toEqual([
+      { kind: 'channel', userId: null, start: 0, length: 8 },
+    ]);
+    expect(await prisma.messageMention.findMany({ select: { userId: true } })).toEqual([
+      { userId: null },
+    ]);
+  });
+
+  it('같은 자리를 가리키는 스팬이 여럿이면 응답도 한 건으로 정규화된다', async () => {
+    // 서버가 정규화하지 않으면 DB에는 복합 기본키로 1행만 남는데 응답과 브로드캐스트에는
+    // 보낸 만큼 실려 나가, 보낸 사람 화면과 새로고침 후 화면이 달라진다.
+    const body = '@김 주니 안녕';
+    const one = span(body, '김 주니', USER_OTHER);
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, body, undefined, [one, one, one]);
+
+    expect(sent?.message.mentions).toHaveLength(1);
+    expect(await prisma.messageMention.count()).toBe(1);
+  });
+});
