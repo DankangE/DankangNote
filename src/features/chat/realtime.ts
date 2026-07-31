@@ -7,6 +7,9 @@
 const CHAT_CHANNEL_PREFIX = 'private-chat-';
 
 export const CHAT_MESSAGE_EVENT = 'chat:message';
+// 리액션은 메시지와 다른 이벤트로 쏜다(KAN-31) — 같은 이벤트에 실으면 수신 측이 페이로드
+// 모양으로 종류를 갈라야 하고, 메시지 핸들러가 리액션 때문에 목록을 다시 접게 된다.
+export const CHAT_REACTION_EVENT = 'chat:reaction';
 
 export function chatChannel(channelId: string): string {
   return `${CHAT_CHANNEL_PREFIX}${channelId}`;

@@ -1,0 +1,29 @@
+// 리액션 이모지 팔레트 (KAN-31). 서버 검증(validation.ts)과 클라이언트 피커가 공유하는
+// 단일 정의라 server-only를 붙이지 않는다.
+//
+// 자유 문자열을 받지 않고 이 목록으로 닫아 둔다. emoji 컬럼은 그대로 남의 화면에 렌더되는
+// 값이라, 열어 두면 '이모지'라는 이름의 임의 텍스트(길이·방향 제어문자·자모 폭탄)를 저장해
+// 두는 통로가 된다. 검증을 정규식으로 하는 방법도 있지만 유니코드 이모지의 경계는
+// 판본마다 움직여서(ZWJ 시퀀스·피부톤·이형 선택자) 규칙이 곧 낡는다 — 목록이 정확하다.
+//
+// 슬랙식 전체 피커는 이 목록을 넓히는 후속 작업이다. 지금은 팀에서 실제로 쓰는 8개면 된다.
+export const REACTION_EMOJIS = ['👍', '🎉', '❤️', '😄', '👀', '🙏', '✅', '🔥'] as const;
+
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+// 스크린리더용 이름. 이모지를 그대로 읽히면 판본마다 다른 이름이 나오고(또는 안 읽힌다),
+// "👍 3" 버튼이 그냥 "3"으로 들린다.
+export const REACTION_LABELS: Record<ReactionEmoji, string> = {
+  '👍': '좋아요',
+  '🎉': '축하',
+  '❤️': '하트',
+  '😄': '웃음',
+  '👀': '보는 중',
+  '🙏': '부탁·감사',
+  '✅': '완료',
+  '🔥': '불',
+};
+
+export function isReactionEmoji(value: string): value is ReactionEmoji {
+  return (REACTION_EMOJIS as readonly string[]).includes(value);
+}

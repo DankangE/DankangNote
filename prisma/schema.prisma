@@ -68,6 +68,7 @@ model Organization {
   boardCards   BoardCard[]
   chatMessages ChatMessage[]
   channels     Channel[]
+  reactions    MessageReaction[]
 }
 
 /// 채팅 채널 (KAN-28) — '워크스페이스당 방 1개'(KAN-15)를 대체한다.
@@ -153,6 +154,33 @@ model ChatMessage {
   @@index([channelId, createdAt])
   // 스레드 조회는 parentId가 등호라 이 인덱스로 정렬까지 해결된다.
   @@index([parentId, createdAt])
+
+  reactions MessageReaction[]
+}
+
+/// 메시지 이모지 리액션 (KAN-31). 한 사람이 한 메시지에 같은 이모지를 두 번 누를 수 없다 —
+/// 그 유일성이 곧 토글의 의미고, 동시 클릭 경합도 DB가 막는다(@@unique).
+/// emoji는 자유 문자열이 아니라 고정 팔레트의 한 값이다(features/chat/reactions.ts) —
+/// 임의 문자열을 허용하면 그게 남의 화면에 그대로 렌더되는 저장형 입력이 된다.
+/// orgId는 ChatMessage와 같은 이유의 비정규화 컬럼이다: messageId Cascade만으로도 수명은
+/// 성립하지만, 테넌트 데이터는 예외 없이 orgId로 스코프한다는 규칙을 여기서만 비우지 않는다.
+/// userId에 FK를 두지 않는 것도 ChatMessage.authorId와 같다 — 리액션이 User 미러의 웹훅
+/// 동기화 순서에 묶이면 안 된다. 삭제된 사용자의 쓰기는 tombstone 가드가 막는다.
+model MessageReaction {
+  messageId String
+  userId    String
+  emoji     String
+  orgId     String
+  createdAt DateTime @default(now())
+
+  message      ChatMessage  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // 유니크 제약이 곧 기본키다 — 대리키를 따로 둘 이유가 없다(ChannelMember와 같은 형태).
+  @@id([messageId, userId, emoji])
+  // 페이지의 메시지 id들로 카운트를 접는 groupBy가 이 인덱스를 탄다. 선두가 messageId라
+  // 위 복합 기본키 인덱스로 충분해 별도 인덱스는 두지 않는다.
+  @@index([orgId])
 }
 
 /// 사용자↔조직 소속과 역할. id는 Clerk membership id(orgmem_...). organizationMembership.* 이벤트로 동기화.

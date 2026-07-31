@@ -3,10 +3,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { sendMessageAction } from '@/features/chat/api/actions';
+import { sendMessageAction, toggleReactionAction } from '@/features/chat/api/actions';
 import { fetchThread } from '@/features/chat/api/history';
-import { isGrouped, pendingMessage, upsert, type RoomMessage } from '@/features/chat/room-state';
-import type { ChatMessageView, ChatViewer } from '@/features/chat/types';
+import {
+  applyReaction,
+  hasMyReaction,
+  isGrouped,
+  pendingMessage,
+  setMyReaction,
+  upsert,
+  type RoomMessage,
+} from '@/features/chat/room-state';
+import type { ChatMessageView, ChatViewer, ReactionDelta } from '@/features/chat/types';
 import { ChatMessageRow } from './ChatMessageRow';
 import { MessageComposer } from './MessageComposer';
 
@@ -25,16 +33,20 @@ export function ThreadPanel({
   channelId,
   viewer,
   liveReplies,
+  liveReactions,
   onSyncReplyCount,
   onReplyCreated,
+  onReactionApplied,
   onClose,
 }: {
   rootId: string;
   channelId: string;
   viewer: ChatViewer;
   liveReplies: readonly ChatMessageView[];
+  liveReactions: readonly ReactionDelta[];
   onSyncReplyCount: (rootId: string, replyCount: number) => void;
   onReplyCreated: (reply: ChatMessageView) => void;
+  onReactionApplied: (delta: ReactionDelta) => void;
   onClose: () => void;
 }) {
   const [root, setRoot] = useState<ChatMessageView | null>(null);
@@ -106,6 +118,29 @@ export function ThreadPanel({
     const mine = liveReplies.filter((reply) => reply.parentId === rootId);
     if (mine.length > 0) {
       setReplies((prev) => mine.reduce((acc, reply) => upsert(acc, reply), prev));
+    }
+  }
+
+  // 루트와 답글은 서로 다른 state에 있지만 리액션 규칙은 같다 — 한 줄짜리 목록으로 취급해
+  // 같은 순수 함수를 양쪽에 돌린다. 이 함수들은 원소를 지우지 않으므로 [0]은 언제나 있다.
+  const applyToPanel = useCallback((update: (list: RoomMessage[]) => RoomMessage[]) => {
+    setRoot((prev) => (prev ? (update([prev])[0] ?? prev) : prev));
+    setReplies(update);
+  }, []);
+
+  // ChatRoom이 모아 주는 리액션 델타 중 이 패널에 있는 메시지의 것만 반영한다.
+  // liveReplies와 같은 이유로 effect가 아니라 렌더 중에 접는다(한 프레임 늦은 화면 방지).
+  const [seenReactions, setSeenReactions] = useState(liveReactions);
+  if (liveReactions !== seenReactions) {
+    setSeenReactions(liveReactions);
+    // 루트의 리액션도 이 패널 안에 그려지므로 messageId === rootId인 델타까지 받는다.
+    const mine = liveReactions.filter(
+      (delta) => delta.parentId === rootId || delta.messageId === rootId,
+    );
+    if (mine.length > 0) {
+      applyToPanel((list) =>
+        mine.reduce((acc, delta) => applyReaction(acc, delta, viewer.id), list),
+      );
     }
   }
 
@@ -193,6 +228,33 @@ export function ThreadPanel({
     }
   }
 
+  // 리액션 토글 — 본문과 같은 규칙(낙관 → 서버 절대값 확정 → 실패 시 내 몫만 롤백).
+  // 확정된 델타는 위로도 올려 보낸다: 루트에 단 리액션은 본문 목록에도 같은 행으로 떠 있다.
+  async function handleToggleReaction(messageId: string, emoji: string) {
+    const target = root?.id === messageId ? root : replies.find((reply) => reply.id === messageId);
+    if (!target) return;
+    const next = !hasMyReaction(target, emoji);
+    setError(null);
+    applyToPanel((list) => setMyReaction(list, messageId, emoji, viewer.id, next));
+
+    const rollback = (message: string) => {
+      applyToPanel((list) => setMyReaction(list, messageId, emoji, viewer.id, !next));
+      setError(message);
+    };
+
+    try {
+      const result = await toggleReactionAction({ messageId, emoji });
+      if (!result.ok) {
+        rollback(result.error);
+        return;
+      }
+      applyToPanel((list) => applyReaction(list, result.data, viewer.id));
+      onReactionApplied(result.data);
+    } catch {
+      rollback(GENERIC_ERROR);
+    }
+  }
+
   // 답글 수 표시. 한 페이지 안에 다 들어왔으면 화면에 있는 것이 곧 전부라 그 길이가
   // 가장 정확하다(내 전송·실시간 답글이 즉시 반영된다). 더 있는 경우에만 서버 값을 쓴다.
   const replyCount = hasMore ? (root?.replyCount ?? 0) : replies.length;
@@ -225,7 +287,7 @@ export function ThreadPanel({
 
         {root && (
           <>
-            <ChatMessageRow message={root} grouped={false} />
+            <ChatMessageRow message={root} grouped={false} onToggleReaction={handleToggleReaction} />
             <div className="my-2 flex items-center gap-2 px-2 text-xs text-muted-foreground">
               <span className="shrink-0">답글 {replyCount}개</span>
               <span aria-hidden className="h-px flex-1 bg-border" />
@@ -251,6 +313,7 @@ export function ThreadPanel({
             key={reply.id}
             message={reply}
             grouped={isGrouped(replies[index - 1], reply)}
+            onToggleReaction={handleToggleReaction}
           />
         ))}
       </div>
