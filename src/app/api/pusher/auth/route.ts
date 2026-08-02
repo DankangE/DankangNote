@@ -1,7 +1,11 @@
-import { getAuthState } from '@/server/auth';
+import type Pusher from 'pusher';
+import { getAuthState, getViewerIdentity } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
 import * as channelService from '@/server/services/channels';
-import { channelIdFromPusherChannel } from '@/features/chat/realtime';
+import {
+  channelIdFromPresenceChannel,
+  channelIdFromPusherChannel,
+} from '@/features/chat/realtime';
 import { notificationTargetFromChannel } from '@/features/notifications/realtime';
 
 /**
@@ -20,12 +24,37 @@ async function maySubscribe(
     return target.orgId === session.orgId && target.userId === session.userId;
   }
 
-  const channelId = channelIdFromPusherChannel(pusherChannel);
+  // 메시지 채널과 프레즌스 채널은 접근 규칙이 같다 — 볼 수 있는 채널이면 거기 누가 와
+  // 있는지도 볼 수 있고, 볼 수 없으면 둘 다 안 된다(KAN-34).
+  const channelId =
+    channelIdFromPusherChannel(pusherChannel) ?? channelIdFromPresenceChannel(pusherChannel);
   if (!channelId) {
     return false;
   }
   const { orgId, ...actor } = session;
   return Boolean(await channelService.getChannel(orgId, actor, channelId));
+}
+
+/**
+ * 프레즌스 채널이면 같이 서명할 멤버 정보. 아니면 undefined(그냥 private 인증이다).
+ *
+ * user_id는 세션의 것을 쓴다 — 클라이언트가 요청 바디에 실어 보낸 값을 믿으면 아무나
+ * 남의 이름으로 접속자 목록에 앉을 수 있다. 표시 이름을 여기서 실어 보내는 덕에
+ * 타이핑 이벤트는 userId만 싣고도 수신 측에서 이름이 붙는다.
+ */
+async function presenceData(
+  pusherChannel: string,
+  userId: string,
+): Promise<Pusher.PresenceChannelData | undefined> {
+  if (!channelIdFromPresenceChannel(pusherChannel)) {
+    return undefined;
+  }
+  const viewer = await getViewerIdentity();
+  return {
+    user_id: userId,
+    // Clerk 조회가 실패해도 접속 자체는 성립시킨다 — 이름은 수신 측이 id로 떨어뜨린다.
+    user_info: { name: viewer?.name ?? userId, imageUrl: viewer?.imageUrl ?? null },
+  };
 }
 
 // pusher-js가 private 채널 구독 시 POST하는 인증 엔드포인트(form-urlencoded).
@@ -60,9 +89,11 @@ export async function POST(request: Request) {
     return new Response('Pusher not configured', { status: 503 });
   }
 
+  const presence = await presenceData(pusherChannel, userId);
+
   // socket_id 형식(\d+\.\d+)이 아니면 pusher 라이브러리가 throw — 역시 입력 문제다.
   try {
-    return Response.json(pusherServer.authorizeChannel(socketId, pusherChannel));
+    return Response.json(pusherServer.authorizeChannel(socketId, pusherChannel, presence));
   } catch {
     return new Response('Bad Request', { status: 400 });
   }

@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { auth } from '@clerk/nextjs/server';
+import { auth, currentUser } from '@clerk/nextjs/server';
 
 // '조직 없음' 상태의 사용자 안내 문구 — 액션·조회 헬퍼가 공유한다.
 export const NO_ORG_ERROR = '워크스페이스(조직)를 선택하거나 만들어야 합니다.';
@@ -59,6 +59,34 @@ export async function getViewer(): Promise<{ userId: string; isAdmin: boolean } 
     return null;
   }
   return { userId, isAdmin };
+}
+
+/**
+ * 화면에 보일 내 표시 정보(이름·아바타).
+ *
+ * 미러 테이블(User)이 아니라 Clerk 세션에서 직접 읽는다 — 미러는 웹훅으로만 채워져
+ * 가입 직후엔 빈 행이고, 그러면 내가 보낸 말풍선에만 내 이름이 id로 뜬다.
+ *
+ * 낙관 말풍선(ChatViewer)과 프레즌스 멤버 정보가 이 하나를 공유해야 한다. 각자 계산하면
+ * 같은 사람이 메시지에는 '단 강', 접속자 목록에는 이메일로 뜨는 화면이 나온다.
+ * 이름 규칙은 미러용 displayName(user-display.ts)과 같다.
+ */
+export async function getViewerIdentity(): Promise<{
+  id: string;
+  name: string;
+  imageUrl: string | null;
+} | null> {
+  const user = await currentUser();
+  if (!user) {
+    return null;
+  }
+  const email = user.emailAddresses.find((address) => address.id === user.primaryEmailAddressId)
+    ?.emailAddress;
+  return {
+    id: user.id,
+    name: [user.firstName, user.lastName].filter(Boolean).join(' ') || email || user.id,
+    imageUrl: user.imageUrl || null,
+  };
 }
 
 /**

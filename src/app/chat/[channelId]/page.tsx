@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
-import { auth, currentUser } from '@clerk/nextjs/server';
+import { auth } from '@clerk/nextjs/server';
+import { getViewerIdentity } from '@/server/auth';
 import { fetchChannel, fetchChannelRoster, fetchMessages } from '@/features/chat/api/queries';
 import { ChatView } from '@/features/chat/components/ChatView';
 import { NoOrganization } from '@/lib/components/NoOrganization';
@@ -24,12 +25,9 @@ export default async function ChannelPage({
     redirect('/chat');
   }
 
-  // 낙관 전송 말풍선에 쓸 내 표시 정보 — 미러 테이블이 아직 동기화 전일 수 있어
-  // Clerk 세션에서 직접 읽는다.
-  const user = await currentUser();
-  const email = user?.emailAddresses.find((address) => address.id === user.primaryEmailAddressId)
-    ?.emailAddress;
-  const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || email || userId;
+  // 낙관 전송 말풍선에 쓸 내 표시 정보. 프레즌스 멤버 정보도 같은 헬퍼를 쓴다(KAN-34) —
+  // 두 곳이 각자 계산하면 같은 사람이 말풍선과 접속자 목록에 다른 이름으로 뜬다.
+  const viewer = (await getViewerIdentity()) ?? { id: userId, name: userId, imageUrl: null };
 
   const page = await fetchMessages(channel.id);
   // 참여자·초대 목록은 비공개 채널의 패널에서만 쓴다 — 공개 채널에선 조회 자체를 하지 않는다.
@@ -41,7 +39,7 @@ export default async function ChannelPage({
     <ChatView
       channel={channel}
       page={page}
-      viewer={{ id: userId, name, imageUrl: user?.imageUrl ?? null }}
+      viewer={viewer}
       roster={roster}
     />
   );
