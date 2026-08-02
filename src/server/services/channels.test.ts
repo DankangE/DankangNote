@@ -178,6 +178,25 @@ describe("기본 채널 승격 — 비공개 채널이 '일반'을 점유한 경
     expect(await prisma.channel.count({ where: { orgId: ORG_A } })).toBe(0);
   });
 
+  it('개명으로도 가져갈 수 없다 — 두 걸음으로 예약 가드를 우회하지 못한다', async () => {
+    const secret = await makeChannel(ORG_A, USER_OTHER, '비밀', true);
+
+    const outcome = await updateChannel(ORG_A, other, secret, { name: '일반', topic: null });
+
+    expect(outcome).toEqual({ status: 'reserved' });
+    expect(await prisma.channel.findUniqueOrThrow({ where: { id: secret } })).toMatchObject({
+      name: '비밀',
+    });
+  });
+
+  it('이미 그 이름인 비공개 채널이라도 주제는 바꿀 수 있다', async () => {
+    const secret = await squatDefaultName(ORG_A, USER_OTHER);
+
+    const outcome = await updateChannel(ORG_A, other, secret, { name: '일반', topic: '주제' });
+
+    expect(outcome).toMatchObject({ status: 'ok', channel: { topic: '주제' } });
+  });
+
   it('공개 채널이라면 기본 채널 이름을 써도 되고, 그대로 승격된다', async () => {
     const open = await makeChannel(ORG_A, USER_OTHER, '일반');
 

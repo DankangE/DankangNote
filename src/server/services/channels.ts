@@ -334,13 +334,19 @@ export async function updateChannel(
 ): Promise<ChannelOutcome> {
   const current = await prisma.channel.findFirst({
     where: { id: channelId, ...visibleWhere(orgId, actor.userId) },
-    select: { name: true, isDefault: true, createdById: true },
+    select: { name: true, isPrivate: true, isDefault: true, createdById: true },
   });
   if (!current) {
     return { status: 'notfound' };
   }
   if (!actor.isAdmin && current.createdById !== actor.userId) {
     return { status: 'forbidden' };
+  }
+  // 개명도 점유다 (KAN-53). createChannel에서만 예약 이름을 막으면 '비밀'로 만든 뒤
+  // '일반'으로 바꾸는 두 걸음이 그 가드를 그대로 우회한다. 이름을 바꾸는 요청일 때만
+  // 본다 — 이미 그 이름인 레거시 채널의 주제 수정까지 막을 이유는 없다.
+  if (current.isPrivate && input.name === DEFAULT_CHANNEL_NAME && input.name !== current.name) {
+    return { status: 'reserved' };
   }
   if (current.isDefault && input.name !== current.name) {
     return { status: 'default' };
