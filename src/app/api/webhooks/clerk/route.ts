@@ -71,7 +71,12 @@ export async function POST(req: NextRequest) {
         await upsertMembership(evt.data);
         break;
       case 'organizationMembership.deleted':
-        await deleteMembership(evt.data.id);
+        // 정리에 필요한 (orgId, userId)는 미러가 아니라 이 페이로드에서 온다 (KAN-54).
+        await deleteMembership({
+          membershipId: evt.data.id,
+          orgId: evt.data.organization.id,
+          userId: evt.data.public_user_data.user_id,
+        });
         break;
       default:
         // 구독하지 않는 이벤트는 정상 응답으로 무시 (Clerk 재시도 방지)

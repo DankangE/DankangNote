@@ -223,27 +223,42 @@ export async function deleteOrganization(id: string): Promise<void> {
   await prisma.organization.deleteMany({ where: { id } });
 }
 
-export async function deleteMembership(id: string): Promise<void> {
+/** 멤버십 삭제 이벤트가 실어 오는 식별자 — 라우트가 payload에서 그대로 뽑아 넘긴다. */
+export interface MembershipRef {
+  membershipId: string;
+  orgId: string;
+  userId: string;
+}
+
+export async function deleteMembership(ref: MembershipRef): Promise<void> {
   // 조직에서 빠지면 그 조직 채널의 참여도 함께 끝난다(KAN-28). ChannelMember는 Channel과
   // User에만 매달려 있어서 여기서 지우지 않으면 조직을 떠난 뒤에도 행이 남고, 나중에 같은
   // 조직에 재초대되는 순간 비공개 채널 접근이 조용히 되살아난다 — 그 행이 곧 접근 권한이다.
-  // '누가 어느 조직에서 빠졌는지'는 행에만 있으므로 지우기 전에 읽어 둔다. 삭제 두 개를 한
-  // 트랜잭션에 묶어, 중간에 죽어도 '멤버십은 없는데 채널 참여만 남은' 상태가 안 생긴다.
-  const membership = await prisma.membership.findUnique({
-    where: { id },
-    select: { orgId: true, userId: true },
-  });
-
+  //
+  // (orgId, userId)를 미러가 아니라 이벤트 자신에서 읽는다 (KAN-54). 한때 membershipId로
+  // 미러 행을 조회해 얻었는데, 그 조회는 두 경우에 null이 되어 정리를 통째로 건너뛰었다:
+  // 1) 재키잉 경합 — upsertMembership은 행을 (orgId,userId)로 찾아 id를 덮어쓴다. Svix는
+  //    순서를 보장하지 않으므로 재초대의 created가 지연된 deleted보다 먼저 도착하면 행의
+  //    id가 새 것으로 바뀌어 옛 id 조회가 빗나간다.
+  // 2) 미러 행 부재 — createChannel은 Membership을 보지 않으므로(세션의 orgId면 충분)
+  //    created 웹훅이 유실된 사용자도 비공개 채널을 만들고 참여자가 되어 있을 수 있다.
+  // 'authz의 근거는 세션이지 미러가 아니다'(KAN-18)와 같은 종류의 실수였다 — 정리의 근거도
+  // 미러가 아니라 이벤트 자신이어야 한다.
+  //
+  // 1)에서 이 정리는 재초대된 사용자의 채널 참여까지 지운다. 의도한 방향이다: 탈퇴 시점에
+  // 접근이 끊기는 쪽이 안전하고, 재초대 후의 참여는 다시 초대하면 복구된다(기본 채널은
+  // 다음 접속의 ensureDefaultChannel이 도로 넣는다). 반대로 두면 탈퇴 기간의 비공개 대화가
+  // 그대로 열린다.
+  //
+  // 삭제 두 개를 한 트랜잭션에 묶어, 중간에 죽어도 '멤버십은 없는데 채널 참여만 남은'
+  // 상태가 안 생긴다.
+  const { membershipId, orgId, userId } = ref;
   await prisma.$transaction([
-    prisma.clerkTombstone.createMany({ data: [{ id }], skipDuplicates: true }),
-    ...(membership
-      ? [
-          prisma.channelMember.deleteMany({
-            where: { userId: membership.userId, channel: { orgId: membership.orgId } },
-          }),
-        ]
-      : []),
-    prisma.membership.deleteMany({ where: { id } }),
+    prisma.clerkTombstone.createMany({ data: [{ id: membershipId }], skipDuplicates: true }),
+    prisma.channelMember.deleteMany({ where: { userId, channel: { orgId } } }),
+    // 미러 행은 id로 지운다 — (orgId,userId)로 지우면 1)에서 재키잉된 행, 즉 **지금 유효한**
+    // 재초대 멤버십이 사라진다. 지연 도착한 옛 삭제는 tombstone에만 남는 게 맞다.
+    prisma.membership.deleteMany({ where: { id: membershipId } }),
   ]);
-  await prisma.membership.deleteMany({ where: { id } });
+  await prisma.membership.deleteMany({ where: { id: membershipId } });
 }

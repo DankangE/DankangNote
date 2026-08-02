@@ -27,6 +27,7 @@ const OUTCOME_ERROR: Record<Exclude<ChannelOutcome['status'], 'ok'>, string> = {
   forbidden: '채널을 만든 사람이나 관리자만 바꿀 수 있어요.',
   notfound: '채널을 찾을 수 없습니다.',
   default: '기본 채널은 이름을 바꾸거나 삭제할 수 없어요.',
+  reserved: `'${channelService.DEFAULT_CHANNEL_NAME}'은 기본 채널 이름이라 비공개로 만들 수 없어요.`,
 };
 
 export async function createChannelAction(input: unknown): Promise<ActionResult<ChannelView>> {

@@ -13,6 +13,12 @@ import { unreadCounts } from '@/server/services/channel-reads';
  */
 export const DEFAULT_CHANNEL_NAME = '일반';
 const DEFAULT_CHANNEL_TOPIC = '워크스페이스 멤버 전체 대화';
+/**
+ * 기본 채널 이름이 비공개 채널에 점유됐을 때 쓰는 대체 이름의 개수 (KAN-53).
+ * `일반-2`부터 순서대로 시도한다 — 이름 규칙(validation.ts의 CHANNEL_NAME_PATTERN)을
+ * 지켜야 사용자가 나중에 같은 이름을 입력했을 때 같은 채널로 수렴한다.
+ */
+const FALLBACK_NAME_LIMIT = 20;
 
 /** 채널 관리 요청자. isAdmin은 Clerk 세션 클레임 기반이다 — 미러 role은 안 쓴다(KAN-18). */
 export interface ChannelActor {
@@ -47,7 +53,9 @@ export type ChannelOutcome =
   | { status: 'forbidden' }
   | { status: 'notfound' }
   /** 기본 채널이라 거부됨 — 이름 변경·삭제가 막혀 있다. */
-  | { status: 'default' };
+  | { status: 'default' }
+  /** 기본 채널 이름을 비공개 채널이 가져가려 했다 (KAN-53). */
+  | { status: 'reserved' };
 
 /**
  * 접근 판정의 단일 지점 — 공개 채널은 조직 멤버 전체, 비공개 채널은 참여자만.
@@ -146,6 +154,84 @@ export async function getChannel(
   return toView(channel, actor, memberCount);
 }
 
+/** 이 이름으로 기본 채널을 만든다. 이름이 이미 있으면 null — 동시 호출의 중재자는 [orgId,name] 유니크다. */
+async function createDefaultChannel(orgId: string, name: string): Promise<string | null> {
+  try {
+    const channel = await prisma.channel.create({
+      data: { orgId, name, topic: DEFAULT_CHANNEL_TOPIC, isDefault: true },
+      select: { id: true },
+    });
+    return channel.id;
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/** 지금 이 워크스페이스의 기본 채널. 경합에서 진 쪽이 이긴 쪽의 결과를 집어 가는 지점이기도 하다. */
+function findDefaultChannel(orgId: string): Promise<{ id: string } | null> {
+  return prisma.channel.findFirst({ where: { orgId, isDefault: true }, select: { id: true } });
+}
+
+/**
+ * 워크스페이스의 기본 채널을 확정한다. `created`는 '이번 호출이 만들었는가' —
+ * tombstone 롤백이 남의 채널을 지우지 않게 하는 근거다.
+ *
+ * 만들기에 실패할 때마다 곧바로 '지금 기본 채널이 있는가'를 다시 본다. 이 재조회가
+ * 동시 호출을 하나로 접는다 — 유니크 제약에서 진 쪽은 이긴 쪽의 채널을 그대로 쓰고,
+ * 다음 후보 이름으로 넘어가 두 번째 기본 채널을 만들지 않는다.
+ */
+async function resolveDefaultChannel(orgId: string): Promise<{ id: string; created: boolean }> {
+  // 이미 있으면 끝. 만들기보다 조회를 먼저 두는 이유는 아래 대체 경로 때문이다 — 기본
+  // 채널이 '일반'이 아닌 이름으로 서 있을 수 있고, 그때 '일반'을 새로 만들면 기본 채널이
+  // 둘로 갈라진다(점유하던 비공개 채널이 나중에 삭제되면 실제로 그렇게 된다).
+  const current = await findDefaultChannel(orgId);
+  if (current) {
+    return { id: current.id, created: false };
+  }
+
+  const bootstrapped = await createDefaultChannel(orgId, DEFAULT_CHANNEL_NAME);
+  if (bootstrapped) {
+    return { id: bootstrapped, created: true };
+  }
+
+  // 이름이 이미 있다 = 누군가 '일반'을 먼저 가져갔다(UI 흐름으론 불가능하지만 Server
+  // Action 직접 호출로는 가능). 공개 채널이면 승격시켜 불변식을 되돌린다.
+  //
+  // 비공개 채널은 승격시키지 않는다 (KAN-53). 승격 직후 아래에서 호출자를 참여시키는데,
+  // 비공개 채널에서 그 행은 곧 접근 권한 그 자체다(visibleWhere) — 조직 전원이 남의
+  // 비공개 대화에 차례로 강제 참여되고, 기본 채널은 나가기·이름 변경·삭제가 전부 막혀
+  // 있어 admin조차 앱 안에서 되돌릴 수 없다. 비공개를 공개로 바꾸는 것도 답이 아니다:
+  // 과거 대화가 통째로 열린다.
+  await prisma.channel.updateMany({
+    where: { orgId, name: DEFAULT_CHANNEL_NAME, isPrivate: false, isDefault: false },
+    data: { isDefault: true },
+  });
+
+  const promoted = await findDefaultChannel(orgId);
+  if (promoted) {
+    return { id: promoted.id, created: false };
+  }
+
+  // 비공개 채널이 이름을 점유했다. 이름을 양보하고 충돌하지 않는 이름으로 만든다 —
+  // 여기서 포기하면 findFirstOrThrow가 던져 그 워크스페이스의 /chat이 영구히 500이 되고,
+  // 이름이 점유된 채라 스스로 회복할 수도 없다.
+  for (let suffix = 2; suffix <= FALLBACK_NAME_LIMIT; suffix += 1) {
+    const fallback = await createDefaultChannel(orgId, `${DEFAULT_CHANNEL_NAME}-${suffix}`);
+    if (fallback) {
+      return { id: fallback, created: true };
+    }
+    const winner = await findDefaultChannel(orgId);
+    if (winner) {
+      return { id: winner.id, created: false };
+    }
+  }
+
+  throw new Error(`기본 채널 이름 후보를 모두 소진했습니다 (orgId=${orgId})`);
+}
+
 /**
  * 워크스페이스에 기본 채널이 있음을 보장하고, 뷰어를 그 채널에 참여시킨다.
  * 채팅 진입 경로가 매번 호출한다 — 조직 생성 웹훅을 기다리지 않고 첫 접속에서 스스로
@@ -155,54 +241,27 @@ export async function ensureDefaultChannel(orgId: string, userId: string): Promi
   // 삭제된 org·user의 stale 세션이 미러를 부활시키지 못하게 pre/post 이중 확인(KAN-12).
   await assertNotTombstoned([orgId, userId]);
 
-  const [, , created] = await prisma.$transaction([
-    orgSkeleton(orgId),
-    userSkeleton(userId),
-    prisma.channel.createMany({
-      data: [
-        {
-          orgId,
-          name: DEFAULT_CHANNEL_NAME,
-          topic: DEFAULT_CHANNEL_TOPIC,
-          isDefault: true,
-        },
-      ],
-      skipDuplicates: true,
-    }),
-  ]);
+  // 스켈레톤이 먼저다 — Channel.orgId와 ChannelMember.userId의 FK가 미러 행에 매달려 있다.
+  await prisma.$transaction([orgSkeleton(orgId), userSkeleton(userId)]);
 
-  // createMany가 스킵됐는데 기본 채널이 없다면 누군가 '일반'이라는 이름을 먼저 가져간
-  // 것이다(UI 흐름으론 불가능하지만 Server Action 직접 호출로는 가능). 그대로 두면 아래
-  // 조회가 throw하면서 그 워크스페이스의 /chat이 영구히 500이 되고, 이름이 이미 점유돼
-  // 스스로 회복할 수도 없다 — 그 채널을 기본 채널로 승격시켜 불변식을 되돌린다.
-  // 정상 경로에선 매칭이 0건이다(기본 채널의 이름은 언제나 '일반'이고 [orgId,name]은 유일).
-  if (created.count === 0) {
-    await prisma.channel.updateMany({
-      where: { orgId, name: DEFAULT_CHANNEL_NAME, isDefault: false },
-      data: { isDefault: true },
-    });
-  }
+  const { id: channelId, created } = await resolveDefaultChannel(orgId);
 
-  const channel = await prisma.channel.findFirstOrThrow({
-    where: { orgId, isDefault: true },
-    select: { id: true },
-  });
   // 기본 채널 참여는 나갈 수 없다(leaveChannel이 막는다) — 그래서 매 접속의 재참여가
   // 사용자의 '나가기' 의사를 되돌리는 일이 없다.
   await prisma.channelMember.createMany({
-    data: [{ channelId: channel.id, userId }],
+    data: [{ channelId, userId }],
     skipDuplicates: true,
   });
 
   await assertNotTombstoned([orgId, userId], async () => {
-    await prisma.channelMember.deleteMany({ where: { channelId: channel.id, userId } });
+    await prisma.channelMember.deleteMany({ where: { channelId, userId } });
     // 이번 호출이 만든 채널만 되돌린다 — 이미 있던 채널까지 지우면 남의 대화가 사라진다.
-    if (created.count > 0) {
-      await prisma.channel.deleteMany({ where: { id: channel.id } });
+    if (created) {
+      await prisma.channel.deleteMany({ where: { id: channelId } });
     }
   });
 
-  return channel.id;
+  return channelId;
 }
 
 export async function createChannel(
@@ -211,6 +270,15 @@ export async function createChannel(
   input: ChannelInput,
 ): Promise<ChannelOutcome> {
   const actor = { userId, isAdmin: false };
+
+  // 기본 채널 이름은 비공개 채널이 가져갈 수 없다 (KAN-53). 점유되면 ensureDefaultChannel이
+  // 그 이름을 쓰지 못해 대체 이름으로 밀려나고, 워크스페이스의 기본 채널이 영영 '일반'이
+  // 아니게 된다(기본 채널은 이름을 바꿀 수 없어 되돌릴 수도 없다). 공개 채널은 허용한다 —
+  // 승격되더라도 어차피 조직 전체가 볼 수 있던 채널이라 새로 열리는 대화가 없다.
+  if (input.isPrivate && input.name === DEFAULT_CHANNEL_NAME) {
+    return { status: 'reserved' };
+  }
+
   await assertNotTombstoned([orgId, userId]);
 
   let channel: ChannelRow;
@@ -266,13 +334,19 @@ export async function updateChannel(
 ): Promise<ChannelOutcome> {
   const current = await prisma.channel.findFirst({
     where: { id: channelId, ...visibleWhere(orgId, actor.userId) },
-    select: { name: true, isDefault: true, createdById: true },
+    select: { name: true, isPrivate: true, isDefault: true, createdById: true },
   });
   if (!current) {
     return { status: 'notfound' };
   }
   if (!actor.isAdmin && current.createdById !== actor.userId) {
     return { status: 'forbidden' };
+  }
+  // 개명도 점유다 (KAN-53). createChannel에서만 예약 이름을 막으면 '비밀'로 만든 뒤
+  // '일반'으로 바꾸는 두 걸음이 그 가드를 그대로 우회한다. 이름을 바꾸는 요청일 때만
+  // 본다 — 이미 그 이름인 레거시 채널의 주제 수정까지 막을 이유는 없다.
+  if (current.isPrivate && input.name === DEFAULT_CHANNEL_NAME && input.name !== current.name) {
+    return { status: 'reserved' };
   }
   if (current.isDefault && input.name !== current.name) {
     return { status: 'default' };
