@@ -267,8 +267,16 @@ export async function ensureDefaultChannel(orgId: string, userId: string): Promi
 
   // 기본 채널 참여는 나갈 수 없다(leaveChannel이 막는다) — 그래서 매 접속의 재참여가
   // 사용자의 '나가기' 의사를 되돌리는 일이 없다.
+  //
+  // joinedSeq는 지금 채널 순번이다 (KAN-55). 이 채널은 워크스페이스에 이미 있었을 수 있어,
+  // 0으로 두면 새 멤버의 첫 접속에 그동안의 대화 전체가 안읽음으로 뜬다. 이미 참여 중이면
+  // skipDuplicates가 막아 기준선은 그대로다.
+  const { messageSeq } = await prisma.channel.findUniqueOrThrow({
+    where: { id: channelId },
+    select: { messageSeq: true },
+  });
   await prisma.channelMember.createMany({
-    data: [{ channelId, userId }],
+    data: [{ channelId, userId, joinedSeq: messageSeq }],
     skipDuplicates: true,
   });
 
@@ -304,6 +312,11 @@ export async function createChannel(
   try {
     // 생성자는 곧바로 참여자다 — 비공개 채널이라면 이 행이 접근 권한 그 자체다.
     // 같은 트랜잭션의 userSkeleton이 앞서 실행돼 ChannelMember FK가 성립한다.
+    //
+    // joinedSeq를 안 적는 유일한 참여 지점이다 (KAN-55). 방금 만든 채널이라 messageSeq도
+    // 0이고 기본값 0이 곧 맞는 값이기 때문이다. 이 create가 **이미 있는 채널**에 사람을
+    // 붙이는 형태로 바뀌면 그 순간 틀린다 — 기준선이 0이면 그동안의 대화가 통째로
+    // 안읽음으로 뜬다. 그때는 다른 참여 지점들처럼 지금 순번을 읽어 실어야 한다.
     const [, , created] = await prisma.$transaction([
       orgSkeleton(orgId),
       userSkeleton(userId),

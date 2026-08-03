@@ -96,6 +96,10 @@ model Channel {
   createdById String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  /// 이 채널에 마지막으로 부여한 메시지 순번 (KAN-55). 전송 트랜잭션이 이 행을 잠그고
+  /// +1 해서 ChatMessage.seq로 쓴다 — 그래서 순번 순서가 곧 **커밋 순서**다(자세한 근거는
+  /// ChatMessage.seq 주석). 롤백되면 증가도 함께 되돌아가 번호에 구멍이 남지 않는다.
+  messageSeq  Int      @default(0)
 
   organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy    User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
@@ -117,6 +121,10 @@ model ChannelMember {
   channelId String
   userId    String
   createdAt DateTime @default(now())
+  /// 참여한 순간의 채널 순번 (KAN-55). '참여 이전 이력은 안읽음이 아니다'의 기준선이다 —
+  /// 한때 createdAt(참여 시각)과 메시지 시각을 비교했는데, 그 둘은 서로 다른 앱 프로세스의
+  /// 시계라 비교할 근거가 없었다. 같은 채널의 순번끼리 비교하면 그 문제가 사라진다.
+  joinedSeq Int      @default(0)
 
   channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -144,6 +152,27 @@ model ChatMessage {
   authorId  String
   parentId  String?
   body      String
+  /// 채널 안에서의 순번 (KAN-55). **정렬·커서의 유일한 근거다.** createdAt은 표시용으로만
+  /// 남는다.
+  ///
+  /// 왜 시각이 아닌가: createdAt은 INSERT를 실행한 앱 프로세스의 벽시계다(스키마에 DEFAULT
+  /// CURRENT_TIMESTAMP가 있어도 Prisma가 값을 바인드 파라미터로 보내 DB 기본값은 쓰이지
+  /// 않는다 — 실측). 인스턴스가 둘 이상이면 NTP 스큐가 그대로 메시지 순서가 된다.
+  ///
+  /// 왜 시퀀스(BIGSERIAL)가 아닌가: 시퀀스 값은 INSERT 시점에 뽑히므로 **커밋 순서와
+  /// 어긋날 수 있다**. 늦게 커밋된 작은 번호는 이미 전진한 읽음 커서 아래에 깔려 영영
+  /// 안읽음에서 빠진다(KAN-55의 실측 시나리오).
+  ///
+  /// 이 컬럼은 Channel.messageSeq를 UPDATE ... RETURNING으로 +1 해서 받는다. 그 행 잠금은
+  /// 커밋까지 유지되므로 뒤이은 전송은 앞 전송이 커밋하기 전에는 번호를 받지 못한다 —
+  /// 즉 **번호 순서 = 커밋 순서**이고, 카운터는 번호를 건너뛰지 않는다(롤백된 전송의 번호는
+  /// 다음 전송이 받는다). 반대로 **seq 값이 1..N으로 연속이라는 뜻은 아니다** — 커밋된
+  /// 메시지가 지워지면(cascade, tombstone 사후 정리) 그 번호는 비어 남는다. 커서는
+  /// `seq > baseline`, 키셋은 `seq < anchor`라 빈 번호는 무해하지만, 연속성에 기대는 계산
+  /// (개수를 빼서 세기 같은)을 얹으면 그때부터 조용히 틀린다. 대가는 같은 채널로의 동시 전송이
+  /// 그 행에서 직렬화된다는 것인데, 채널 하나의 전송은 사람이 치는 속도라 실질적 상한이
+  /// 아니다. 순서 정합성을 얻는 값으로 싸다.
+  seq       Int
   createdAt DateTime @default(now())
 
   organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -152,13 +181,16 @@ model ChatMessage {
   replies      ChatMessage[] @relation("MessageThread")
 
   @@index([orgId, createdAt])
-  // 채널 본문 목록은 (channelId, createdAt) 역스캔으로 뽑고 parentId IS NULL은 필터로
-  // 걸러진다. 한때 parentId를 인덱스 가운데에 끼웠는데 그건 틀렸다 — IS NULL은 등호가
-  // 아니라 NullTest라 정렬 pathkey가 성립하지 않아 오히려 Sort가 붙는다. 답글이 96%인
-  // 채널에서도 이 형태가 52행만 읽고 끝난다(실측 15 buffers / 0.27ms).
-  @@index([channelId, createdAt])
+  // 채널 본문 목록은 (channelId, seq) 역스캔으로 뽑고 parentId IS NULL은 필터로 걸러진다.
+  // 한때 parentId를 인덱스 가운데에 끼웠는데 그건 틀렸다 — IS NULL은 등호가 아니라
+  // NullTest라 정렬 pathkey가 성립하지 않아 오히려 Sort가 붙는다. 답글이 96%인 채널에서도
+  // 이 형태가 52행만 읽고 끝난다(실측 15 buffers / 0.27ms).
+  //
+  // unique인 것은 성능이 아니라 불변식이다: 한 채널에 같은 번호가 둘이면 커서가 어느 쪽을
+  // 가리키는지 정할 수 없다. 카운터를 우회해 seq를 직접 넣는 코드가 생기면 여기서 죽는다.
+  @@unique([channelId, seq])
   // 스레드 조회는 parentId가 등호라 이 인덱스로 정렬까지 해결된다.
-  @@index([parentId, createdAt])
+  @@index([parentId, seq])
 
   reactions     MessageReaction[]
   mentions      MessageMention[]
@@ -171,18 +203,18 @@ model ChatMessage {
 /// 놓치거나 두 번 세는 순간 조용히 어긋난 채 굳고, 되돌릴 근거가 없다. 커서는 언제든
 /// '그 뒤에 온 것'을 다시 세면 되므로 스스로 회복한다.
 ///
-/// (createdAt, id) 두 값을 함께 든다. 메시지 정렬이 이 프로젝트 전체에서 그 복합 키이므로
-/// (KAN-29), 시각 하나만 두면 같은 ms에 들어온 메시지가 경계에서 빠지거나 두 번 세어진다.
+/// 커서는 채널 순번 하나다 (KAN-55). 한때 (createdAt, id) 복합 키였는데, 그 시각이 앱
+/// 프로세스 시계였던 탓에 '늦게 커밋된 옛 시각' 메시지가 커서 아래에 깔려 영영 안읽음에서
+/// 빠졌다. 순번은 커밋 순서와 같아서 그 구멍이 없고, 동률을 가를 id도 필요 없다.
 ///
 /// userId에 FK를 두지 않는 것은 ChatMessage.authorId와 같은 이유다. 수명은 channelId·orgId
 /// Cascade로 닫혀 있다.
 model ChannelRead {
-  channelId  String
-  userId     String
-  orgId      String
-  lastReadAt DateTime
-  lastReadId String
-  updatedAt  DateTime @updatedAt
+  channelId   String
+  userId      String
+  orgId       String
+  lastReadSeq Int
+  updatedAt   DateTime @updatedAt
 
   channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

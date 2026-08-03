@@ -1,5 +1,7 @@
+import { setTimeout } from 'node:timers/promises';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '@/server/db';
+import type { Prisma } from '@/server/generated/prisma/client';
 import {
   CHANNEL_A,
   CHANNEL_B,
@@ -9,6 +11,7 @@ import {
   USER_OWNER,
   resetDatabase,
   seedChannels,
+  seedMessages as seedMessageRows,
   seedTenants,
 } from '../../../test/db';
 import {
@@ -25,14 +28,20 @@ beforeEach(async () => {
   await seedChannels();
 });
 
+/** 서비스를 거치지 않고 이물 행 한 건을 심고 그 행을 돌려준다. */
+async function plant(row: Parameters<typeof seedMessageRows>[0][number]) {
+  const [created] = await seedMessageRows([row]);
+  return created;
+}
+
 /**
- * 페이지네이션 테스트용 대량 시드. createdAt을 1초씩 벌려 넣어 '오래된 것부터' 순서가
- * 관측 가능하게 한다(같은 ms에 몰아 넣으면 id 타이브레이커만 검증하게 된다).
+ * 페이지네이션 테스트용 대량 시드. createdAt은 1초씩 벌려 두지만 순서의 근거는 아니다 —
+ * 정렬은 심은 순서대로 붙는 seq를 따른다(KAN-55).
  */
 async function seedMessages(channelId: string, count: number): Promise<void> {
   const base = new Date('2026-01-01T00:00:00.000Z').getTime();
-  await prisma.chatMessage.createMany({
-    data: Array.from({ length: count }, (_, index) => ({
+  await seedMessageRows(
+    Array.from({ length: count }, (_, index) => ({
       id: `msg_${String(index).padStart(3, '0')}`,
       orgId: ORG_A,
       channelId,
@@ -40,7 +49,7 @@ async function seedMessages(channelId: string, count: number): Promise<void> {
       body: `메시지 ${index}`,
       createdAt: new Date(base + index * 1000),
     })),
-  });
+  );
 }
 
 describe('멀티테넌시 격리', () => {
@@ -271,11 +280,13 @@ describe('커서 페이지네이션 (KAN-29)', () => {
     expect(new Set(collected).size).toBe(total);
   });
 
-  it('createdAt이 같아도 커서가 자기 자신이나 이웃을 다시 집지 않는다', async () => {
-    // 같은 ms에 몰린 연속 전송 — 키셋의 id 타이브레이커가 없으면 무한 루프가 된다.
+  it('createdAt이 전부 같아도 순서와 커서가 흔들리지 않는다 (KAN-55)', async () => {
+    // 시각을 한 점에 몰아 넣어 '정렬이 시각과 무관하다'를 눈에 보이게 한다. 시각이 근거였을
+    // 때는 여기서 동률을 가를 id 타이브레이커가 필요했고, 그게 없으면 커서가 자기 자신을
+    // 다시 집어 무한 루프가 됐다. 이제 근거는 채널 순번이라 동률 자체가 생기지 않는다.
     const sameMoment = new Date('2026-01-01T00:00:00.000Z');
-    await prisma.chatMessage.createMany({
-      data: ['a', 'b', 'c'].map((id) => ({
+    await seedMessageRows(
+      ['a', 'b', 'c'].map((id) => ({
         id,
         orgId: ORG_A,
         channelId: CHANNEL_A,
@@ -283,7 +294,7 @@ describe('커서 페이지네이션 (KAN-29)', () => {
         body: id,
         createdAt: sameMoment,
       })),
-    });
+    );
 
     const first = await listMessages(ORG_A, USER_OWNER, CHANNEL_A);
     expect(first.messages.map((m) => m.id)).toEqual(['a', 'b', 'c']);
@@ -413,8 +424,8 @@ describe('스레드 (KAN-30)', () => {
   it('답글도 키셋 커서로 페이지를 넘긴다', async () => {
     const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
     const base = new Date('2026-02-01T00:00:00.000Z').getTime();
-    await prisma.chatMessage.createMany({
-      data: Array.from({ length: MESSAGE_PAGE_SIZE + 2 }, (_, index) => ({
+    await seedMessageRows(
+      Array.from({ length: MESSAGE_PAGE_SIZE + 2 }, (_, index) => ({
         id: `reply_${String(index).padStart(3, '0')}`,
         orgId: ORG_A,
         channelId: CHANNEL_A,
@@ -423,7 +434,7 @@ describe('스레드 (KAN-30)', () => {
         body: `답글 ${index}`,
         createdAt: new Date(base + index * 1000),
       })),
-    });
+    );
 
     const first = await listThread(ORG_A, USER_OWNER, root!.message.id);
     expect(first?.page.messages).toHaveLength(MESSAGE_PAGE_SIZE);
@@ -441,8 +452,11 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
   // 조건에서 orgId를 빼도 채널 조건만으로 통과해 버리는지 아닌지가 드러나지 않는다.
 
   it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지에는 답글을 달 수 없다', async () => {
-    const planted = await prisma.chatMessage.create({
-      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속 루트' },
+    const planted = await plant({
+      orgId: ORG_B,
+      channelId: CHANNEL_A,
+      authorId: USER_OTHER,
+      body: 'B 소속 루트',
     });
 
     expect(
@@ -451,8 +465,11 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
   });
 
   it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지는 스레드로 열리지 않는다', async () => {
-    const planted = await prisma.chatMessage.create({
-      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속 루트' },
+    const planted = await plant({
+      orgId: ORG_B,
+      channelId: CHANNEL_A,
+      authorId: USER_OTHER,
+      body: 'B 소속 루트',
     });
 
     expect(await listThread(ORG_A, USER_OWNER, planted.id)).toBeNull();
@@ -462,15 +479,15 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
     // 답글의 channelId·orgId가 부모와 같다는 불변식은 DB로 표현돼 있지 않다. 서비스를
     // 거치지 않고 이물 행을 심어, 조회가 스스로 테넌트 스코프를 갖는지 확인한다.
     const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
-    await prisma.chatMessage.create({
-      data: {
+    await seedMessageRows([
+      {
         orgId: ORG_B,
         channelId: CHANNEL_B,
         parentId: root!.message.id,
         authorId: USER_OTHER,
         body: 'B에 속한 이물 답글',
       },
-    });
+    ]);
 
     const thread = await listThread(ORG_A, USER_OWNER, root!.message.id);
 
@@ -478,11 +495,11 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
     expect(thread?.root.replyCount).toBe(1);
   });
 
-  it('답글도 createdAt 동률에서 커서가 이웃을 다시 집지 않는다', async () => {
+  it('답글도 createdAt이 전부 같을 때 순서와 커서가 흔들리지 않는다 (KAN-55)', async () => {
     const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
     const sameMoment = new Date('2026-03-01T00:00:00.000Z');
-    await prisma.chatMessage.createMany({
-      data: ['ra', 'rb', 'rc'].map((id) => ({
+    await seedMessageRows(
+      ['ra', 'rb', 'rc'].map((id) => ({
         id,
         orgId: ORG_A,
         channelId: CHANNEL_A,
@@ -491,7 +508,7 @@ describe('스레드 격리 — 쿼리 조건 고정 (KAN-30 리뷰)', () => {
         body: id,
         createdAt: sameMoment,
       })),
-    });
+    );
 
     const first = await listThread(ORG_A, USER_OWNER, root!.message.id);
     expect(first?.page.messages.map((m) => m.id)).toEqual(['ra', 'rb', 'rc']);
@@ -611,8 +628,11 @@ describe('리액션 격리 · 수명 (KAN-31)', () => {
   it('내가 볼 수 있는 채널에 놓였어도 남의 org 메시지에는 리액션할 수 없다', async () => {
     // 스레드와 같은 이유의 이물 행 — orgId와 channelId를 묶는 DB 제약이 없어서, 조회 조건에서
     // orgId를 빼도 채널 조건만으로 통과해 버리는지가 이 케이스에서만 드러난다.
-    const planted = await prisma.chatMessage.create({
-      data: { orgId: ORG_B, channelId: CHANNEL_A, authorId: USER_OTHER, body: 'B 소속' },
+    const planted = await plant({
+      orgId: ORG_B,
+      channelId: CHANNEL_A,
+      authorId: USER_OTHER,
+      body: 'B 소속',
     });
 
     expect(await toggleReaction(ORG_A, USER_OWNER, planted.id, '👍')).toBeNull();
@@ -711,5 +731,94 @@ describe('리액션 자체 리뷰 반영 (KAN-31)', () => {
     await prisma.organization.delete({ where: { id: ORG_B } });
 
     expect(await prisma.messageReaction.count()).toBe(0);
+  });
+});
+
+describe('메시지 순번 = 커밋 순서 (KAN-55)', () => {
+  /** 메시지 순번은 뷰에 싣지 않는다(클라이언트가 쓸 일이 없다) — DB에서 직접 읽는다. */
+  const seqOf = async (id: string) =>
+    (await prisma.chatMessage.findUniqueOrThrow({ where: { id }, select: { seq: true } })).seq;
+
+  /** 채널 카운터를 잠그고 다음 번호를 받는다 — 전송 트랜잭션의 첫 문장과 같은 SQL이다. */
+  const takeSeq = (tx: Prisma.TransactionClient, channelId: string) =>
+    tx.$queryRaw<{ messageSeq: number }[]>`
+      UPDATE "Channel" SET "messageSeq" = "messageSeq" + 1
+      WHERE "id" = ${channelId}
+      RETURNING "messageSeq"
+    `;
+
+  it('번호를 받고 커밋이 늦어져도 뒤 전송이 앞지르지 못한다', async () => {
+    // 이 티켓의 뿌리다. 번호(옛날엔 시각)를 받는 시점과 커밋 시점이 벌어지면, 늦게 커밋된
+    // 작은 번호가 이미 전진한 읽음 커서 아래에 깔려 영영 안읽음에서 빠진다.
+    //
+    // 그래서 '앞 전송이 번호를 받은 뒤 커밋 전에 늦어지는' 상황을 실제로 만든다. 미러 행을
+    // 쥐고 커밋을 미루는 트랜잭션을 세워 두면, 그 사용자로 들어온 전송은 카운터를 지나
+    // userSkeleton에서 멈춘다 — 채널 카운터 잠금을 쥔 채로. 그 잠금이 커밋까지 유지되는지가
+    // 여기서 드러난다(카운터를 트랜잭션 밖에서 올리면 뒤 전송이 그대로 앞질러 커밋한다).
+    const latecomer = 'user_slow_mirror';
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blocker = prisma.$transaction(
+      async (tx) => {
+        await tx.user.createMany({ data: [{ id: latecomer }], skipDuplicates: true });
+        await held;
+      },
+      { timeout: 20_000 },
+    );
+
+    const slow = createMessage(ORG_A, latecomer, CHANNEL_A, '먼저 번호를 받은 말');
+    // 번호를 받고 미러 행에서 멈출 때까지 준다.
+    await setTimeout(300);
+
+    const racer = createMessage(ORG_A, USER_OWNER, CHANNEL_A, '뒤에 들어온 말');
+    const outcome = await Promise.race([
+      racer.then(() => 'passed' as const),
+      setTimeout(400, 'blocked' as const),
+    ]);
+    expect(outcome).toBe('blocked');
+
+    release();
+    await blocker;
+    const [first, second] = await Promise.all([slow, racer]);
+
+    // 번호가 작은 쪽이 먼저 커밋한 쪽이다 — 순번을 신뢰할 수 있다는 말의 전부다.
+    expect(await seqOf(first!.message.id)).toBeLessThan(await seqOf(second!.message.id));
+  });
+
+  it('롤백된 전송은 번호를 소모하지 않는다 — 순번에 구멍이 없다', async () => {
+    // 구멍이 없다는 것이 커서 계산의 전제다. BIGSERIAL이었다면 여기서 번호가 하나 날아간다.
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await takeSeq(tx, CHANNEL_A);
+        throw new Error('의도적 롤백');
+      }),
+    ).rejects.toThrow('의도적 롤백');
+
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '롤백 다음 말');
+
+    expect(await seqOf(sent!.message.id)).toBe(1);
+  });
+
+  it('채널마다 따로 센다 — 남의 채널 전송이 내 번호를 밀지 않는다', async () => {
+    await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 말 1');
+    await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 말 2');
+    const mine = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, 'A의 첫 말');
+
+    expect(await seqOf(mine!.message.id)).toBe(1);
+  });
+
+  it('같은 채널의 답글도 같은 카운터에서 번호를 받는다', async () => {
+    const root = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const reply = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '답글', root!.message.id);
+    const next = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '그다음 본문');
+
+    // 한 채널 안에서 (channelId, seq)가 unique이므로 본문과 답글이 번호를 나눠 쓸 수 없다.
+    expect([
+      await seqOf(root!.message.id),
+      await seqOf(reply!.message.id),
+      await seqOf(next!.message.id),
+    ]).toEqual([1, 2, 3]);
   });
 });
