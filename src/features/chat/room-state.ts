@@ -125,6 +125,32 @@ function reduceReactions(
 }
 
 /**
+ * 이 칩에 반영된 마지막 집계 버전 (KAN-52). 그 이모지로 델타를 받은 적이 없으면
+ * 조회 스냅샷의 기준선이다.
+ */
+export function appliedVersion(message: RoomMessage, emoji: string): number {
+  return message.reactionVersions?.[emoji] ?? message.reactionVersion;
+}
+
+/**
+ * 내가 토글을 시작한 뒤로 서버 값이 이 칩을 덮었는가.
+ *
+ * 실패한 토글을 되돌릴 때 count까지 ∓1 할지, 내 표시만 되돌릴지를 가른다(markMyReaction
+ * 주석 참조). '서버 델타가 도착했는가'가 아니라 **적용됐는가**를 묻는 것이 중요하다 —
+ * 역순 배달로 버려진 델타는 화면을 바꾸지 않았으므로 내 낙관 ∓1이 아직 그대로 있고,
+ * 그때 표시만 되돌리면 count가 1만큼 어긋난 채 남는다.
+ */
+export function serverOverwrote(
+  list: RoomMessage[],
+  messageId: string,
+  emoji: string,
+  since: number,
+): boolean {
+  const message = list.find((entry) => entry.id === messageId);
+  return message ? appliedVersion(message, emoji) > since : false;
+}
+
+/**
  * 델타를 목록에 적용한다. 그 메시지가 목록에 없으면 아무 일도 하지 않는다.
  *
  * **이미 적용한 것보다 낮은 버전은 버린다 (KAN-52).** count가 절대값이라 중복 배달은
@@ -145,8 +171,7 @@ export function applyReaction(
     if (message.id !== delta.messageId) {
       return message;
     }
-    const applied = message.reactionVersions?.[delta.emoji] ?? message.reactionVersion;
-    if (delta.version <= applied) {
+    if (delta.version <= appliedVersion(message, delta.emoji)) {
       return message;
     }
     return {

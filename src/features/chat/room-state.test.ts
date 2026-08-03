@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { applyReaction, hasMyReaction, setMyReaction, type RoomMessage } from './room-state';
+import {
+  appliedVersion,
+  applyReaction,
+  hasMyReaction,
+  serverOverwrote,
+  setMyReaction,
+  type RoomMessage,
+} from './room-state';
 import type { ReactionDelta, ReactionView } from './types';
 
 // 순수 함수라 DB도 렌더도 필요 없다 — 규칙이 시간·순서에 얽혀 있어 입력으로 확인한다.
@@ -130,5 +137,42 @@ describe('역순 배달 방어 (KAN-52)', () => {
 
     expect(countOf(optimistic)).toBe(1);
     expect(countOf(confirmed)).toBe(2);
+  });
+});
+
+describe('실패한 토글의 롤백 판단 (KAN-52)', () => {
+  // 낙관 ∓1을 되돌릴 때 count까지 건드릴지, 내 표시만 되돌릴지를 가르는 판단이다.
+  // '서버 델타가 왔는가'가 아니라 **적용됐는가**를 물어야 한다 — 버려진 델타는 화면을
+  // 바꾸지 않았으므로 내 ∓1이 아직 그대로 있다.
+
+  it('적용된 델타가 덮었으면 count는 서버 것이다', () => {
+    const loaded = [message([{ emoji: '👍', count: 4, mine: false }], 10)];
+    const since = appliedVersion(loaded[0], '👍');
+    const covered = applyReaction(loaded, delta({ count: 9, version: 11 }), VIEWER);
+
+    expect(since).toBe(10);
+    expect(serverOverwrote(covered, 'msg_1', '👍', since)).toBe(true);
+  });
+
+  it('역순 배달로 버려진 델타는 덮은 것이 아니다', () => {
+    // ref로 '왔는가'만 세던 시절 여기서 true가 나왔고, 롤백이 count를 안 되돌려
+    // 1만큼 어긋난 채 남았다.
+    const loaded = [message([{ emoji: '👍', count: 4, mine: false }], 10)];
+    const since = appliedVersion(loaded[0], '👍');
+    const dropped = applyReaction(loaded, delta({ count: 1, version: 9 }), VIEWER);
+
+    expect(serverOverwrote(dropped, 'msg_1', '👍', since)).toBe(false);
+  });
+
+  it('옆 이모지가 덮은 것은 내 칩을 덮은 것이 아니다', () => {
+    const loaded = [message([{ emoji: '👍', count: 4, mine: false }], 10)];
+    const since = appliedVersion(loaded[0], '👍');
+    const heart = applyReaction(loaded, delta({ emoji: '❤️', version: 11 }), VIEWER);
+
+    expect(serverOverwrote(heart, 'msg_1', '👍', since)).toBe(false);
+  });
+
+  it('목록에 없는 메시지면 덮은 것이 없다 — 패널의 다른 목록에 그대로 돌려준다', () => {
+    expect(serverOverwrote([message([])], 'msg_other', '👍', 0)).toBe(false);
   });
 });

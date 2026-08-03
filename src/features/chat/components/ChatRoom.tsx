@@ -244,7 +244,7 @@ export function ChatRoom({
     [viewer.id],
   );
 
-  const { toggle: toggleReaction, noteServerDelta } = useReactionToggle({
+  const { toggle: toggleReaction } = useReactionToggle({
     viewerId: viewer.id,
     apply: setMessages,
     onConfirmed: applyReactionDelta,
@@ -252,14 +252,9 @@ export function ChatRoom({
   });
 
   // 스레드 패널이 확정한 델타도 이 문으로 들어온다 — 패널에서 루트에 단 리액션은 본문
-  // 목록에도 같은 행으로 떠 있고, 롤백 판단(markMyReaction)의 근거도 여기서 갱신돼야 한다.
-  const receiveReaction = useCallback(
-    (delta: ReactionDelta) => {
-      noteServerDelta(delta);
-      applyReactionDelta(delta);
-    },
-    [noteServerDelta, applyReactionDelta],
-  );
+  // 목록에도 같은 행으로 떠 있다. 롤백 판단은 이제 상태(집계 버전)에서 읽으므로 여기서
+  // 따로 기록할 것이 없다(KAN-52).
+  const receiveReaction = applyReactionDelta;
 
   useEffect(() => {
     let cancelled = false;
