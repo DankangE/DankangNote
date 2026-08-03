@@ -3,12 +3,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MessageSquare } from 'lucide-react';
-import PusherClient from 'pusher-js';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/lib/components/EmptyState';
 import { markChannelReadAction, sendMessageAction } from '@/features/chat/api/actions';
 import { fetchMentionCandidates, fetchOlderMessages } from '@/features/chat/api/history';
+import {
+  acquirePusher,
+  releasePusher,
+  REALTIME_ENABLED,
+} from '@/features/chat/pusher-connection';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import type {
   ChatMessageView,
@@ -25,15 +29,13 @@ import {
   type RoomMessage,
 } from '@/features/chat/room-state';
 import type { MentionSpan } from '@/features/chat/mentions';
+import { useChannelPresence } from '@/features/chat/use-channel-presence';
 import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
+import { ChannelActivityBar } from './ChannelActivityBar';
 import { ChatMessageRow } from './ChatMessageRow';
 import type { MentionCandidate } from './MentionSuggestions';
 import { MessageComposer } from './MessageComposer';
 import { ThreadPanel } from './ThreadPanel';
-
-// NEXT_PUBLIC_*은 빌드 시 인라인된다 — 없으면 실시간 구독 없이 동작(경고 표시).
-const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY;
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
 const REALTIME_OFF_NOTICE =
@@ -273,18 +275,24 @@ export function ChatRoom({
     };
   }, [channelId]);
 
+  // 프레즌스·타이핑은 같은 소켓을 빌려 쓴다(KAN-34) — 자세한 사정은 pusher-connection.ts.
+  const { members: present, typing, notifyTyping, stopTypingFor } = useChannelPresence({
+    channelId,
+    viewerId: viewer.id,
+  });
+
   useEffect(() => {
-    if (!PUSHER_KEY || !PUSHER_CLUSTER) {
+    const client = acquirePusher();
+    if (!client) {
       return;
     }
-    const client = new PusherClient(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      channelAuthorization: { transport: 'ajax', endpoint: '/api/pusher/auth' },
-    });
     const channel = client.subscribe(chatChannel(channelId));
     const onMessage = (message: ChatMessageView) => {
       // 다른 채널의 이벤트는 버린다 — 채널 전환 직후 이전 구독이 잠깐 살아 있을 수 있다.
       if (message.channelId !== channelId) return;
+      // 말이 도착했으면 그 사람은 다 쓴 것이다 — 만료(6초)를 기다리면 이미 올라온 말풍선
+      // 아래에서 '입력 중'이 한동안 더 돈다.
+      stopTypingFor(message.authorId);
       if (message.parentId) {
         // 답글은 본문 목록에 섞지 않는다. 스레드 패널로 넘기고, 본문에 있는 루트의
         // 답글 수만 올린다 — 그 루트가 이 페이지에 없으면 아무 일도 일어나지 않는다.
@@ -306,9 +314,9 @@ export function ChatRoom({
       channel.unbind(CHAT_MESSAGE_EVENT, onMessage);
       channel.unbind(CHAT_REACTION_EVENT, onReaction);
       client.unsubscribe(chatChannel(channelId));
-      client.disconnect();
+      releasePusher();
     };
-  }, [channelId, countReply, receiveReaction]);
+  }, [channelId, countReply, receiveReaction, stopTypingFor]);
 
   // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공하면 서버 확정본으로 교체한다.
   // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문을 되돌리게 한다.
@@ -428,7 +436,7 @@ export function ChatRoom({
     });
   }, [openThreadId]);
 
-  const realtimeOff = !PUSHER_KEY || !PUSHER_CLUSTER;
+  const realtimeOff = !REALTIME_ENABLED;
   const status = error
     ? { type: 'error' as const, message: error }
     : realtimeOff
@@ -512,11 +520,13 @@ export function ChatRoom({
               {status.message}
             </p>
           )}
+          <ChannelActivityBar members={present} typing={typing} />
           <MessageComposer
             label="메시지"
             placeholder="메시지를 입력하세요 (@로 멘션, Shift+Enter 줄바꿈)"
             people={people}
             onSend={handleSend}
+            onTyping={notifyTyping}
           />
         </div>
       </div>

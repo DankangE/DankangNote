@@ -59,6 +59,7 @@ export function MessageComposer({
   disabled,
   people,
   onSend,
+  onTyping,
 }: {
   label: string;
   placeholder: string;
@@ -66,6 +67,11 @@ export function MessageComposer({
   /** 멘션 후보(채널 참여자). 아직 못 받았으면 빈 배열 — 그때는 자동완성이 안 뜬다. */
   people: MentionCandidate[];
   onSend: (body: string, mentions: MentionSpan[]) => Promise<boolean>;
+  /**
+   * 본문이 바뀔 때마다 불린다(KAN-34). 간격 조절은 호출부의 몫이다 — 컴포저는 '지금 쳤다'는
+   * 사실만 알고, 그걸 얼마나 자주 남에게 알릴지는 실시간 계층이 정한다.
+   */
+  onTyping?: () => void;
 }) {
   const [draft, setDraft] = useState('');
   // 고른 멘션들. 본문 어디에 있는지는 보낼 때 다시 찾는다(spansForPicked 주석 참조).
@@ -211,6 +217,12 @@ export function MessageComposer({
           onChange={(event) => {
             setDraft(event.target.value);
             syncQuery(event.target.value, event.target.selectionStart);
+            // 지우는 것도 입력이다 — 상대가 기다리는 동안 무엇이 일어나고 있는지가 표시의
+            // 목적이라, 글이 늘었는지로 가르지 않는다. 다만 빈 칸이 된 순간은 뺀다:
+            // 쓰던 것을 다 지운 사람을 몇 초 더 '입력 중'으로 붙들어 둘 이유가 없다.
+            if (event.target.value !== '') {
+              onTyping?.();
+            }
           }}
           // 캐럿만 옮겨도 질의 상태가 달라진다(멘션 밖으로 나가면 닫혀야 한다).
           onSelect={(event) => {

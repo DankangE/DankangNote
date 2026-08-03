@@ -154,6 +154,25 @@ export async function getChannel(
   return toView(channel, actor, memberCount);
 }
 
+/**
+ * 이 채널을 볼 수 있는가만 답한다 (KAN-34).
+ *
+ * getChannel과 판정 규칙은 같지만(visibleWhere) 뷰를 조립하지 않는다. 타이핑 핑처럼
+ * 글을 치는 내내 반복해서 들어오는 경로가 쓰라고 둔 것이다 — 거기서 getChannel을 부르면
+ * 쿼리가 매번 둘씩(채널 + 참여자 수) 나가는데, 참여자 수는 쳐다보지도 않는다.
+ */
+export async function canAccessChannel(
+  orgId: string,
+  userId: string,
+  channelId: string,
+): Promise<boolean> {
+  const channel = await prisma.channel.findFirst({
+    where: { id: channelId, ...visibleWhere(orgId, userId) },
+    select: { id: true },
+  });
+  return channel !== null;
+}
+
 /** 이 이름으로 기본 채널을 만든다. 이름이 이미 있으면 null — 동시 호출의 중재자는 [orgId,name] 유니크다. */
 async function createDefaultChannel(orgId: string, name: string): Promise<string | null> {
   try {

@@ -65,6 +65,18 @@ export async function fetchThread(
 }
 
 /**
+ * '나 지금 입력 중' 핑 (KAN-34). 결과를 보지 않는다 — 실패해도 남의 화면에 인디케이터가
+ * 안 뜰 뿐이고, 그걸 알린들 사용자가 할 수 있는 일이 없다.
+ */
+export async function pingTyping(channelId: string): Promise<void> {
+  await fetch('/api/chat/typing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: channelId }),
+  }).catch(() => null);
+}
+
+/**
  * 내 채널들의 안읽음 수 (KAN-33). 실패하면 null — 호출부가 지금 값을 그대로 둔다.
  * 뱃지는 부가 정보라 못 맞췄다고 비우는 쪽이 더 나쁘다.
  */
