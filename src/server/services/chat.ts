@@ -192,18 +192,16 @@ export interface MessagePage {
  * 채널 메시지 한 페이지를 오래된 것부터 반환한다(KAN-29).
  *
  * before가 없으면 최신 페이지, 있으면 그 메시지보다 과거의 페이지다. OFFSET이 아니라
- * (createdAt, id) 키셋 커서를 쓴다 — OFFSET은 뒤로 갈수록 앞 행을 전부 훑고, 읽는 도중
- * 새 메시지가 들어오면 페이지 경계가 밀려 같은 메시지를 두 번 보게 된다.
- * 키셋은 @@index([channelId, createdAt])의 시작 경계로 들어가므로 깊은 페이지도 앞 구간을
- * 훑지 않는다(아래 createdAt lte 주석 참조 — 그 조건이 없으면 이 성질이 성립하지 않는다).
+ * seq 키셋 커서를 쓴다 — OFFSET은 뒤로 갈수록 앞 행을 전부 훑고, 읽는 도중 새 메시지가
+ * 들어오면 페이지 경계가 밀려 같은 메시지를 두 번 보게 된다.
+ * 키셋은 @@unique([channelId, seq])의 시작 경계로 들어가므로 깊은 페이지도 앞 구간을
+ * 훑지 않는다.
  *
- * 한계 하나: createdAt은 **INSERT를 실행한 앱 프로세스의 벽시계**다. 스키마에 DEFAULT
- * CURRENT_TIMESTAMP가 있지만 Prisma가 값을 바인드 파라미터로 직접 보내 DB 기본값이 쓰이는
- * 일이 없다(실측). 그래서 커밋 순서가 역전되면(A가 먼저 시각을 받고 B보다 늦게 커밋) 첫
- * 페이지 조회에 안 보였던 A가 이후 어느 페이지에도 안 나올 수 있고, 다중 인스턴스에서는
- * 인스턴스 간 시계 스큐가 그 창을 트랜잭션 길이보다 훨씬 넓힌다. 여기서는 실시간
- * 브로드캐스트가 그 메시지를 하단에 붙여 실질적으로 메우고 새로고침하면 정상화된다 —
- * 읽음 커서에는 그 구제책이 없어 별도로 다룬다(KAN-55).
+ * 정렬 근거가 seq인 이유는 KAN-55다. createdAt은 INSERT를 실행한 앱 프로세스의 벽시계라
+ * 인스턴스가 둘 이상이면 시계 스큐가 그대로 메시지 순서가 됐고, 커밋 순서와도 어긋나
+ * 첫 페이지에 안 보인 메시지가 이후 어느 페이지에도 안 나올 수 있었다. seq는 채널
+ * 카운터에서 커밋 순서대로 나오므로 그 두 문제가 함께 사라진다. 동률이 없어(unique)
+ * 커서에 id 보조 키도 필요 없다.
  *
  * 채널 접근 권한을 where에 실어 조회 자체가 매칭되지 않게 한다 — 남의 워크스페이스나
  * 참여하지 않은 비공개 채널의 id를 알아도 빈 배열만 나온다(쿼리 수준 격리).
@@ -239,7 +237,7 @@ async function pageOf(
   const anchor = before
     ? await prisma.chatMessage.findFirst({
         where: { id: before, ...scope },
-        select: { id: true, createdAt: true },
+        select: { id: true, seq: true },
       })
     : null;
   // 커서를 줬는데 못 찾았다면(위조된 id, 접근 권한 없는 채널의 id) 더 줄 것이 없다고 답한다.
@@ -254,30 +252,15 @@ async function pageOf(
   const rows = await prisma.chatMessage.findMany({
     where: {
       ...scope,
-      ...(anchor
-        ? {
-            // 인덱스 시작 경계. 아래 키셋만으로는 Postgres가 (channelId, createdAt) 인덱스의
-            // 출발점을 못 잡아 커서보다 최신인 행을 전부 훑고 버린다(EXPLAIN 실측: Index
-            // Cond가 channelId뿐, Rows Removed by Filter가 페이지 깊이만큼). 논리적으로는
-            // 아래 조건에 포함되는 중복이지만, 이게 있어야 Index Cond에 createdAt이 올라간다.
-            createdAt: { lte: anchor.createdAt },
-            // 키셋 조건 — 커서보다 엄격히 과거인 행만. createdAt 동률(같은 ms 연속 전송)은
-            // id로 갈라 커서가 자기 자신이나 동률 이웃을 다시 집지 않게 한다.
-            // AND로 감싸는 이유: 이 OR을 최상위에 두면 나중에 누가 채널 가시성 조건을
-            // 메시지 레벨로 평탄화했을 때 두 OR이 충돌해 조용히 서로를 덮어쓴다.
-            AND: [
-              {
-                OR: [
-                  { createdAt: { lt: anchor.createdAt } },
-                  { createdAt: anchor.createdAt, id: { lt: anchor.id } },
-                ],
-              },
-            ],
-          }
-        : {}),
+      // 키셋 조건 — 커서보다 엄격히 과거인 행만. seq는 채널 안에서 유일하므로(unique)
+      // 동률을 가를 보조 키가 없고, 이 조건 하나가 그대로 인덱스 시작 경계가 된다.
+      // (createdAt, id) 시절에는 같은 조건을 lte 중복까지 얹어야 Index Cond가 성립했다.
+      // 실측(20,000행): Index Scan Backward, Index Cond에 channelId·seq가 함께,
+      // 4 buffers / 0.05ms.
+      ...(anchor ? { seq: { lt: anchor.seq } } : {}),
     },
-    // 정렬 키는 키셋 조건과 정확히 같은 (createdAt, id)여야 한다.
-    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    // 정렬 키는 키셋 조건과 정확히 같은 seq여야 한다.
+    orderBy: { seq: 'desc' },
     // 한 건 더 떠서 '더 있는지'를 별도 count 없이 판정한다.
     take: MESSAGE_PAGE_SIZE + 1,
   });
@@ -395,12 +378,41 @@ export async function createMessage(
   const mentions = await resolveMentions(orgId, body, claimedMentions);
   const recipients = await mentionRecipients(orgId, channelId, authorId, mentions);
 
-  const [, join, message] = await prisma.$transaction([
-    userSkeleton(authorId),
-    prisma.channelMember.createMany({ data: [{ channelId, userId: authorId }], skipDuplicates: true }),
-    prisma.chatMessage.create({ data: { orgId, channelId, authorId, body, parentId } }),
-  ]);
-  const joined = join.count > 0;
+  const written = await prisma.$transaction(async (tx) => {
+    // 채널 카운터를 잠그고 다음 순번을 받는다 (KAN-55). 이 UPDATE가 잡은 행 잠금은 커밋까지
+    // 유지되므로, 뒤이은 전송은 이 트랜잭션이 끝나기 전에는 번호를 받지 못한다 — 그래서
+    // **번호 순서가 곧 커밋 순서**이고, 늦게 커밋된 작은 번호가 읽음 커서 아래에 깔리는
+    // 일이 없다. 롤백되면 증가도 함께 되돌아가 번호에 구멍이 남지 않는다.
+    //
+    // 트랜잭션의 **첫** 문장인 것에도 이유가 있다. 다른 경로는 전부 Channel을 먼저 잠그므로
+    // (createChannel·ensureDefaultChannel: 채널 → 참여 행), 여기서만 순서를 뒤집으면
+    // 참여 행을 쥔 채 채널을 기다리는 교착이 열린다.
+    const [counter] = await tx.$queryRaw<{ messageSeq: number }[]>`
+      UPDATE "Channel" SET "messageSeq" = "messageSeq" + 1
+      WHERE "id" = ${channelId}
+      RETURNING "messageSeq"
+    `;
+    // 위 접근 확인과 이 사이에 채널이 지워졌다. 아직 아무것도 쓰지 않았으므로 그냥 나간다.
+    if (!counter) {
+      return null;
+    }
+    const seq = counter.messageSeq;
+    await userSkeleton(authorId, tx);
+    // joinedSeq는 내 첫 메시지의 순번이다 — 그 앞의 대화는 내가 둘러보기만 하던 시절의
+    // 것이라 안읽음이 아니다. 이미 참여 중이면 이 문장은 아무 일도 하지 않는다(기준선 유지).
+    const join = await tx.channelMember.createMany({
+      data: [{ channelId, userId: authorId, joinedSeq: seq }],
+      skipDuplicates: true,
+    });
+    const message = await tx.chatMessage.create({
+      data: { orgId, channelId, authorId, body, parentId, seq },
+    });
+    return { message, joined: join.count > 0 };
+  });
+  if (!written) {
+    return null;
+  }
+  const { message, joined } = written;
 
   // 멘션 행과 알림을 메시지와 같은 트랜잭션에 넣지 않는 이유는 messageId가 필요해서다.
   //

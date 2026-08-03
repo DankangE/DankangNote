@@ -9,6 +9,7 @@ import {
   USER_OWNER,
   resetDatabase,
   seedChannels,
+  seedMessages,
   seedTenants,
 } from '../../../test/db';
 import { createMessage } from './chat';
@@ -20,9 +21,16 @@ beforeEach(async () => {
   await seedChannels();
 });
 
-/** 안읽음은 '참여한 채널'만 센다 — 참여 시각이 기준선이라 먼저 넣어 둔다. */
-async function join(channelId: string, userId: string, at = new Date('2026-01-01T00:00:00.000Z')) {
-  await prisma.channelMember.create({ data: { channelId, userId, createdAt: at } });
+/**
+ * 안읽음은 '참여한 채널'만 센다. 기준선은 참여 시각이 아니라 **그 순간의 채널 순번**이다
+ * (KAN-55) — 참여 시각과 메시지 시각은 서로 다른 프로세스의 시계라 비교할 근거가 없었다.
+ */
+async function join(channelId: string, userId: string) {
+  const { messageSeq } = await prisma.channel.findUniqueOrThrow({
+    where: { id: channelId },
+    select: { messageSeq: true },
+  });
+  await prisma.channelMember.create({ data: { channelId, userId, joinedSeq: messageSeq } });
 }
 
 async function say(channelId: string, authorId: string, body: string) {
@@ -58,7 +66,7 @@ describe('안읽음 세기 (KAN-33)', () => {
 
   it('참여 이전의 이력은 안읽음이 아니다', async () => {
     await say(CHANNEL_A, USER_OTHER, '들어오기 전 이야기');
-    await join(CHANNEL_A, USER_OWNER, new Date());
+    await join(CHANNEL_A, USER_OWNER);
     await say(CHANNEL_A, USER_OTHER, '들어온 뒤 이야기');
 
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
@@ -83,12 +91,13 @@ describe('안읽음 세기 (KAN-33)', () => {
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
   });
 
-  it('createdAt이 같아도 커서가 경계에서 흔들리지 않는다', async () => {
-    // 시각만 비교하면 같은 ms에 들어온 메시지가 경계에서 빠지거나 두 번 세어진다.
+  it('createdAt이 전부 같아도 커서가 경계에서 흔들리지 않는다 (KAN-55)', async () => {
+    // 시각이 기준이던 시절 이 케이스는 경계에서 한 건이 빠지거나 두 번 세어졌다.
+    // 순번은 같은 값이 나올 수 없어 경계가 애초에 모호하지 않다.
     await join(CHANNEL_A, USER_OWNER);
     const sameMoment = new Date('2026-03-01T00:00:00.000Z');
-    await prisma.chatMessage.createMany({
-      data: ['ma', 'mb', 'mc'].map((id) => ({
+    await seedMessages(
+      ['ma', 'mb', 'mc'].map((id) => ({
         id,
         orgId: ORG_A,
         channelId: CHANNEL_A,
@@ -96,7 +105,7 @@ describe('안읽음 세기 (KAN-33)', () => {
         body: id,
         createdAt: sameMoment,
       })),
-    });
+    );
 
     await markChannelRead(ORG_A, USER_OWNER, CHANNEL_A, 'mb');
 
@@ -196,14 +205,14 @@ describe('자체 리뷰 반영 (KAN-33)', () => {
   it('나갔다 다시 들어오면 그 사이 대화는 안읽음이 아니다', async () => {
     // leaveChannel은 참여 행만 지우고 읽음 커서는 남긴다. 그 옛 커서를 그대로 믿으면
     // 내가 없던 동안의 대화가 통째로 안읽음으로 되살아난다.
-    await join(CHANNEL_A, USER_OWNER, new Date('2026-01-01T00:00:00.000Z'));
+    await join(CHANNEL_A, USER_OWNER);
     const first = await say(CHANNEL_A, USER_OTHER, '있을 때 한 말');
     await markChannelRead(ORG_A, USER_OWNER, CHANNEL_A, first.id);
 
     await prisma.channelMember.deleteMany({ where: { channelId: CHANNEL_A, userId: USER_OWNER } });
     await say(CHANNEL_A, USER_OTHER, '없는 동안 1');
     await say(CHANNEL_A, USER_OTHER, '없는 동안 2');
-    await join(CHANNEL_A, USER_OWNER, new Date());
+    await join(CHANNEL_A, USER_OWNER);
 
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBeUndefined();
   });
@@ -230,13 +239,14 @@ describe('자체 리뷰 반영 (KAN-33)', () => {
     expect(await markChannelRead(ORG_A, USER_OWNER, open.id, message.id)).toBe(true);
   });
 
-  it('참여와 같은 순간에 온 메시지도 센다', async () => {
-    // 커서 가지는 id로 동률을 가르는데 참여 가지만 gt면 그 한 건이 영영 안 세어진다.
+  it('참여 직후에 온 메시지는 빠짐없이 센다', async () => {
+    // 시각으로 비교하던 시절의 경계 사고 — 참여 행과 같은 ms에 들어온 메시지가 조용히
+    // 빠졌다. 참여 기준선이 '그때까지 나온 마지막 순번'이라 그 뒤는 전부 안읽음이다.
     const at = new Date('2026-05-01T00:00:00.000Z');
-    await join(CHANNEL_A, USER_OWNER, at);
-    await prisma.chatMessage.create({
-      data: { id: 'same_ms', orgId: ORG_A, channelId: CHANNEL_A, authorId: USER_OTHER, body: '동시', createdAt: at },
-    });
+    await join(CHANNEL_A, USER_OWNER);
+    await seedMessages([
+      { id: 'same_ms', orgId: ORG_A, channelId: CHANNEL_A, authorId: USER_OTHER, body: '동시', createdAt: at },
+    ]);
 
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
   });

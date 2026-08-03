@@ -1,4 +1,5 @@
 import { prisma } from '@/server/db';
+import type { ChatMessage } from '@/server/generated/prisma/client';
 
 // 테스트 간 격리. FK 의존 순서를 신경 쓰지 않도록 CASCADE로 한 번에 비운다.
 //
@@ -63,4 +64,39 @@ export async function seedMemberships(): Promise<void> {
       { id: 'mem_b_other', orgId: ORG_B, userId: USER_OTHER, role: 'org:member' },
     ],
   });
+}
+
+/**
+ * 서비스를 거치지 않고 메시지를 심는다 (KAN-55).
+ *
+ * seq를 손으로 적지 않고 채널 카운터에서 이어 받는 이유가 둘이다. ① (channelId, seq)가
+ * unique라 손으로 적으면 기존 행과 부딪힌다. ② 카운터를 올려 두지 않으면 뒤이은 실제
+ * 전송이 같은 번호를 받아 죽는다 — 시드와 서비스가 같은 번호 매기기를 공유해야 한다.
+ *
+ * createdAt은 표시용이라 호출부가 원하면 그대로 넣는다. 정렬은 이제 그 값과 무관하다.
+ */
+export async function seedMessages(
+  rows: Array<{
+    id?: string;
+    orgId: string;
+    channelId: string;
+    authorId: string;
+    body: string;
+    parentId?: string;
+    createdAt?: Date;
+  }>,
+): Promise<ChatMessage[]> {
+  const created: ChatMessage[] = [];
+  for (const row of rows) {
+    const [counter] = await prisma.$queryRaw<{ messageSeq: number }[]>`
+      UPDATE "Channel" SET "messageSeq" = "messageSeq" + 1
+      WHERE "id" = ${row.channelId}
+      RETURNING "messageSeq"
+    `;
+    if (!counter) {
+      throw new Error(`시드 대상 채널이 없다: ${row.channelId}`);
+    }
+    created.push(await prisma.chatMessage.create({ data: { ...row, seq: counter.messageSeq } }));
+  }
+  return created;
 }

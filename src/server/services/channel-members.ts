@@ -37,7 +37,8 @@ export async function joinChannel(
 ): Promise<boolean> {
   const channel = await prisma.channel.findFirst({
     where: { id: channelId, orgId, isPrivate: false },
-    select: { id: true },
+    // messageSeq는 안읽음 기준선이다 (KAN-55) — 들어오기 전의 대화는 안 읽은 것이 아니다.
+    select: { id: true, messageSeq: true },
   });
   if (!channel) {
     return false;
@@ -47,7 +48,12 @@ export async function joinChannel(
   await assertNotTombstoned([orgId, userId]);
   await prisma.$transaction([
     userSkeleton(userId),
-    prisma.channelMember.createMany({ data: [{ channelId, userId }], skipDuplicates: true }),
+    prisma.channelMember.createMany({
+      // 순번을 읽고 넣는 사이에 들어온 메시지는 안읽음으로 남는다. 반대로 틀리면(더 큰 값을
+      // 박으면) 참여 직전 메시지가 조용히 삼켜지므로, 오차는 이 방향으로만 받는다.
+      data: [{ channelId, userId, joinedSeq: channel.messageSeq }],
+      skipDuplicates: true,
+    }),
   ]);
   await assertNotTombstoned([orgId, userId], async () => {
     await prisma.channelMember.deleteMany({ where: { channelId, userId } });
@@ -101,7 +107,8 @@ export async function inviteToChannel(
   // 여기서 남을 밀어 넣는 건 타인 명의의 쓰기일 뿐이다(isPrivate를 where에 실어 차단).
   const channel = await prisma.channel.findFirst({
     where: { id: channelId, isPrivate: true, ...visibleWhere(orgId, actorId) },
-    select: { id: true },
+    // 초대받은 사람의 안읽음 기준선 (KAN-55) — joinChannel과 같은 규칙이다.
+    select: { id: true, messageSeq: true },
   });
   if (!channel) {
     return false;
@@ -122,7 +129,7 @@ export async function inviteToChannel(
   // Membership이 있다는 건 User 미러 행이 이미 있다는 뜻(FK)이라 스켈레톤이 필요 없고,
   // tombstone된 사용자는 cascade로 Membership이 사라져 여기 걸리지 않는다.
   await prisma.channelMember.createMany({
-    data: [{ channelId, userId: inviteeId }],
+    data: [{ channelId, userId: inviteeId, joinedSeq: channel.messageSeq }],
     skipDuplicates: true,
   });
   return true;

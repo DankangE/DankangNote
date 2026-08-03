@@ -267,8 +267,16 @@ export async function ensureDefaultChannel(orgId: string, userId: string): Promi
 
   // 기본 채널 참여는 나갈 수 없다(leaveChannel이 막는다) — 그래서 매 접속의 재참여가
   // 사용자의 '나가기' 의사를 되돌리는 일이 없다.
+  //
+  // joinedSeq는 지금 채널 순번이다 (KAN-55). 이 채널은 워크스페이스에 이미 있었을 수 있어,
+  // 0으로 두면 새 멤버의 첫 접속에 그동안의 대화 전체가 안읽음으로 뜬다. 이미 참여 중이면
+  // skipDuplicates가 막아 기준선은 그대로다.
+  const { messageSeq } = await prisma.channel.findUniqueOrThrow({
+    where: { id: channelId },
+    select: { messageSeq: true },
+  });
   await prisma.channelMember.createMany({
-    data: [{ channelId, userId }],
+    data: [{ channelId, userId, joinedSeq: messageSeq }],
     skipDuplicates: true,
   });
 

@@ -128,7 +128,8 @@ describe('부활 차단 — tombstone (KAN-12)', () => {
       data: { orgId: ORG_A, name: '일반', isDefault: true },
     });
     await prisma.chatMessage.create({
-      data: { orgId: ORG_A, channelId: channel.id, authorId: USER_OWNER, body: '메시지' },
+      // seq는 채널 안에서만 유일하면 된다 — 이 테스트는 cascade만 보므로 1로 고정한다.
+      data: { orgId: ORG_A, channelId: channel.id, authorId: USER_OWNER, body: '메시지', seq: 1 },
     });
     await prisma.boardColumn.create({ data: { orgId: ORG_A, name: '컬럼', position: 0 } });
 
