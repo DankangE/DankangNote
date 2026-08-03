@@ -3,10 +3,12 @@
 import { useCallback, useRef } from 'react';
 import { toggleReactionAction } from '@/features/chat/api/actions';
 import {
+  appliedVersion,
   applyReaction,
   hasMyReaction,
   markMyReaction,
   reactionKey,
+  serverOverwrote,
   setMyReaction,
   type RoomMessage,
 } from '@/features/chat/room-state';
@@ -33,18 +35,10 @@ export function useReactionToggle({
   onConfirmed: (delta: ReactionDelta) => void;
   onError: (message: string | null) => void;
 }) {
-  // 이 (메시지, 이모지)에 서버 절대값이 도착한 적이 있는지. 롤백이 count를 또 ∓1 할지,
-  // 내 표시만 되돌릴지를 가른다(markMyReaction 주석 참조).
-  const overwritten = useRef(new Set<string>());
   // 응답을 기다리는 사이의 같은 키 재클릭은 버린다. 두 요청이 서로 순서가 뒤집혀 도착하면
   // 화면은 '눌린 상태'인데 DB에는 없는(또는 그 반대) 어긋남이 남고, 그 뒤로는 클릭 방향이
   // 통째로 반대가 된다 — '취소'를 눌렀는데 리액션이 달린다.
   const inFlight = useRef(new Set<string>());
-
-  /** 서버 델타를 반영했음을 알린다 — 롤백이 count를 건드릴지 판단하는 근거가 된다. */
-  const noteServerDelta = useCallback((delta: ReactionDelta) => {
-    overwritten.current.add(reactionKey(delta.messageId, delta.emoji));
-  }, []);
 
   const toggle = useCallback(
     async (target: RoomMessage | undefined, emoji: string) => {
@@ -54,14 +48,17 @@ export function useReactionToggle({
 
       const next = !hasMyReaction(target, emoji);
       onError(null);
-      // 이번 왕복 동안 서버 값이 덮었는지를 새로 관찰한다.
-      overwritten.current.delete(key);
+      // 이번 왕복의 기준선. 롤백 때 이 번호보다 올라가 있으면 서버 값이 내 낙관 위를
+      // 덮은 것이다(KAN-52). ref로 '델타가 왔는가'를 세던 것을 상태에서 읽는 것으로
+      // 바꿨다 — 역순 배달로 **버려진** 델타는 화면을 바꾸지 않았는데도 ref는 왔다고
+      // 기록했고, 그러면 롤백이 count를 안 되돌려 1만큼 어긋난 채 남았다.
+      const since = appliedVersion(target, emoji);
       inFlight.current.add(key);
       apply((list) => setMyReaction(list, target.id, emoji, viewerId, next));
 
       const rollback = (message: string) => {
         apply((list) =>
-          overwritten.current.has(key)
+          serverOverwrote(list, target.id, emoji, since)
             ? markMyReaction(list, target.id, emoji, !next)
             : setMyReaction(list, target.id, emoji, viewerId, !next),
         );
@@ -74,7 +71,6 @@ export function useReactionToggle({
           rollback(result.error);
           return;
         }
-        noteServerDelta(result.data);
         apply((list) => applyReaction(list, result.data, viewerId));
         onConfirmed(result.data);
       } catch {
@@ -83,8 +79,8 @@ export function useReactionToggle({
         inFlight.current.delete(key);
       }
     },
-    [apply, noteServerDelta, onConfirmed, onError, viewerId],
+    [apply, onConfirmed, onError, viewerId],
   );
 
-  return { toggle, noteServerDelta };
+  return { toggle };
 }

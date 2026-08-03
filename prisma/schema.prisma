@@ -173,6 +173,15 @@ model ChatMessage {
   /// 그 행에서 직렬화된다는 것인데, 채널 하나의 전송은 사람이 치는 속도라 실질적 상한이
   /// 아니다. 순서 정합성을 얻는 값으로 싸다.
   seq       Int
+  /// 이 메시지의 리액션 집계 버전 (KAN-52). 토글 트랜잭션이 이 행을 잠그고 +1 해서 델타에
+  /// 싣는다 — seq와 같은 장치이고 같은 이유다(번호 순서 = 커밋 순서). 수신 측은 자기가
+  /// 마지막에 적용한 것보다 낮은 델타를 버려, 늦게 도착한 옛 절대 count가 화면을 과거로
+  /// 되돌리지 못하게 한다.
+  ///
+  /// 채널 카운터(Channel.messageSeq)를 같이 쓰지 않는 이유는 빈도다. 리액션은 메시지보다
+  /// 훨씬 잦아, 채널 행에서 직렬화하면 리액션 몇 번이 전송까지 함께 막는다. 메시지 단위로
+  /// 두면 경합이 '같은 말풍선을 동시에 누른 사람들'로 좁혀진다.
+  reactionSeq Int  @default(0)
   createdAt DateTime @default(now())
 
   organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)

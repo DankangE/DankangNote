@@ -9,8 +9,18 @@ import type {
 
 // 채널 본문과 스레드 패널이 공유하는 라이브 목록 조작. 순수 함수라 server-only가 아니다.
 
-/** pending은 아직 서버 확정 전인 낙관 말풍선 표시다. */
-export type RoomMessage = ChatMessageView & { pending?: boolean };
+/**
+ * pending은 아직 서버 확정 전인 낙관 말풍선 표시다.
+ *
+ * reactionVersions는 (이모지 → 마지막에 적용한 집계 버전) (KAN-52). 없는 이모지는
+ * reactionVersion(스냅샷 기준선)으로 떨어진다. **칩이 사라져도 여기 번호는 남는다** —
+ * 마지막 한 명이 취소해 칩이 없어진 뒤 그보다 옛 델타가 도착하면, 기억이 없으면 그 칩이
+ * 되살아난다. 서버 상태에 없는 리액션이 화면에만 남는 것이 이 티켓의 증상 그대로다.
+ */
+export type RoomMessage = ChatMessageView & {
+  pending?: boolean;
+  reactionVersions?: Record<string, number>;
+};
 
 /**
  * 이미 있는 id(자기 전송의 브로드캐스트 echo)는 버리고,
@@ -69,6 +79,8 @@ export function pendingMessage(
     replyCount: 0,
     // 아직 서버에 없는 메시지라 누를 수 있는 리액션도 없다.
     reactions: [],
+    // 서버가 준 적 없는 메시지라 기준선도 없다 — 확정본으로 교체될 때 진짜 값이 온다.
+    reactionVersion: 0,
     // 멘션은 컴포저가 방금 고른 것을 그대로 쓴다 — 낙관 말풍선에서도 강조가 바로 보인다.
     // 서버가 확정본을 돌려주면 검증을 통과한 것만 남은 목록으로 교체된다.
     mentions,
@@ -112,17 +124,62 @@ function reduceReactions(
   ]);
 }
 
-/** 델타를 목록에 적용한다. 그 메시지가 목록에 없으면 아무 일도 하지 않는다. */
+/**
+ * 이 칩에 반영된 마지막 집계 버전 (KAN-52). 그 이모지로 델타를 받은 적이 없으면
+ * 조회 스냅샷의 기준선이다.
+ */
+export function appliedVersion(message: RoomMessage, emoji: string): number {
+  return message.reactionVersions?.[emoji] ?? message.reactionVersion;
+}
+
+/**
+ * 내가 토글을 시작한 뒤로 서버 값이 이 칩을 덮었는가.
+ *
+ * 실패한 토글을 되돌릴 때 count까지 ∓1 할지, 내 표시만 되돌릴지를 가른다(markMyReaction
+ * 주석 참조). '서버 델타가 도착했는가'가 아니라 **적용됐는가**를 묻는 것이 중요하다 —
+ * 역순 배달로 버려진 델타는 화면을 바꾸지 않았으므로 내 낙관 ∓1이 아직 그대로 있고,
+ * 그때 표시만 되돌리면 count가 1만큼 어긋난 채 남는다.
+ */
+export function serverOverwrote(
+  list: RoomMessage[],
+  messageId: string,
+  emoji: string,
+  since: number,
+): boolean {
+  const message = list.find((entry) => entry.id === messageId);
+  return message ? appliedVersion(message, emoji) > since : false;
+}
+
+/**
+ * 델타를 목록에 적용한다. 그 메시지가 목록에 없으면 아무 일도 하지 않는다.
+ *
+ * **이미 적용한 것보다 낮은 버전은 버린다 (KAN-52).** count가 절대값이라 중복 배달은
+ * 무해하지만 역순 배달은 아니다 — A가 커밋해 count=1을 읽고 브로드캐스트 직전에 지연되는
+ * 사이 B가 커밋해 count=2를 먼저 쏘면, 수신 측은 2 다음 1을 적용해 DB가 2인데 화면은 1로
+ * 굳는다. 본문 목록에는 재동기 경로가 없어 다음 리액션이나 새로고침 전까지 그대로다.
+ *
+ * 판정을 여기 두는 것이 핵심이다. 이 함수가 본문 목록과 스레드 패널이 함께 쓰는 유일한
+ * 적용 지점이라, 두 화면이 각자 자기가 들고 있는 것 기준으로 같은 규칙을 얻는다.
+ * 훅에 ref로 두면 패널이 자기 응답을 직접 반영하는 경로가 그 판정을 비켜 간다.
+ */
 export function applyReaction(
   list: RoomMessage[],
   delta: ReactionDelta,
   viewerId: string,
 ): RoomMessage[] {
-  return list.map((message) =>
-    message.id === delta.messageId
-      ? { ...message, reactions: reduceReactions(message.reactions, delta, viewerId) }
-      : message,
-  );
+  return list.map((message) => {
+    if (message.id !== delta.messageId) {
+      return message;
+    }
+    if (delta.version <= appliedVersion(message, delta.emoji)) {
+      return message;
+    }
+    return {
+      ...message,
+      reactionVersions: { ...message.reactionVersions, [delta.emoji]: delta.version },
+      reactions: reduceReactions(message.reactions, delta, viewerId),
+    };
+  });
 }
 
 /**

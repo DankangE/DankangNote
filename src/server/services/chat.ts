@@ -33,6 +33,14 @@ function toView(
     createdAt: message.createdAt.toISOString(),
     replyCount,
     reactions,
+    // 이 스냅샷이 어느 집계 버전의 것인지 (KAN-52). 화면은 이보다 낮은 델타를 버린다.
+    //
+    // **버전을 리액션 집계보다 먼저 읽는다**(메시지 행이 loadReactions보다 앞선다). 그 사이
+    // 토글이 커밋되면 버전은 낮고 count는 새것이라, 그 구간의 델타가 한 번 더 적용될 수
+    // 있다 — 같은 값을 다시 쓰거나 잠깐 뒤로 갔다가 다음 델타에 수렴한다. 반대로 읽으면
+    // (버전이 count보다 최신) 그 델타가 버려져 count가 영영 낡은 채 굳는다. 삼키는 쪽보다
+    // 겹치는 쪽이 낫다.
+    reactionVersion: message.reactionSeq,
     mentions,
   };
 }
@@ -515,7 +523,22 @@ export async function toggleReaction(
 
   // 토글과 집계를 한 트랜잭션에 묶는다. 나눠 놓으면 세는 시점이 내 쓰기와 무관해져서,
   // 내 요청이 돌려주는 count가 내 변경조차 반영하지 않은 값일 수 있다.
-  const { added, count } = await prisma.$transaction(async (tx) => {
+  const written = await prisma.$transaction(async (tx) => {
+    // 집계 버전을 먼저 받는다 (KAN-52). 이 UPDATE가 잡은 메시지 행 잠금이 커밋까지
+    // 유지되므로 같은 메시지의 다음 토글은 이 트랜잭션이 끝나기 전에 번호를 받지 못한다 —
+    // **번호 순서 = 커밋 순서**이고, 아래 count도 그 번호 시점의 값이다. 수신 측은 자기가
+    // 마지막에 적용한 것보다 낮은 번호를 버리면 된다.
+    //
+    // 첫 문장인 이유는 전송(createMessage)과 같다: 잠금 순서를 한 방향으로 고정한다.
+    const [counter] = await tx.$queryRaw<{ reactionSeq: number }[]>`
+      UPDATE "ChatMessage" SET "reactionSeq" = "reactionSeq" + 1
+      WHERE "id" = ${messageId}
+      RETURNING "reactionSeq"
+    `;
+    // 위 접근 확인과 이 사이에 메시지가 지워졌다. 아직 아무것도 쓰지 않았으므로 그냥 나간다.
+    if (!counter) {
+      return null;
+    }
     // 먼저 지워 보고, 지워진 게 없으면 추가다. '조회 후 분기'로 하면 두 탭에서 동시에 누를
     // 때 둘 다 '없음'을 보고 둘 다 추가로 가는데, 그때 두 번째는 유니크 위반으로 죽는다.
     // deleteMany의 반환 count가 그 자체로 원자적인 판정이라 경합이 생기지 않는다.
@@ -531,9 +554,14 @@ export async function toggleReaction(
     }
     return {
       added: isAdd,
+      version: counter.reactionSeq,
       count: await tx.messageReaction.count({ where: { orgId, messageId, emoji } }),
     };
   });
+  if (!written) {
+    return null;
+  }
+  const { added, count, version } = written;
 
   // post-check — 확인과 쓰기 사이에 조직·계정 삭제가 커밋됐으면 방금 만든 행을 되돌린다.
   // org 삭제는 cascade가 이미 지웠을 수 있어 deleteMany는 멱등하게 동작한다.
@@ -551,6 +579,7 @@ export async function toggleReaction(
     parentId: message.parentId,
     emoji,
     count,
+    version,
     userId,
     added,
   };

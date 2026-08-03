@@ -18,6 +18,12 @@ export type ChatMessageView = {
   replyCount: number;
   /** 이 메시지에 눌린 리액션. 아무도 안 눌렀으면 빈 배열이다(KAN-31). */
   reactions: ReactionView[];
+  /**
+   * 위 reactions가 어느 집계 버전의 것인지 (KAN-52). 이 스냅샷을 받은 뒤에 도착한 델타 중
+   * 이보다 낮은 번호는 이미 반영된 과거라 버린다 — 조회 중 날아오던 델타가 뒤늦게 도착해
+   * 화면을 되돌리지 못하게 하는 기준선이다.
+   */
+  reactionVersion: number;
   /** 본문 안 멘션의 위치와 대상. 렌더러가 이 구간만 강조한다(KAN-32). */
   mentions: MentionSpan[];
 };
@@ -46,6 +52,15 @@ export type ReactionDelta = {
   parentId: string | null;
   emoji: string;
   count: number;
+  /**
+   * 이 메시지 집계의 단조 버전 (KAN-52). 서버가 토글마다 메시지 행 잠금 아래에서 발급하므로
+   * 번호 순서가 곧 커밋 순서다 — 수신 측은 (메시지, 이모지)마다 마지막에 적용한 번호를
+   * 기억해 그보다 낮은 델타를 버린다.
+   *
+   * 절대 count만으로는 이걸 못 푼다. 중복 배달에는 면역이지만 **역순 배달**에는 아니어서,
+   * 늦게 도착한 옛 count가 최신 값을 덮고 그대로 굳는다(본문 목록에는 재동기 경로가 없다).
+   */
+  version: number;
   /** 이번에 누른 사람. 수신 측이 자기 자신이면 mine을 added로 맞춘다. */
   userId: string;
   /** true면 추가, false면 취소. */
