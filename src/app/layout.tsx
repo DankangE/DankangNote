@@ -10,6 +10,7 @@ import {
   SignUpButton,
   UserButton,
 } from "@clerk/nextjs";
+import { clerkAppearance } from "@/lib/clerk-appearance";
 import { NotificationBell } from "@/features/notifications/components/NotificationBell";
 import { AppSidebar } from "@/lib/components/AppSidebar";
 import { ThemeProvider } from "@/lib/components/ThemeProvider";
@@ -48,8 +49,10 @@ export default function RootLayout({
             그래서 <html>에 suppressHydrationWarning이 필요하다.
             disableTransitionOnChange로 전환 순간의 색 애니메이션 깜빡임을 없앤다. */}
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-          {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR} */}
-          <ClerkProvider localization={koKR}>
+          {/* Clerk UI(로그인·조직·유저 메뉴)를 한국어로 — localization={koKR}.
+              appearance는 우리 CSS 변수를 그대로 넘긴다(KAN-24) — ThemeProvider 안쪽이라
+              .dark 전환이 변수 재정의만으로 Clerk 위젯까지 따라온다. */}
+          <ClerkProvider localization={koKR} appearance={clerkAppearance}>
             {/* 로그인 시: 슬랙형 셸(딥바이올렛 사이드바 + 상단바 + 스크롤 메인).
                 h-svh + overflow-hidden으로 셸이 뷰포트를 채우고, 스크롤은 main·채팅이 각자 관리. */}
             <Show when="signed-in">
