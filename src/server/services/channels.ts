@@ -312,6 +312,11 @@ export async function createChannel(
   try {
     // 생성자는 곧바로 참여자다 — 비공개 채널이라면 이 행이 접근 권한 그 자체다.
     // 같은 트랜잭션의 userSkeleton이 앞서 실행돼 ChannelMember FK가 성립한다.
+    //
+    // joinedSeq를 안 적는 유일한 참여 지점이다 (KAN-55). 방금 만든 채널이라 messageSeq도
+    // 0이고 기본값 0이 곧 맞는 값이기 때문이다. 이 create가 **이미 있는 채널**에 사람을
+    // 붙이는 형태로 바뀌면 그 순간 틀린다 — 기준선이 0이면 그동안의 대화가 통째로
+    // 안읽음으로 뜬다. 그때는 다른 참여 지점들처럼 지금 순번을 읽어 실어야 한다.
     const [, , created] = await prisma.$transaction([
       orgSkeleton(orgId),
       userSkeleton(userId),
