@@ -387,6 +387,12 @@ export async function createMessage(
     // 트랜잭션의 **첫** 문장인 것에도 이유가 있다. 다른 경로는 전부 Channel을 먼저 잠그므로
     // (createChannel·ensureDefaultChannel: 채널 → 참여 행), 여기서만 순서를 뒤집으면
     // 참여 행을 쥔 채 채널을 기다리는 교착이 열린다.
+    //
+    // 이 잠금은 전송에 실패 경로를 하나 들여온다. 대화형 트랜잭션에는 Prisma 기본 타임아웃
+    // (5초)이 붙고, 같은 채널로 전송이 몰리거나 채널 행을 오래 쥐는 트랜잭션(개명·삭제)이
+    // 있으면 대기가 그걸 넘어 P2028로 던질 수 있다. 트랜잭션이 통째로 롤백되므로 메시지가
+    // 두 번 남지는 않는다 — 안전한 실패다. 기본값을 늘리지 않는 것은 의도다: 늘려 봐야
+    // 사용자가 같은 실패를 더 오래 기다릴 뿐이다.
     const [counter] = await tx.$queryRaw<{ messageSeq: number }[]>`
       UPDATE "Channel" SET "messageSeq" = "messageSeq" + 1
       WHERE "id" = ${channelId}

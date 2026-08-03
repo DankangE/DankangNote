@@ -3,6 +3,12 @@
 -- 기존 행에는 시각 말고 순서의 근거가 없으므로 백필은 (createdAt, id) — 지금까지 쓰던
 -- 정렬 그대로 — 를 순번으로 번역한다. 과거의 역전까지 되살릴 방법은 없지만, 적어도
 -- 지금 화면에 보이는 순서와 어긋나지는 않는다.
+--
+-- **이 파일을 라이브 테이블의 본보기로 삼지 말 것.** 아래 백필 UPDATE는 전 행을 다시 쓰고,
+-- SET NOT NULL은 ACCESS EXCLUSIVE 잠금을 잡고 전체를 스캔한다 — 그동안 그 테이블은 읽기도
+-- 막힌다. 여기서 그렇게 해도 되는 이유는 아직 배포된 환경이 없어서다(스테이징은 KAN-27).
+-- 라이브였다면 순서가 다르다: nullable로 추가 → 새 쓰기부터 채우기 → 배치로 과거 백필 →
+-- NOT VALID CHECK → VALIDATE CONSTRAINT(짧은 잠금) → 그다음 SET NOT NULL.
 
 -- 1) 채널 카운터. 아래에서 채널별 최대 순번으로 맞춘다.
 ALTER TABLE "Channel" ADD COLUMN "messageSeq" INTEGER NOT NULL DEFAULT 0;
