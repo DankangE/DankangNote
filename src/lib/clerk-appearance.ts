@@ -20,6 +20,11 @@ import type { ComponentProps } from 'react';
  */
 export const clerkAppearance = {
   variables: {
+    // colorPrimary는 스케일도 받는 자리라, 문자열 하나를 주면 Clerk이 hover·active 음영을
+    // 그 색에서 파생한다. var()는 JS가 계산할 수 없는 참조라 파생 경로가 CSS(color-mix 등)면
+    // 그대로 동작하고 JS 파싱이면 그 상태들만 기본값으로 떨어진다 — 정지 상태는 라이트·다크
+    // 모두 우리 바이올렛으로 확인했지만(캡처), 의사 클래스는 헤드리스로 강제할 수 없어
+    // 재지 않았다. 어긋난 것이 보이면 이 항목만 { '500': ... } 스케일이나 실제 색으로 바꾼다.
     colorPrimary: 'var(--primary)',
     colorPrimaryForeground: 'var(--primary-foreground)',
     colorForeground: 'var(--foreground)',
@@ -41,5 +46,10 @@ export const clerkAppearance = {
     colorWarning: 'var(--warning)',
     borderRadius: 'var(--radius)',
     fontFamily: 'var(--font-sans)',
+    // colorNeutral(회색조 파생용)은 일부러 비워 둔다 — 우리 토큰에 대응물이 없다. shadcn은
+    // 회색을 쓰임새별로(--muted / --border / --muted-foreground) 나눠 두고, 그 셋은 이미
+    // 위에서 개별로 넘겼다. 그래서 Clerk 내부 회색조만 기본 파생으로 남는데, 캡처에서
+    // 카드 하단 밴드·구분선·플레이스홀더가 다크에서도 어색하지 않아 그대로 뒀다.
+    // 다크에서 회색만 미묘하게 뜨는 증상이 보이면 여기가 첫 번째로 볼 자리다.
   },
 } satisfies ComponentProps<typeof ClerkProvider>['appearance'];
