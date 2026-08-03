@@ -16,7 +16,7 @@ import { notificationTargetFromChannel } from '@/features/notifications/realtime
  */
 async function maySubscribe(
   pusherChannel: string,
-  session: { orgId: string; userId: string; isAdmin: boolean },
+  session: { orgId: string; userId: string },
 ): Promise<boolean> {
   // 알림은 사람 단위 채널이라 DB를 볼 것도 없다 — 내 org·내 id의 채널만 서명한다(KAN-32).
   const target = notificationTargetFromChannel(pusherChannel);
@@ -31,8 +31,8 @@ async function maySubscribe(
   if (!channelId) {
     return false;
   }
-  const { orgId, ...actor } = session;
-  return Boolean(await channelService.getChannel(orgId, actor, channelId));
+  // 뷰가 아니라 접근 여부만 필요하다 — 채널을 열 때마다(메시지·프레즌스 둘) 불린다.
+  return channelService.canAccessChannel(session.orgId, session.userId, channelId);
 }
 
 /**
@@ -61,7 +61,7 @@ async function presenceData(
 // 멀티테넌시 핵심: 요청한 채팅 채널이 현재 세션의 활성 org에 속하고, 비공개라면 내가
 // 참여자일 때만 서명한다 — 판정은 DB 조회 하나로, 서비스의 접근 규칙을 그대로 쓴다(KAN-28).
 export async function POST(request: Request) {
-  const { userId, orgId, isAdmin } = await getAuthState();
+  const { userId, orgId } = await getAuthState();
   if (!userId || !orgId) {
     return new Response('Unauthorized', { status: 401 });
   }
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     return new Response('Bad Request', { status: 400 });
   }
 
-  if (!(await maySubscribe(pusherChannel, { orgId, userId, isAdmin }))) {
+  if (!(await maySubscribe(pusherChannel, { orgId, userId }))) {
     return new Response('Forbidden', { status: 403 });
   }
 

@@ -19,7 +19,7 @@ import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
  * 거기서 찾는다. 이름을 여기 실으면 매 핑마다 Clerk을 다시 읽어야 한다.
  */
 export async function POST(request: Request) {
-  const { userId, orgId, isAdmin } = await getAuthState();
+  const { userId, orgId } = await getAuthState();
   if (!userId || !orgId) {
     return new Response('Unauthorized', { status: 401 });
   }
@@ -37,8 +37,8 @@ export async function POST(request: Request) {
 
   // 접근 판정은 서비스가 한다 — 볼 수 없는 채널에 입력 중 신호를 흘리면 그 자체가
   // '거기 그런 채널이 있다'는 신호다. 없는 채널과 같은 404로 답한다.
-  const channel = await channelService.getChannel(orgId, { userId, isAdmin }, parsed.data.id);
-  if (!channel) {
+  // 뷰가 아니라 canAccessChannel을 쓰는 이유는 빈도다(그쪽 주석 참조).
+  if (!(await channelService.canAccessChannel(orgId, userId, parsed.data.id))) {
     return new Response('Not Found', { status: 404 });
   }
 
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    await pusherServer.trigger(presenceChannel(channel.id), CHAT_TYPING_EVENT, { userId });
+    await pusherServer.trigger(presenceChannel(parsed.data.id), CHAT_TYPING_EVENT, { userId });
   } catch (error) {
     // 타이핑 표시는 부가 정보다 — 실패해도 사용자가 할 일이 없으므로 조용히 넘긴다.
     console.error('[chat] typing broadcast failed:', error);

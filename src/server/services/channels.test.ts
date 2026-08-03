@@ -19,6 +19,7 @@ import {
 } from './channel-members';
 import { deleteMembership } from './clerk-sync';
 import {
+  canAccessChannel,
   createChannel,
   deleteChannel,
   ensureDefaultChannel,
@@ -321,6 +322,26 @@ describe('비공개 채널 접근', () => {
     });
 
     expect(await inviteToChannel(ORG_A, USER_OWNER, secret, USER_ADMIN)).toBe(false);
+  });
+});
+
+describe('접근 판정만 하는 경량 조회 (KAN-34)', () => {
+  // Pusher 채널 인증과 타이핑 핑이 쓰는 문이다 — 여기가 getChannel보다 느슨하면
+  // 비공개 채널의 실시간 경로가 통째로 열린다. 두 함수의 판정이 늘 같아야 한다.
+  it('getChannel이 보여주는 것과 정확히 같은 것만 통과시킨다', async () => {
+    const open = await makeChannel(ORG_A, USER_OWNER, '공개', false);
+    const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
+
+    // 공개 채널은 참여하지 않아도 접근된다(누구나 읽을 수 있으므로).
+    expect(await canAccessChannel(ORG_A, USER_OTHER, open)).toBe(true);
+    // 비공개 채널은 참여자만. admin도 예외가 아니다.
+    expect(await canAccessChannel(ORG_A, USER_OWNER, secret)).toBe(true);
+    expect(await canAccessChannel(ORG_A, USER_OTHER, secret)).toBe(false);
+    expect(await canAccessChannel(ORG_A, USER_ADMIN, secret)).toBe(false);
+    // 남의 워크스페이스에서는 id를 알아도 안 된다.
+    expect(await canAccessChannel(ORG_B, USER_OWNER, open)).toBe(false);
+    // 없는 채널도 같은 false — '가려짐'과 '없음'을 구분하지 않는다.
+    expect(await canAccessChannel(ORG_A, USER_OWNER, 'no_such_channel')).toBe(false);
   });
 });
 
