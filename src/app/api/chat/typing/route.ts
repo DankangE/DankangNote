@@ -17,6 +17,10 @@ import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
  *
  * 페이로드는 userId 하나뿐이다 — 표시 이름은 이미 프레즌스 멤버 정보로 가 있고, 수신 측이
  * 거기서 찾는다. 이름을 여기 실으면 매 핑마다 Clerk을 다시 읽어야 한다.
+ *
+ * 핑 간격(TYPING_PING_MS)을 지키는 주체는 아직 클라이언트뿐이다 — 여기를 루프로 때리면
+ * Pusher 쿼터를 태울 수 있다. 저장소에 레이트 리밋 기반이 없어 이 라우트만 인메모리로
+ * 막으면 인스턴스마다 따로 세어 실효가 없으므로, 공용 헬퍼와 함께 KAN-57에서 다룬다.
  */
 export async function POST(request: Request) {
   const { userId, orgId } = await getAuthState();

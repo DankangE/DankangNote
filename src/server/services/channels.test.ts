@@ -26,6 +26,7 @@ import {
   getChannel,
   listChannels,
   updateChannel,
+  type ChannelActor,
 } from './channels';
 
 const owner = { userId: USER_OWNER, isAdmin: false };
@@ -328,20 +329,33 @@ describe('비공개 채널 접근', () => {
 describe('접근 판정만 하는 경량 조회 (KAN-34)', () => {
   // Pusher 채널 인증과 타이핑 핑이 쓰는 문이다 — 여기가 getChannel보다 느슨하면
   // 비공개 채널의 실시간 경로가 통째로 열린다. 두 함수의 판정이 늘 같아야 한다.
+  //
+  // 그래서 기대값을 적어 두는 것으로 끝내지 않고 매번 getChannel과 대조한다. 하드코딩만
+  // 하면 나중에 getChannel의 규칙이 바뀌어도(예: admin 예외가 생겨도) 이 테스트는 초록불
+  // 그대로고, 정작 어긋난 실시간 경로는 아무도 못 잡는다 — 막으려던 드리프트가 그것이다.
+  async function bothAgree(orgId: string, actor: ChannelActor, channelId: string) {
+    const [lightweight, view] = await Promise.all([
+      canAccessChannel(orgId, actor.userId, channelId),
+      getChannel(orgId, actor, channelId),
+    ]);
+    expect(lightweight).toBe(view !== null);
+    return lightweight;
+  }
+
   it('getChannel이 보여주는 것과 정확히 같은 것만 통과시킨다', async () => {
     const open = await makeChannel(ORG_A, USER_OWNER, '공개', false);
     const secret = await makeChannel(ORG_A, USER_OWNER, '비밀', true);
 
     // 공개 채널은 참여하지 않아도 접근된다(누구나 읽을 수 있으므로).
-    expect(await canAccessChannel(ORG_A, USER_OTHER, open)).toBe(true);
+    expect(await bothAgree(ORG_A, other, open)).toBe(true);
     // 비공개 채널은 참여자만. admin도 예외가 아니다.
-    expect(await canAccessChannel(ORG_A, USER_OWNER, secret)).toBe(true);
-    expect(await canAccessChannel(ORG_A, USER_OTHER, secret)).toBe(false);
-    expect(await canAccessChannel(ORG_A, USER_ADMIN, secret)).toBe(false);
+    expect(await bothAgree(ORG_A, owner, secret)).toBe(true);
+    expect(await bothAgree(ORG_A, other, secret)).toBe(false);
+    expect(await bothAgree(ORG_A, admin, secret)).toBe(false);
     // 남의 워크스페이스에서는 id를 알아도 안 된다.
-    expect(await canAccessChannel(ORG_B, USER_OWNER, open)).toBe(false);
+    expect(await bothAgree(ORG_B, owner, open)).toBe(false);
     // 없는 채널도 같은 false — '가려짐'과 '없음'을 구분하지 않는다.
-    expect(await canAccessChannel(ORG_A, USER_OWNER, 'no_such_channel')).toBe(false);
+    expect(await bothAgree(ORG_A, owner, 'no_such_channel')).toBe(false);
   });
 });
 

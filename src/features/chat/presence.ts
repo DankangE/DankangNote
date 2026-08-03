@@ -128,6 +128,11 @@ export function dropTyping(
  *
  * 두 명 이상은 이름을 늘어놓지 않고 `외 N명`으로 접는다. 나열하면 조사(이/가)가 마지막
  * 이름의 받침에 따라 달라져 문장이 깨지는데, `외 N명이`는 늘 같은 조사로 끝난다.
+ *
+ * 대표로 세울 한 명은 **이름순으로** 고른다(아바타 줄과 같은 기준). 도착 순서로 고르면
+ * 둘이 함께 치는 동안 앞자리가 계속 뒤바뀐다 — noteTyping이 새 핑을 뒤에 붙이므로
+ * 2.5초마다 entries[0]이 상대편으로 넘어간다. 이름을 아는 사람이 있으면 그 사람을
+ * 앞세운다: 모르는 사람이 먼저 도착했다고 아는 이름을 '누군가'로 가릴 이유가 없다.
  */
 export function typingLabel(
   entries: readonly TypingEntry[],
@@ -136,7 +141,10 @@ export function typingLabel(
   if (entries.length === 0) {
     return '';
   }
-  const name = members.find((member) => member.id === entries[0].userId)?.name;
+  const name = entries
+    .map((entry) => members.find((member) => member.id === entry.userId)?.name)
+    .filter((candidate): candidate is string => candidate !== undefined)
+    .sort((a, b) => a.localeCompare(b, 'ko'))[0];
   const lead = name ? `${name}님` : UNKNOWN_TYPIST;
   if (entries.length === 1) {
     // '누군가 입력 중…' — 이름을 모를 때는 주격 조사를 붙이지 않는다.

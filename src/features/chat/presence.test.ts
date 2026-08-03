@@ -120,14 +120,31 @@ describe('입력 중 문구 (KAN-34)', () => {
 
   it('프레즌스 목록에 없는 사람은 조사 없이 누군가로 부른다', () => {
     expect(typingLabel([entry('user_9')], members)).toBe('누군가 입력 중…');
+    // 아는 이름이 하나도 없을 때만 그렇다.
+    expect(typingLabel([entry('user_8'), entry('user_9')], members)).toBe(
+      '누군가 외 1명이 입력 중…',
+    );
   });
 
   it('여럿은 외 N명으로 접는다 — 이름을 나열하면 조사가 받침 따라 어긋난다', () => {
     expect(typingLabel([entry('user_1'), entry('user_2')], members)).toBe(
       '단 강님 외 1명이 입력 중…',
     );
-    expect(typingLabel([entry('user_9'), entry('user_1'), entry('user_2')], members)).toBe(
-      '누군가 외 2명이 입력 중…',
+  });
+
+  it('대표는 도착 순서가 아니라 이름순 — 둘이 함께 치는 동안 앞자리가 바뀌면 안 된다', () => {
+    // noteTyping은 새 핑을 뒤에 붙인다. 도착 순서로 고르면 핑이 오갈 때마다(2.5초) 문구의
+    // 이름이 상대편으로 넘어간다 — 같은 두 사람인데 화면만 계속 흔들린다.
+    const arrived = noteTyping(noteTyping([], 'user_1', NOW), 'user_2', NOW);
+    const reversed = noteTyping(arrived, 'user_1', NOW + TYPING_PING_MS);
+
+    expect(reversed.map((item) => item.userId)).toEqual(['user_2', 'user_1']);
+    expect(typingLabel(reversed, members)).toBe(typingLabel(arrived, members));
+  });
+
+  it('이름을 아는 사람이 있으면 모르는 사람보다 앞세운다', () => {
+    expect(typingLabel([entry('user_9'), entry('user_1')], members)).toBe(
+      '단 강님 외 1명이 입력 중…',
     );
   });
 });
