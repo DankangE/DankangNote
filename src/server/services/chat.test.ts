@@ -28,6 +28,11 @@ beforeEach(async () => {
   await seedChannels();
 });
 
+/** 메시지 순번은 뷰에 싣지 않는다(클라이언트가 쓸 일이 없다) — DB에서 직접 읽는다. */
+async function seqOfMessage(id: string): Promise<number> {
+  return (await prisma.chatMessage.findUniqueOrThrow({ where: { id }, select: { seq: true } })).seq;
+}
+
 /** 서비스를 거치지 않고 이물 행 한 건을 심고 그 행을 돌려준다. */
 async function plant(row: Parameters<typeof seedMessageRows>[0][number]) {
   const [created] = await seedMessageRows([row]);
@@ -820,5 +825,95 @@ describe('메시지 순번 = 커밋 순서 (KAN-55)', () => {
       await seqOf(reply!.message.id),
       await seqOf(next!.message.id),
     ]).toEqual([1, 2, 3]);
+  });
+});
+
+describe('리액션 집계 버전 (KAN-52)', () => {
+  const versionOf = async (id: string) =>
+    (await prisma.chatMessage.findUniqueOrThrow({ where: { id }, select: { reactionSeq: true } }))
+      .reactionSeq;
+
+  it('토글마다 버전이 오르고 델타에 실려 나간다', async () => {
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+    // 조회 스냅샷의 기준선 — 아직 아무도 안 눌렀으니 0이다.
+    expect(sent!.message.reactionVersion).toBe(0);
+
+    const first = await toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    const second = await toggleReaction(ORG_A, USER_OTHER, id, '👍');
+    const other = await toggleReaction(ORG_A, USER_OWNER, id, '🎉');
+
+    // 이모지가 달라도 한 메시지의 카운터를 함께 쓴다 — 수신 측이 이모지별로 비교하므로
+    // 번호가 섞여도 되고, 카운터를 이모지마다 두면 행만 늘어난다.
+    expect([first!.version, second!.version, other!.version]).toEqual([1, 2, 3]);
+    expect(await versionOf(id)).toBe(3);
+  });
+
+  it('메시지마다 따로 센다 — 옆 말풍선의 리액션이 내 번호를 밀지 않는다', async () => {
+    const a = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '가');
+    const b = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '나');
+    await toggleReaction(ORG_A, USER_OWNER, a!.message.id, '👍');
+    await toggleReaction(ORG_A, USER_OTHER, a!.message.id, '👍');
+
+    expect((await toggleReaction(ORG_A, USER_OWNER, b!.message.id, '👍'))!.version).toBe(1);
+  });
+
+  it('번호를 받고 커밋이 늦어져도 뒤 토글이 앞지르지 못한다', async () => {
+    // 번호와 count가 같은 트랜잭션에서 나오는 것만으로는 부족하다 — 잠금이 **커밋까지**
+    // 유지돼야 '번호 순서 = 커밋 순서'가 성립하고, 그래야 수신 측의 낮은 번호 버리기가
+    // 옳은 판정이 된다.
+    //
+    // 그래서 토글이 번호를 받은 뒤 커밋 전에 늦어지는 상황을 만든다: 그 사람의 리액션 행을
+    // FOR UPDATE로 쥐고 있으면, 그 행을 지우러 온 토글이 카운터를 지난 자리에서 멈춘다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    const id = sent!.message.id;
+    await prisma.messageReaction.create({
+      data: { messageId: id, userId: USER_OWNER, emoji: '👍', orgId: ORG_A },
+    });
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blocker = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT "messageId" FROM "MessageReaction"
+          WHERE "messageId" = ${id} AND "userId" = ${USER_OWNER} AND "emoji" = '👍'
+          FOR UPDATE
+        `;
+        await held;
+      },
+      { timeout: 20_000 },
+    );
+
+    const slow = toggleReaction(ORG_A, USER_OWNER, id, '👍');
+    // 번호를 받고 리액션 행에서 멈출 때까지 준다.
+    await setTimeout(300);
+
+    const racer = toggleReaction(ORG_A, USER_OTHER, id, '🎉');
+    const outcome = await Promise.race([
+      racer.then(() => 'passed' as const),
+      setTimeout(400, 'blocked' as const),
+    ]);
+    expect(outcome).toBe('blocked');
+
+    release();
+    await blocker;
+    const [first, second] = await Promise.all([slow, racer]);
+
+    expect(first!.version).toBeLessThan(second!.version);
+  });
+
+  it('리액션 버전은 메시지 순번과 별개다 — 서로를 밀지 않는다', async () => {
+    // 채널 카운터를 같이 쓰면 리액션 몇 번이 전송의 번호를 밀고, 무엇보다 같은 행에서
+    // 직렬화돼 리액션이 전송을 막는다.
+    const sent = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '루트');
+    await toggleReaction(ORG_A, USER_OWNER, sent!.message.id, '👍');
+    await toggleReaction(ORG_A, USER_OTHER, sent!.message.id, '🎉');
+
+    const next = await createMessage(ORG_A, USER_OWNER, CHANNEL_A, '다음 말');
+
+    expect(await seqOfMessage(next!.message.id)).toBe(2);
   });
 });
