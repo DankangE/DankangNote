@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 값이 아니라 키 목록이라 추적한다. 실제 값이 든 .env*는 위 규칙이 계속 막는다.
+!.env.example
 
 # vercel
 .vercel
