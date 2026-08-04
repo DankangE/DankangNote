@@ -64,6 +64,18 @@
 `.env.example`의 4개 키를 채운다. 클라이언트에 노출되는 것은 `NEXT_PUBLIC_PUSHER_KEY`와
 `NEXT_PUBLIC_PUSHER_CLUSTER` 둘뿐이고, `PUSHER_SECRET`은 절대 `NEXT_PUBLIC_`을 붙이지 않는다.
 
+## 4b. 첨부 스토리지 (KAN-35)
+
+S3 호환 서비스(R2 · S3 · Supabase Storage 등) 하나를 만들고 `.env.example`의 `S3_*` 5종을
+채운다. 로컬 MinIO와 같은 코드가 그대로 돈다(`forcePathStyle` 경로 스타일이라 어느 쪽도 동작).
+
+- **엔드포인트는 브라우저에서 접근 가능해야 한다** — 업로드(presigned POST)·다운로드
+  (presigned GET)가 스토리지에 직접 붙는다. 내부 전용 주소면 서버만 되고 브라우저가 실패한다.
+- 버킷은 비공개로 둔다. 모든 접근이 짧은 presigned URL이라 공개 읽기가 필요 없다.
+- CORS: 브라우저가 앱 origin에서 스토리지로 POST하므로, 서비스에 따라 앱 도메인을
+  허용해야 할 수 있다(MinIO는 기본 전체 허용이라 로컬에선 이 단계가 없었다).
+- 5종이 없으면 첨부 기능만 조용히 꺼진다 — 배포를 막지 않는다.
+
 ## 5. 배포 후 검증 체크리스트
 
 KAN-27이 닫히려면 아래가 실제 배포에서 통과해야 한다.

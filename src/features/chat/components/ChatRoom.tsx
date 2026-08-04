@@ -15,6 +15,7 @@ import {
 } from '@/features/chat/pusher-connection';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
 import type {
+  AttachmentView,
   ChatMessageView,
   ChatViewer,
   LiveReaction,
@@ -59,10 +60,13 @@ export function ChatRoom({
   initialPage,
   viewer,
   channelId,
+  attachmentsEnabled,
 }: {
   initialPage: MessagePage;
   viewer: ChatViewer;
   channelId: string;
+  /** 스토리지 env가 있는 환경인지 — 컴포저의 첨부 UI 노출 여부(KAN-35). */
+  attachmentsEnabled: boolean;
 }) {
   // 서버가 준 초기 목록을 시드로, 이후엔 Pusher 이벤트·전송 결과·이전 페이지로만 갱신하는
   // 라이브 스트림 상태. 서버 상태의 사본이 아니라 이벤트 소싱 뷰라 useState가 맞다.
@@ -314,13 +318,17 @@ export function ChatRoom({
   }, [channelId, countReply, receiveReaction, stopTypingFor]);
 
   // 낙관 전송 — 즉시 내 말풍선을 붙이고, 성공하면 서버 확정본으로 교체한다.
-  // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문을 되돌리게 한다.
-  async function handleSend(body: string, mentions: MentionSpan[]): Promise<boolean> {
+  // 실패하면 말풍선을 걷어내고 false를 돌려 컴포저가 본문·첨부를 되돌리게 한다.
+  async function handleSend(
+    body: string,
+    mentions: MentionSpan[],
+    attachments: AttachmentView[],
+  ): Promise<boolean> {
     setError(null);
     // 내가 보낸 메시지는 항상 하단으로 스크롤해 보이게 한다.
     stickToBottom.current = true;
 
-    const optimistic = pendingMessage(viewer, channelId, body, null, mentions);
+    const optimistic = pendingMessage(viewer, channelId, body, null, mentions, attachments);
     setMessages((prev) => [...prev, optimistic]);
 
     const fail = (message: string) => {
@@ -330,7 +338,12 @@ export function ChatRoom({
     };
 
     try {
-      const result = await sendMessageAction({ channelId, body, mentions });
+      const result = await sendMessageAction({
+        channelId,
+        body,
+        mentions,
+        attachmentIds: attachments.map((attachment) => attachment.id),
+      });
       if (!result.ok) {
         return fail(result.error);
       }
@@ -520,6 +533,8 @@ export function ChatRoom({
             label="메시지"
             placeholder="메시지를 입력하세요 (@로 멘션, Shift+Enter 줄바꿈)"
             people={people}
+            channelId={channelId}
+            attachmentsEnabled={attachmentsEnabled}
             onSend={handleSend}
             onTyping={notifyTyping}
           />
@@ -532,6 +547,7 @@ export function ChatRoom({
           key={openThreadId}
           rootId={openThreadId}
           channelId={channelId}
+          attachmentsEnabled={attachmentsEnabled}
           viewer={viewer}
           liveReplies={liveReplies}
           liveReactions={liveReactions}

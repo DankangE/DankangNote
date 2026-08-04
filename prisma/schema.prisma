@@ -72,6 +72,7 @@ model Organization {
   mentions      MessageMention[]
   notifications Notification[]
   reads         ChannelRead[]
+  attachments   MessageAttachment[]
 }
 
 /// 채팅 채널 (KAN-28) — '워크스페이스당 방 1개'(KAN-15)를 대체한다.
@@ -107,6 +108,7 @@ model Channel {
   messages      ChatMessage[]
   notifications Notification[]
   reads         ChannelRead[]
+  attachments   MessageAttachment[]
 
   @@unique([orgId, name])
   @@index([orgId])
@@ -204,6 +206,48 @@ model ChatMessage {
   reactions     MessageReaction[]
   mentions      MessageMention[]
   notifications Notification[]
+  attachments   MessageAttachment[]
+}
+
+/// 메시지 첨부 (KAN-35). 업로드는 두 단계다.
+/// ① presign — 행을 먼저 만들고(messageId null) 브라우저가 스토리지에 **직접** 올린다.
+///   서버를 거치면 서버리스 본문 상한(4.5MB)이 곧 파일 상한이 된다.
+/// ② 전송 — sendMessage 트랜잭션이 messageId를 채워 바인딩한다. 그 updateMany의 where가
+///   (orgId, channelId, uploaderId, messageId: null)를 전부 물으므로, 남의 업로드·다른
+///   채널의 업로드·이미 쓴 업로드는 **매칭 자체가 안 된다** — 행이 곧 소유권 증명이다.
+///
+/// uploaderId에 FK가 없는 것은 ChatMessage.authorId와 같은 이유다(업로드가 User 미러의
+/// 웹훅 동기화 순서에 묶이면 안 된다). 행 수명은 org/channel/message Cascade로 닫혀 있다.
+/// 전송 없이 버려진 pending 행(messageId null)도 채널·조직이 지워지면 함께 파기된다.
+///
+/// **스토리지 오브젝트의 수명은 행과 다르다** — 행이 cascade로 지워져도 오브젝트는 남는다.
+/// 키가 org/{orgId}/ 프리픽스라 나중에 프리픽스 삭제로 정리할 수 있고, 그 정리는 별도
+/// 티켓이다(웹훅 핸들러가 스토리지 API 실패까지 떠안게 되는 설계 변경이라 여기서 안 한다).
+model MessageAttachment {
+  id          String   @id @default(cuid())
+  orgId       String
+  channelId   String
+  uploaderId  String
+  /// 바인딩 전(pending)에는 null. 값이 있으면 그 메시지의 첨부로 화면에 보인다.
+  messageId   String?
+  /// 스토리지 오브젝트 키 — org/{orgId}/att/{uuid}. 파일명을 키에 넣지 않는 것은 의도다:
+  /// 유니코드·경로 문자가 서명과 URL 인코딩을 지나며 어긋날 자리를 만들지 않는다.
+  /// 파일명은 fileName 컬럼에 남아 다운로드 시 Content-Disposition으로 실린다.
+  key         String   @unique
+  fileName    String
+  contentType String
+  /// presign 시점에 선언된 크기. 실제 상한 강제는 스토리지의 POST 정책이 한다(storage.ts).
+  size        Int
+  createdAt   DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  channel      Channel      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  message      ChatMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  // 페이지의 메시지 id들로 첨부를 접는 조회(loadAttachments)가 선두 messageId를 탄다.
+  @@index([messageId])
+  @@index([channelId])
+  @@index([orgId])
 }
 
 /// 채널 읽음 커서 (KAN-33) — 사람×채널마다 한 행.

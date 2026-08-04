@@ -9,7 +9,13 @@ import { displayName } from '@/server/services/user-display';
 import { mentionRecipients, resolveMentions } from '@/server/services/notifications';
 import type { MentionSpan } from '@/features/chat/mentions';
 import { REACTION_EMOJIS, type ReactionEmoji } from '@/features/chat/reactions';
-import type { ChatMessageView, ReactionDelta, ReactionView } from '@/features/chat/types';
+import { toAttachmentView } from '@/server/services/attachments';
+import type {
+  AttachmentView,
+  ChatMessageView,
+  ReactionDelta,
+  ReactionView,
+} from '@/features/chat/types';
 
 type MessageRow = Prisma.ChatMessageGetPayload<object>;
 
@@ -21,6 +27,7 @@ function toView(
   replyCount: number,
   reactions: ReactionView[],
   mentions: MentionSpan[],
+  attachments: AttachmentView[],
 ): ChatMessageView {
   return {
     id: message.id,
@@ -42,7 +49,36 @@ function toView(
     // 겹치는 쪽이 낫다.
     reactionVersion: message.reactionSeq,
     mentions,
+    attachments,
   };
+}
+
+/**
+ * 이 메시지들의 첨부를 한 번에 읽는다 (KAN-35). 멘션·리액션과 같은 이유로 페이지의
+ * messageId로 스코프하고 orgId를 함께 싣는다. 정렬은 업로드 순 — 사용자가 고른 순서대로
+ * 화면에 놓인다(presign이 곧 선택 순서다).
+ */
+async function loadAttachments(
+  messageIds: string[],
+  orgId: string,
+): Promise<Map<string, AttachmentView[]>> {
+  if (messageIds.length === 0) {
+    return new Map();
+  }
+  const rows = await prisma.messageAttachment.findMany({
+    where: { orgId, messageId: { in: messageIds } },
+    orderBy: { createdAt: 'asc' },
+  });
+  const byMessage = new Map<string, AttachmentView[]>();
+  for (const row of rows) {
+    if (!row.messageId) {
+      continue;
+    }
+    const list = byMessage.get(row.messageId) ?? [];
+    list.push(toAttachmentView(row));
+    byMessage.set(row.messageId, list);
+  }
+  return byMessage;
 }
 
 /**
@@ -165,12 +201,13 @@ async function toViews(
   const authorIds = [...new Set(messages.map((message) => message.authorId))];
   const rootIds = messages.filter((message) => !message.parentId).map((message) => message.id);
   const messageIds = messages.map((message) => message.id);
-  const [authors, replyCounts, reactions, mentions] = await Promise.all([
+  const [authors, replyCounts, reactions, mentions, attachments] = await Promise.all([
     prisma.user.findMany({ where: { id: { in: authorIds } } }),
     countReplies(rootIds),
     // 답글에도 리액션을 달 수 있으므로 루트만이 아니라 이 페이지 전부를 대상으로 한다.
     loadReactions(messageIds, orgId, viewerId),
     loadMentions(messageIds, orgId),
+    loadAttachments(messageIds, orgId),
   ]);
   const authorById = new Map(authors.map((author) => [author.id, author]));
   return messages.map((message) =>
@@ -180,6 +217,7 @@ async function toViews(
       replyCounts.get(message.id) ?? 0,
       reactions.get(message.id) ?? [],
       mentions.get(message.id) ?? [],
+      attachments.get(message.id) ?? [],
     ),
   );
 }
@@ -331,10 +369,23 @@ export interface SendResult {
 }
 
 /**
+ * 첨부 바인딩 실패의 내부 신호 (KAN-35). 트랜잭션을 롤백시키려면 throw여야 하고,
+ * 호출부(createMessage)는 이것만 잡아 null로 접는다 — 남의 첨부·다른 채널의 첨부·이미 쓴
+ * 첨부·없는 id 모두 같은 답이다(어느 쪽인지 알려주면 그게 존재 오라클이다).
+ */
+class AttachmentBindError extends Error {
+  constructor() {
+    super('attachment bind mismatch');
+  }
+}
+
+/**
  * 접근할 수 없는 채널이면 null — 액션이 '채널을 찾을 수 없습니다'로 바꾼다.
  * parentId가 있으면 그 메시지의 답글이 된다. 부모는 **같은 채널의 루트 메시지**여야 한다:
  * 다른 채널의 메시지에 답글을 달면 그 답글은 어느 채널에도 안 보이는 고아가 되고,
  * 답글에 답글을 허용하면 화면에 없는 2단계 스레드가 데이터에만 생긴다(슬랙과 같은 1단계).
+ * attachmentIds는 이 전송에 바인딩할 pending 첨부(KAN-35) — 검증 규칙은 아래 updateMany의
+ * where 주석 참조.
  */
 export async function createMessage(
   orgId: string,
@@ -343,6 +394,7 @@ export async function createMessage(
   body: string,
   parentId?: string,
   claimedMentions: MentionSpan[] = [],
+  attachmentIds: string[] = [],
 ): Promise<SendResult | null> {
   // 대상 채널이 이 워크스페이스의 것이고 내가 접근할 수 있는지 — 전송의 테넌트 경계다.
   const channel = await prisma.channel.findFirst({
@@ -386,6 +438,9 @@ export async function createMessage(
   const mentions = await resolveMentions(orgId, body, claimedMentions);
   const recipients = await mentionRecipients(orgId, channelId, authorId, mentions);
 
+  // 같은 id를 두 번 실어도 한 건이다 — 아래 count 대조가 중복 때문에 어긋나지 않게 접는다.
+  const bindIds = [...new Set(attachmentIds)];
+
   const written = await prisma.$transaction(async (tx) => {
     // 채널 카운터를 잠그고 다음 순번을 받는다 (KAN-55). 이 UPDATE가 잡은 행 잠금은 커밋까지
     // 유지되므로, 뒤이은 전송은 이 트랜잭션이 끝나기 전에는 번호를 받지 못한다 — 그래서
@@ -421,12 +476,49 @@ export async function createMessage(
     const message = await tx.chatMessage.create({
       data: { orgId, channelId, authorId, body, parentId, seq },
     });
+    // 첨부 바인딩 (KAN-35). 이 where가 소유 검증의 전부다 — 이 워크스페이스(orgId)·이
+    // 채널(channelId)·내 업로드(uploaderId)·아직 안 쓴 것(messageId null)만 매칭되므로,
+    // 남의 첨부 id를 알아도, 접근 가능한 다른 채널에 올린 것을 실어도, 이미 보낸 첨부를
+    // 다시 실어도 count가 모자라 전체가 롤백된다(메시지·순번 증가까지 함께 되돌아간다).
+    // 업로드가 실제로 끝났는지는 묻지 않는다 — 안 올리고 바인딩하면 자기 메시지에 깨진
+    // 첨부가 보일 뿐이고, 크기·타입 상한은 스토리지의 POST 정책이 이미 강제했다.
+    if (bindIds.length > 0) {
+      const bound = await tx.messageAttachment.updateMany({
+        where: {
+          id: { in: bindIds },
+          orgId,
+          channelId,
+          uploaderId: authorId,
+          messageId: null,
+        },
+        data: { messageId: message.id },
+      });
+      if (bound.count !== bindIds.length) {
+        throw new AttachmentBindError();
+      }
+    }
     return { message, joined: join.count > 0 };
+  }).catch((error) => {
+    if (error instanceof AttachmentBindError) {
+      return null;
+    }
+    throw error;
   });
   if (!written) {
     return null;
   }
   const { message, joined } = written;
+
+  // 바인딩된 첨부의 뷰 — 방금 이 트랜잭션이 커밋했으므로 다시 읽으면 그대로 나온다.
+  const attachments =
+    bindIds.length > 0
+      ? (
+          await prisma.messageAttachment.findMany({
+            where: { messageId: message.id },
+            orderBy: { createdAt: 'asc' },
+          })
+        ).map(toAttachmentView)
+      : [];
 
   // 멘션 행과 알림을 메시지와 같은 트랜잭션에 넣지 않는 이유는 messageId가 필요해서다.
   //
@@ -477,9 +569,9 @@ export async function createMessage(
 
   const author = await prisma.user.findUnique({ where: { id: authorId } });
   // 새로 만든 메시지의 답글 수는 언제나 0이다(방금 생겼고, 답글은 1단계라 답글의 답글도 없다).
-  // 리액션도 마찬가지로 아직 없다. 멘션은 방금 확정한 것을 그대로 싣는다.
+  // 리액션도 마찬가지로 아직 없다. 멘션·첨부는 방금 확정한 것을 그대로 싣는다.
   return {
-    message: toView(message, author, 0, [], mentions),
+    message: toView(message, author, 0, [], mentions, attachments),
     joined,
     notified: recipients.map(({ userId }) => userId),
   };

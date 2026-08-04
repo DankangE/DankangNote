@@ -1,6 +1,7 @@
 import type { MentionSpan } from '@/features/chat/mentions';
 import { REACTION_EMOJIS } from '@/features/chat/reactions';
 import type {
+  AttachmentView,
   ChatMessageView,
   ChatViewer,
   ReactionDelta,
@@ -65,6 +66,7 @@ export function pendingMessage(
   body: string,
   parentId: string | null,
   mentions: MentionSpan[] = [],
+  attachments: AttachmentView[] = [],
 ): RoomMessage {
   return {
     id: `pending-${crypto.randomUUID()}`,
@@ -84,6 +86,9 @@ export function pendingMessage(
     // 멘션은 컴포저가 방금 고른 것을 그대로 쓴다 — 낙관 말풍선에서도 강조가 바로 보인다.
     // 서버가 확정본을 돌려주면 검증을 통과한 것만 남은 목록으로 교체된다.
     mentions,
+    // 첨부는 전송 전에 이미 업로드가 끝나 실제 id를 갖고 있다(KAN-35) — 낙관 말풍선의
+    // 이미지도 진짜 주소로 그려진다(pending 첨부는 업로더 본인에게만 서빙된다).
+    attachments,
     pending: true,
   };
 }

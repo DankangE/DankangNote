@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import type { ChatMessageView } from '@/features/chat/types';
+import { MessageAttachments } from './MessageAttachments';
 import { MessageBody } from './MessageBody';
 import { ReactionChips, ReactionPicker } from './MessageReactions';
 
@@ -93,7 +94,13 @@ export function ChatMessageRow({
             <span className="text-xs text-muted-foreground">{time}</span>
           </div>
         )}
-        <MessageBody body={message.body} mentions={message.mentions} viewerId={viewerId} />
+        {/* 첨부만 있는 메시지는 본문이 빈 문자열이다(KAN-35) — 빈 문단을 만들지 않는다. */}
+        {message.body !== '' && (
+          <MessageBody body={message.body} mentions={message.mentions} viewerId={viewerId} />
+        )}
+        {message.attachments.length > 0 && (
+          <MessageAttachments attachments={message.attachments} />
+        )}
 
         {reactable && <ReactionChips reactions={message.reactions} onToggle={toggle} />}
 

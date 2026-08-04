@@ -28,6 +28,7 @@ function message(reactions: ReactionView[], reactionVersion = 0): RoomMessage {
     reactions,
     reactionVersion,
     mentions: [],
+    attachments: [],
   };
 }
 
