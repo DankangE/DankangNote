@@ -15,6 +15,7 @@ import {
 import type { MentionSpan } from '@/features/chat/mentions';
 import { useReactionToggle } from '@/features/chat/use-reaction-toggle';
 import type {
+  AttachmentView,
   ChatMessageView,
   ChatViewer,
   LiveReaction,
@@ -42,6 +43,7 @@ const STICK_THRESHOLD_PX = 120;
 export function ThreadPanel({
   rootId,
   channelId,
+  attachmentsEnabled,
   viewer,
   liveReplies,
   liveReactions,
@@ -53,6 +55,8 @@ export function ThreadPanel({
 }: {
   rootId: string;
   channelId: string;
+  /** 답글 컴포저의 첨부 UI 노출 여부 — 본문과 같은 채널·같은 규칙이다(KAN-35). */
+  attachmentsEnabled: boolean;
   viewer: ChatViewer;
   liveReplies: readonly ChatMessageView[];
   liveReactions: readonly LiveReaction[];
@@ -247,10 +251,14 @@ export function ThreadPanel({
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [replies, root]);
 
-  async function handleSend(body: string, mentions: MentionSpan[]): Promise<boolean> {
+  async function handleSend(
+    body: string,
+    mentions: MentionSpan[],
+    attachments: AttachmentView[],
+  ): Promise<boolean> {
     setError(null);
     stickToBottom.current = true;
-    const optimistic = pendingMessage(viewer, channelId, body, rootId, mentions);
+    const optimistic = pendingMessage(viewer, channelId, body, rootId, mentions, attachments);
     setReplies((prev) => [...prev, optimistic]);
 
     const fail = (message: string) => {
@@ -260,7 +268,13 @@ export function ThreadPanel({
     };
 
     try {
-      const result = await sendMessageAction({ channelId, body, parentId: rootId, mentions });
+      const result = await sendMessageAction({
+        channelId,
+        body,
+        parentId: rootId,
+        mentions,
+        attachmentIds: attachments.map((attachment) => attachment.id),
+      });
       if (!result.ok) {
         return fail(result.error);
       }
@@ -370,6 +384,8 @@ export function ThreadPanel({
           placeholder="답글을 입력하세요 (@로 멘션, Shift+Enter 줄바꿈)"
           disabled={failedToLoad}
           people={people}
+          channelId={channelId}
+          attachmentsEnabled={attachmentsEnabled}
           onSend={handleSend}
         />
       </div>

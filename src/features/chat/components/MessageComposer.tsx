@@ -1,9 +1,11 @@
 'use client';
 
 import { useId, useRef, useState } from 'react';
-import { SendHorizontal } from 'lucide-react';
+import { FileText, Loader2, Paperclip, SendHorizontal, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { formatBytes } from '@/features/chat/attachments';
 import {
   CHANNEL_MENTION,
   mentionText,
@@ -11,6 +13,8 @@ import {
   type MentionSpan,
   type PickedMention,
 } from '@/features/chat/mentions';
+import type { AttachmentView } from '@/features/chat/types';
+import { useAttachmentUploads, type StagedAttachment } from '@/features/chat/use-attachment-uploads';
 import { MentionSuggestions, optionId, type MentionCandidate } from './MentionSuggestions';
 
 // 슬랙식 컴포저 — 테두리 박스 안에 무테 Textarea + 아이콘 전송 버튼.
@@ -58,6 +62,8 @@ export function MessageComposer({
   placeholder,
   disabled,
   people,
+  channelId,
+  attachmentsEnabled,
   onSend,
   onTyping,
 }: {
@@ -66,7 +72,11 @@ export function MessageComposer({
   disabled?: boolean;
   /** 멘션 후보(채널 참여자). 아직 못 받았으면 빈 배열 — 그때는 자동완성이 안 뜬다. */
   people: MentionCandidate[];
-  onSend: (body: string, mentions: MentionSpan[]) => Promise<boolean>;
+  /** 첨부 presign이 붙을 채널 (KAN-35). 스레드 답글도 본문과 같은 채널이다. */
+  channelId: string;
+  /** 스토리지 env가 없는 환경에서는 첨부 UI 자체를 내리지 않는다(pusher.ts와 같은 태도). */
+  attachmentsEnabled: boolean;
+  onSend: (body: string, mentions: MentionSpan[], attachments: AttachmentView[]) => Promise<boolean>;
   /**
    * 본문이 바뀔 때마다 불린다(KAN-34). 간격 조절은 호출부의 몫이다 — 컴포저는 '지금 쳤다'는
    * 사실만 알고, 그걸 얼마나 자주 남에게 알릴지는 실시간 계층이 정한다.
@@ -79,7 +89,10 @@ export function MessageComposer({
   const [query, setQuery] = useState<{ start: number; query: string } | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+  // 첨부 준비(선택 → presign → 스토리지 직접 업로드)는 훅이 다 한다(KAN-35).
+  const uploads = useAttachmentUploads(channelId);
 
   const candidates = query
     ? [channelCandidate, ...people].filter((c) => matches(c, query.query)).slice(0, SUGGESTION_LIMIT)
@@ -123,22 +136,31 @@ export function MessageComposer({
     });
   }
 
+  // 첨부만으로도 보낼 수 있다(KAN-35). 단 올라가는 중이면 잠근다 — 절반만 실린 메시지를
+  // 만들지 않는다. 실패 칩은 전송을 막지 않는다(지우면 그만이고, 성공분은 온전하다).
+  const attachments = uploads.ready;
+  const canSubmit =
+    !disabled && !uploads.uploading && (draft.trim().length > 0 || attachments.length > 0);
+
   async function submit() {
-    const body = draft.trim();
-    if (!body) {
+    if (!canSubmit) {
       return;
     }
+    const body = draft.trim();
     // 스팬은 trim된 본문 기준으로 잡아야 한다 — 서버가 검증하는 것도 그 본문이다.
     const mentions = spansForPicked(body, picked);
     setDraft('');
     setPicked([]);
     setQuery(null);
-    const ok = await onSend(body, mentions);
-    // 그 사이 새로 입력 중이면 사용자의 글을 덮지 않는다.
-    if (!ok) {
-      setDraft((current) => (current === '' ? body : current));
-      setPicked((current) => (current.length === 0 ? picked : current));
+    const ok = await onSend(body, mentions, attachments);
+    if (ok) {
+      // 성공해야 비운다 — 실패 시 첨부는 그대로 남아 본문 복원과 함께 재전송할 수 있다.
+      uploads.clear();
+      return;
     }
+    // 그 사이 새로 입력 중이면 사용자의 글을 덮지 않는다.
+    setDraft((current) => (current === '' ? body : current));
+    setPicked((current) => (current.length === 0 ? picked : current));
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -198,7 +220,47 @@ export function MessageComposer({
           onPick={pick}
         />
       )}
-      <div className="flex items-end gap-2 rounded-xl border bg-background p-2 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+      <div className="flex flex-col gap-1.5 rounded-xl border bg-background p-2 focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+        {uploads.notice && (
+          <p role="alert" className="px-1 text-xs text-destructive">
+            {uploads.notice}
+          </p>
+        )}
+        {uploads.items.length > 0 && (
+          <ul aria-label="첨부할 파일" className="flex flex-wrap gap-2 px-1 pt-1">
+            {uploads.items.map((item) => (
+              <AttachmentChip key={item.localId} item={item} onRemove={uploads.remove} />
+            ))}
+          </ul>
+        )}
+        <div className="flex items-end gap-2">
+        {attachmentsEnabled && (
+          <>
+            {/* 값 초기화(onClick) — 같은 파일을 지웠다 다시 고를 때 change가 안 뜨는 것을 막는다. */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onClick={(event) => {
+                (event.target as HTMLInputElement).value = '';
+              }}
+              onChange={(event) => {
+                if (event.target.files) uploads.stage([...event.target.files]);
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`${label}에 파일 첨부`}
+              disabled={disabled}
+              className="size-8 shrink-0 text-muted-foreground"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip />
+            </Button>
+          </>
+        )}
         <Textarea
           ref={textareaRef}
           aria-label={label}
@@ -233,17 +295,67 @@ export function MessageComposer({
           onKeyDown={handleKeyDown}
         />
         {/* 데스크톱에서는 본문과 스레드의 컴포저가 동시에 떠 있다 — 두 전송 버튼의 접근
-            가능한 이름이 같으면 스크린리더에서 구분되지 않으므로 label을 함께 싣는다. */}
+            가능한 이름이 같으면 스크린리더에서 구분되지 않으므로 label을 함께 싣는다.
+            업로드 중에는 잠근다(aria-busy) — 절반만 실린 메시지를 만들지 않는다. */}
         <Button
           size="icon"
           aria-label={`${label} 보내기`}
-          disabled={disabled || draft.trim().length === 0}
+          aria-busy={uploads.uploading}
+          disabled={!canSubmit}
           onClick={submit}
         >
           <SendHorizontal />
         </Button>
+        </div>
       </div>
     </div>
+  );
+}
+
+// 첨부 대기줄의 칩 하나 (KAN-35). 이미지에는 로컬 미리보기(objectURL)를, 나머지에는 파일
+// 아이콘을 쓴다 — 서버 주소로 미리보기를 그리면 업로드가 끝나기 전엔 어차피 깨진다.
+function AttachmentChip({
+  item,
+  onRemove,
+}: {
+  item: StagedAttachment;
+  onRemove: (localId: string) => void;
+}) {
+  return (
+    <li
+      className={cn(
+        'relative flex items-center gap-2 rounded-lg border bg-muted/40 py-1 pr-7 pl-1.5 text-xs',
+        item.status === 'error' && 'border-destructive text-destructive',
+      )}
+    >
+      {item.previewUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={item.previewUrl} alt="" className="size-8 rounded object-cover" />
+      ) : (
+        <FileText aria-hidden className="size-4 text-muted-foreground" />
+      )}
+      <span className="flex flex-col">
+        <span className="max-w-36 truncate font-medium">{item.fileName}</span>
+        <span className={cn('text-muted-foreground', item.status === 'error' && 'text-destructive')}>
+          {item.status === 'error' ? item.error : formatBytes(item.size)}
+        </span>
+      </span>
+      {item.status === 'uploading' && (
+        <Loader2 aria-hidden className="size-3.5 animate-spin text-muted-foreground" />
+      )}
+      {/* 진행 상태는 시각으로만 드러난다 — 스크린리더에는 이 텍스트가 유일한 단서다. */}
+      <span className="sr-only">
+        {item.status === 'uploading' ? '업로드 중' : item.status === 'ready' ? '업로드 완료' : ''}
+      </span>
+      <button
+        type="button"
+        aria-label={`${item.fileName} 첨부 지우기`}
+        className="absolute top-1/2 right-1 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={() => onRemove(item.localId)}
+      >
+        <X className="size-3.5" />
+      </button>
+    </li>
   );
 }
 

@@ -90,9 +90,11 @@ export async function sendMessageAction(input: unknown): Promise<ActionResult<Ch
       parsed.data.body,
       parsed.data.parentId,
       parsed.data.mentions,
+      parsed.data.attachmentIds,
     );
-    // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)이나 답글을 달 수 없는 부모는
-    // '없음'으로 답한다 — 어느 쪽인지 알려주면 그 자체가 존재 여부 오라클이 된다.
+    // 접근할 수 없는 채널(남의 워크스페이스·미참여 비공개)이나 답글을 달 수 없는 부모,
+    // 바인딩할 수 없는 첨부(KAN-35)는 모두 '없음'으로 답한다 — 어느 쪽인지 알려주면
+    // 그 자체가 존재 여부 오라클이 된다.
     if (!sent) {
       return { ok: false, error: '메시지를 보낼 대상을 찾을 수 없습니다.' };
     }

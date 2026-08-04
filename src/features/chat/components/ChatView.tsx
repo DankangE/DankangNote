@@ -1,3 +1,4 @@
+import { storage } from '@/server/storage';
 import type {
   ChannelPersonView,
   ChannelView,
@@ -26,7 +27,14 @@ export function ChatView({
       {/* key로 채널이 바뀔 때 방 상태(메시지 스트림·입력 중인 초안)를 새로 시작한다.
           Next가 동적 세그먼트마다 서브트리를 갈아 끼우므로 지금도 리마운트되지만,
           그 내부 동작에 실시간 스트림의 정확성을 기대지 않는다. */}
-      <ChatRoom key={channel.id} channelId={channel.id} initialPage={page} viewer={viewer} />
+      <ChatRoom
+        key={channel.id}
+        channelId={channel.id}
+        initialPage={page}
+        viewer={viewer}
+        // 서버 컴포넌트라 storage를 직접 본다 — env 없는 환경에선 첨부 UI가 아예 안 뜬다.
+        attachmentsEnabled={storage !== null}
+      />
     </div>
   );
 }

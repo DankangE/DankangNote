@@ -26,6 +26,20 @@ export type ChatMessageView = {
   reactionVersion: number;
   /** 본문 안 멘션의 위치와 대상. 렌더러가 이 구간만 강조한다(KAN-32). */
   mentions: MentionSpan[];
+  /** 이 메시지의 첨부 (KAN-35). 없으면 빈 배열. 본문이 비고 첨부만 있는 메시지도 있다. */
+  attachments: AttachmentView[];
+};
+
+/**
+ * 첨부 하나의 뷰 (KAN-35). URL이 없는 것은 의도다 — 접근은 항상
+ * `/api/chat/attachments/[id]`를 거쳐 매 요청 판정 후 짧은 presigned URL로 302 한다.
+ * 스토리지 URL을 여기 실으면 만료가 화면 수명과 어긋나고, 발급 시점 판정에 영영 기댄다.
+ */
+export type AttachmentView = {
+  id: string;
+  fileName: string;
+  contentType: string;
+  size: number;
 };
 
 /** 이모지 하나에 대한 집계. mine은 보는 사람마다 다르므로 조회 시점에 서버가 채운다. */
