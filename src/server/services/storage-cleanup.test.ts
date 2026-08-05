@@ -112,7 +112,7 @@ describe('sweepAbandonedPending — 버려진 pending 걷기', () => {
 });
 
 describe('deleteOrganization — 조직 프리픽스 예약', () => {
-  it('조직 파기와 같은 트랜잭션으로 프리픽스 정리를 예약한다', async () => {
+  it('조직 파기가 프리픽스 정리를 예약한다 — 행은 cascade로 사라져도 좌표가 남는다', async () => {
     await createAttachment({});
     await deleteOrganization(ORG_A);
 
@@ -131,7 +131,7 @@ describe('deleteOrganization — 조직 프리픽스 예약', () => {
   });
 });
 
-describe('deleteChannel — cascade 전에 키를 예약', () => {
+describe('deleteChannel — 지워질 첨부의 키를 예약', () => {
   const CH_DEL = 'chan_a_del';
 
   beforeEach(async () => {
@@ -229,6 +229,35 @@ describe('processStorageCleanup — outbox를 스토리지 삭제로', () => {
     // 행이 곧 재시도 예약이다 — 스토리지가 살아나면 다음 실행이 마저 지운다.
     expect(await processStorageCleanup()).toEqual({ processed: 1, failed: 0 });
     expect(await prisma.storageCleanup.count()).toBe(0);
+  });
+
+  it('일괄 삭제의 부분 실패(Errors)는 성공이 아니다 — 행을 남겨 재시도 근거를 지킨다', async () => {
+    // Quiet: true라 응답의 Errors가 유일한 실패 신호다 — 이걸 성공으로 뭉개면 outbox 행이
+    // 사라져 남은 오브젝트를 다시 찾을 방법이 없다(storage.ts의 throw가 지키는 계약).
+    const prefix = attachmentKeyPrefix(ORG_A);
+    await enqueue('prefix', prefix, PAST_GRACE());
+    send.mockImplementation(async (command: unknown) => {
+      if (command instanceof ListObjectsV2Command) {
+        return { Contents: [{ Key: `${prefix}1` }] };
+      }
+      return { Errors: [{ Key: `${prefix}1`, Code: 'AccessDenied', Message: '삭제 권한 없음' }] };
+    });
+
+    expect(await processStorageCleanup()).toEqual({ processed: 0, failed: 1 });
+    const row = await prisma.storageCleanup.findFirstOrThrow();
+    expect(row.attempts).toBe(1);
+    expect(row.lastError).toContain('AccessDenied');
+  });
+
+  it('알 수 없는 kind는 성공으로 뭉개지 않는다 — fail-closed로 남긴다', async () => {
+    // else를 key 삭제 catch-all로 두면, 미래의 enqueue 지점이 kind를 잘못 적는 순간
+    // 프리픽스 좌표를 키 하나로 지운 척하고 행을 내린다 — 복구 근거가 사라진다.
+    await enqueue('Prefix', 'org/org_a/att/', PAST_GRACE());
+
+    expect(await processStorageCleanup()).toEqual({ processed: 0, failed: 1 });
+    expect(send).not.toHaveBeenCalled();
+    const row = await prisma.storageCleanup.findFirstOrThrow();
+    expect(row.lastError).toContain('알 수 없는 kind');
   });
 
   it('실행 상한에 걸린 프리픽스는 실패가 아니라 미완이다 — 행을 남겨 다음 실행이 잇는다', async () => {

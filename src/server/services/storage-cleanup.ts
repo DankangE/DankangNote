@@ -25,12 +25,18 @@ export const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  * outbox 행을 만든 지 이만큼 지나야 처리한다. presign TTL보다 길어야 하는 것이 핵심이다:
  * 채널 삭제로 enqueue된 키의 업로드가 아직 진행 중일 수 있다 — 지금 지우면 그 뒤에
  * 업로드가 완료돼 오브젝트가 되살아나고, 행은 이미 처리돼 사라져 영영 고아가 된다.
- * TTL이 지나면 새 업로드는 시작될 수 없으므로 그 뒤의 삭제는 최종적이다.
+ * TTL이 지나면 새 업로드는 **시작**될 수 없다. 만료 직전에 시작해 유예를 넘겨 완료되는
+ * 업로드는 정책 만료의 검증 시점(구현별 세부)에 따라 이론상 남을 수 있는데, 어긋나는
+ * 방향이 고아 잔존뿐이라(산 데이터 삭제 아님) 유예를 늘리는 것으로만 대응한다.
  */
 export const PROCESS_GRACE_MS = (UPLOAD_TTL_SECONDS + 5 * 60) * 1000;
 
-/** 한 실행이 집는 outbox 행 수 — cron 호출 하나의 실행 시간을 예측 가능하게 묶는다. */
-const PROCESS_BATCH_SIZE = 50;
+/**
+ * 한 실행이 집는 outbox 행 수 — cron 호출 하나의 실행 시간을 예측 가능하게 묶는다
+ * (서버리스 함수의 실행 시간 상한 안). 유입이 이보다 크면 백로그는 다음 실행으로 밀린다 —
+ * 지워야 할 것이 밀리는 것이므로, 밀림이 관측되면 cron을 더 자주 돌리는 쪽으로 푼다.
+ */
+const PROCESS_BATCH_SIZE = 200;
 
 /**
  * 전송 없이 버려진 pending 행을 걷어 키를 outbox로 옮긴다. 반환은 옮긴 행 수.
@@ -38,13 +44,25 @@ const PROCESS_BATCH_SIZE = 50;
  * DELETE … RETURNING 한 문장이라 '지운 행'과 '적을 키'가 원자로 일치한다 — findMany 후
  * deleteMany로 가르면 그 사이에 바인딩된 행이 조회에는 잡히고 삭제 조건(messageId null)
  * 에서는 빠져, 산 첨부의 키가 outbox에 들어간다.
+ *
+ * 배치 상한(LIMIT)이 있는 이유: 무제한 DELETE는 첫 도입 시점의 누적 백로그에서 interactive
+ * 트랜잭션 타임아웃에 걸려 통째로 롤백되기를 반복한다 — 상한을 두면 실행마다 앞으로 간다.
+ * 바깥 WHERE에 messageId IS NULL을 반복하는 것은 장식이 아니다: 동시에 바인딩된 행을
+ * DELETE의 재평가(EPQ)가 이 조건으로 건너뛴다 — 서브쿼리 id 목록은 문장 스냅샷이라
+ * 그것만으로는 못 거른다.
  */
+const SWEEP_BATCH_SIZE = 1000;
+
 export async function sweepAbandonedPending(now: Date = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - PENDING_MAX_AGE_MS);
   return prisma.$transaction(async (tx) => {
     const removed = await tx.$queryRaw<{ key: string }[]>`
       DELETE FROM "MessageAttachment"
-      WHERE "messageId" IS NULL AND "createdAt" < ${cutoff}
+      WHERE "messageId" IS NULL AND "id" IN (
+        SELECT "id" FROM "MessageAttachment"
+        WHERE "messageId" IS NULL AND "createdAt" < ${cutoff}
+        LIMIT ${SWEEP_BATCH_SIZE}
+      )
       RETURNING "key"`;
     if (removed.length > 0) {
       await tx.storageCleanup.createMany({
@@ -93,8 +111,12 @@ export async function processStorageCleanup(now: Date = new Date()): Promise<Pro
           // 지운다(이미 지운 몫은 사라졌으므로 진행은 앞으로만 간다).
           continue;
         }
-      } else {
+      } else if (task.kind === 'key') {
         await deleteObject(task.target);
+      } else {
+        // 알 수 없는 kind를 key로 뭉개면 안 된다 — 프리픽스 좌표를 키 하나로 지운 척하고
+        // 행을 내려, 그 아래 오브젝트 전부가 복구 근거 없이 남는다. fail-closed로 남긴다.
+        throw new Error(`알 수 없는 kind: ${task.kind}`);
       }
       await prisma.storageCleanup.deleteMany({ where: { id: task.id } });
       processed += 1;

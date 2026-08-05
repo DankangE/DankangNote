@@ -435,7 +435,8 @@ export async function deleteChannel(
     // cascade가 지울 첨부의 스토리지 키를 삭제 전에 읽어 둔다(KAN-70) — 행이 사라지면
     // 좌표도 사라진다. outbox 기록은 삭제가 실제로 일어났을 때만 커밋한다(아래).
     // 이 조회와 채널 DELETE 사이에 커밋된 신규 pending의 키는 놓친다 — 문장 사이의
-    // 마이크로 경합이라 받아들이고, 조직 삭제의 프리픽스 정리가 최종 안전망이다.
+    // 마이크로 경합이라 받아들인다. 그 고아는 조직이 삭제될 때의 프리픽스 정리에서야
+    // 걷힌다(조직이 살아 있는 동안은 남는다 — 접근 경로는 없고 자리만 차지한다).
     const attachments = await tx.messageAttachment.findMany({
       where: { channelId, orgId },
       select: { key: true },

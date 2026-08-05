@@ -561,7 +561,22 @@ export async function createMessage(
   // 메시지까지 지워지지만, user tombstone 경로에서는 메시지가 남으므로 명시적으로 지운다.
   // 참여 행은 이번에 만든 것만 되돌린다(원래 멤버였다면 건드릴 이유가 없다).
   await assertNotTombstoned([orgId, authorId], async () => {
-    await prisma.chatMessage.deleteMany({ where: { id: message.id } });
+    // 이 보상 삭제는 바인딩된 첨부 행까지 cascade로 지운다 — 키를 outbox로 옮기고 지운다
+    // (KAN-70, deleteChannel과 같은 패턴). 안 하면 sweep도 못 찾는 고아 오브젝트가 남는다
+    // (행이 사라져 좌표가 없고, 조직은 살아 있어 프리픽스 정리도 안 온다).
+    await prisma.$transaction(async (tx) => {
+      const orphaned = await tx.messageAttachment.findMany({
+        where: { messageId: message.id },
+        select: { key: true },
+      });
+      await tx.chatMessage.deleteMany({ where: { id: message.id } });
+      if (orphaned.length > 0) {
+        await tx.storageCleanup.createMany({
+          data: orphaned.map((a) => ({ kind: 'key', target: a.key })),
+          skipDuplicates: true,
+        });
+      }
+    });
     if (joined) {
       await prisma.channelMember.deleteMany({ where: { channelId, userId: authorId } });
     }
