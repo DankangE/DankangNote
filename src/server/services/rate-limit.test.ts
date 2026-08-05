@@ -49,6 +49,21 @@ describe('allowOnceEvery (KAN-57)', () => {
     expect(await allowOnceEvery(INTERVAL_MS, USER, RESOURCE)).toBe(true);
   });
 
+  it('간격의 절반만 지났으면 여전히 거부된다', async () => {
+    // 간격의 '단위'를 고정한다 — 이 테스트가 없으면 쿼리의 interval 단위가 어긋나
+    // 문턱이 1000배 짧아져도(millisecond→microsecond) 나머지 테스트는 전부 초록이다.
+    await allowOnceEvery(INTERVAL_MS, USER, RESOURCE);
+    await ageLastAllowed(USER, RESOURCE, INTERVAL_MS / 2);
+
+    expect(await allowOnceEvery(INTERVAL_MS, USER, RESOURCE)).toBe(false);
+  });
+
+  it('양수가 아닌 간격은 throw한다 — 리밋이 조용히 꺼진 채 지나가지 않게', async () => {
+    await expect(allowOnceEvery(0, USER, RESOURCE)).rejects.toThrow();
+    await expect(allowOnceEvery(-1, USER, RESOURCE)).rejects.toThrow();
+    await expect(allowOnceEvery(Number.NaN, USER, RESOURCE)).rejects.toThrow();
+  });
+
   it('리소스가 다르면 서로 세지 않는다', async () => {
     await allowOnceEvery(INTERVAL_MS, USER, 'typing:chan_x');
 

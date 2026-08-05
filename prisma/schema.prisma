@@ -402,14 +402,21 @@ model ClerkTombstone {
 /// userId에 FK가 없는 것은 ChatMessage.authorId와 같은 이유다(웹훅 동기화 순서에 묶이면
 /// 안 된다). orgId가 없는 것은 이 행이 테넌트 데이터가 아니어서다 — 내용 없이 불투명
 /// 리소스 키와 시각뿐이고, 사람 단위로 스코프되며, 어떤 화면에도 조회되지 않는다.
-/// resource는 호출부가 실존을 검증한 id로만 만들므로(rate-limit.ts 주석) 행 수는
-/// 사용자 × 접근 가능한 리소스로 유계고, 낡은 행은 의미만 잃을 뿐 해가 없어 정리를
-/// 서두르지 않는다. lastAt은 앱 시계가 아니라 DB의 now()다 — 판정과 기록이 같은 시계여야
-/// 인스턴스 스큐가 간격을 왜곡하지 못한다(규약 20과 같은 이유).
+/// resource에는 유계 집합의 키만 온다(rate-limit.ts 계약 — 첫 사용처는 정적 'typing').
+/// 그래서 행 수는 사용자 × 리소스 종류로 유계고 요청이 행 수를 늘릴 수 없다. 다만 FK가
+/// 없어 떠난 사용자의 행은 남는다 — 규약 6의 잔여로, 낡은 행 정리(lastAt 기준 주기
+/// 삭제)는 KAN-48에 매달아 둔다.
+///
+/// lastAt은 앱 시계가 아니라 DB의 now()다 — 판정과 기록이 같은 시계여야 인스턴스
+/// 스큐가 간격을 왜곡하지 못한다(규약 20과 같은 이유). @default(now())를 일부러 안 둔
+/// 것도 같은 결이다 — 기본값에 기대는 순간 Prisma가 앱 시계를 바인드해 보낸다(규약 20).
+/// 전 스키마에서 이 컬럼만 timestamptz인 이유: 값을 쓰고 비교하는 주체가 앱이 아니라
+/// DB(now())인 유일한 컬럼이라, timestamp(3)이면 timestamptz→timestamp 캐스트가 세션
+/// TimeZone을 타서 UTC가 아닌 배포에서 DST 전환이 간격 판정을 시간 단위로 왜곡한다.
 model RateLimit {
   userId   String
   resource String
-  lastAt   DateTime
+  lastAt   DateTime @db.Timestamptz(3)
 
   @@id([userId, resource])
 }
