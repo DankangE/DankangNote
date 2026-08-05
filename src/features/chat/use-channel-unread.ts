@@ -1,13 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import PusherClient from 'pusher-js';
 import { fetchUnreadCounts } from '@/features/chat/api/history';
+import {
+  acquirePusher,
+  releasePusher,
+  subscribeShared,
+  unsubscribeShared,
+} from '@/features/chat/pusher-connection';
 import { CHAT_MESSAGE_EVENT, chatChannel } from '@/features/chat/realtime';
 import type { ChatMessageView, ChannelView } from '@/features/chat/types';
-
-const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY;
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
 
 type Counts = Record<string, number>;
 
@@ -31,9 +33,9 @@ function seed(channels: ChannelView[]): Counts {
  * 클라이언트가 채널 수만큼 인증 요청을 보낸다. 사람 단위 '활동' 이벤트를 따로 쏘는 방법도
  * 있지만, 그건 메시지마다 참여자 수만큼 트리거가 나가는 fan-out이라 더 비싸다.
  *
- * 소켓은 ChatRoom의 것과 별개다. 공유하려면 커넥션을 컨텍스트로 들어올려야 하는데,
- * 그건 채팅 전체의 구조 변경이라 이 티켓의 범위를 넘는다(연결 2개까지는 Pusher의
- * 클라이언트 제한 안이다).
+ * 소켓은 ChatRoom·프레즌스와 같은 공유 커넥션이다(KAN-56). 활성 채널은 ChatRoom도 같은
+ * 이름을 구독하므로 구독·해지가 채널 단위 refcount를 거친다 — pusher-js가 이름당 인증을
+ * 한 번만 보내므로 겹침이 곧 인증 절약이고, 해지는 마지막 반납에서만 나간다.
  */
 export function useChannelUnread(
   channels: ChannelView[],
@@ -126,18 +128,18 @@ export function useChannelUnread(
     .join(',');
 
   useEffect(() => {
-    if (!PUSHER_KEY || !PUSHER_CLUSTER || memberIds === '') {
+    if (memberIds === '') {
+      return;
+    }
+    const client = acquirePusher();
+    if (!client) {
       return;
     }
     const ids = memberIds.split(',');
-    const client = new PusherClient(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      channelAuthorization: { transport: 'ajax', endpoint: '/api/pusher/auth' },
-    });
     const bound = ids.map((id) => {
-      const channel = client.subscribe(chatChannel(id));
+      const channel = subscribeShared(client, chatChannel(id));
       const onMessage = (message: ChatMessageView) => {
-        // 안읽음의 정의는 서버(channel-reads.countableWhere)와 같아야 한다 —
+        // 안읽음의 정의는 서버(channel-reads.unreadCounts의 WHERE)와 같아야 한다 —
         // 답글은 채널 본문에 안 보이고, 내 말은 나에게 안읽음이 아니다.
         if (message.parentId || message.authorId === viewerId) return;
         // 보고 있는 채널이어도 그냥 올린다. 여기서 activeId를 보려면 ref가 필요한데,
@@ -159,15 +161,21 @@ export function useChannelUnread(
       const onSubscribed = () => resync();
       channel.bind(CHAT_MESSAGE_EVENT, onMessage);
       channel.bind('pusher:subscription_succeeded', onSubscribed);
+      // 공유 소켓에서는 다른 쪽(ChatRoom)이 먼저 구독을 끝냈을 수 있다(KAN-56) — 그러면
+      // succeeded는 이미 지나간 이벤트라 위 bind에 안 걸리고, 이 채널의 초기 재동기가
+      // 통째로 빠진다. 이미 살아 있는 구독에 합류한 경우엔 지금 맞춘다.
+      if (channel.subscribed) {
+        resync();
+      }
       return { channel, onMessage, onSubscribed };
     });
     return () => {
       for (const { channel, onMessage, onSubscribed } of bound) {
         channel.unbind(CHAT_MESSAGE_EVENT, onMessage);
         channel.unbind('pusher:subscription_succeeded', onSubscribed);
-        client.unsubscribe(channel.name);
+        unsubscribeShared(client, channel.name);
       }
-      client.disconnect();
+      releasePusher();
     };
     // activeId는 의존성에 없다 — 채널을 옮길 때마다 전 채널을 재구독하면 이동마다
     // 인증 요청이 채널 수만큼 다시 나간다. 활성 채널 판정은 렌더에서 한다(위 주석).

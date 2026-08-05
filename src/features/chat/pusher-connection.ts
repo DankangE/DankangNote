@@ -1,5 +1,6 @@
 'use client';
 
+import type { Channel } from 'pusher-js';
 import PusherClient from 'pusher-js';
 
 // NEXT_PUBLIC_*은 빌드 시 인라인된다 — 없으면 실시간 없이 동작한다(키 없는 로컬 개발 허용).
@@ -20,13 +21,15 @@ export const REALTIME_ENABLED = Boolean(PUSHER_KEY && PUSHER_CLUSTER);
  * StrictMode의 이중 렌더가 소켓을 하나 흘린다. 모듈이 들고 refcount로 수명을 세는 쪽이
  * 양쪽 다 없다.
  *
- * 안읽음 훅·알림 벨은 아직 각자 소켓을 연다. 그쪽까지 합치려면 채널 이름 단위 refcount가
- * 필요해서다 — 그 훅들은 지금 보고 있는 채널을 ChatRoom과 겹쳐 구독하므로, 소켓만 공유하면
- * 한쪽의 unsubscribe가 다른 쪽 구독을 조용히 끊는다. 커넥션 정리는 KAN-56의 몫이다.
+ * KAN-56에서 안읽음 훅·알림 벨도 이 소켓으로 합쳤다 — 한 페이지의 웹소켓이 3개에서
+ * 1개가 되고, 활성 채널의 이중 인증 POST가 사라진다. 그게 가능하려면 구독도 채널 이름
+ * 단위 refcount여야 한다(아래 subscribeShared 주석).
  */
 let shared: PusherClient | null = null;
 let holders = 0;
 let closing: ReturnType<typeof setTimeout> | null = null;
+// 채널 이름 → 그 이름을 빌린 곳의 수. 소켓과 수명이 같으므로 소켓을 끊을 때 함께 비운다.
+const channelHolders = new Map<string, number>();
 
 /**
  * 소켓을 빌린다. 실시간이 꺼진 환경이면 null이고, **그때는 반납하지 않는다**
@@ -64,6 +67,37 @@ export function releasePusher(): void {
     if (holders === 0 && shared) {
       shared.disconnect();
       shared = null;
+      // 구독은 소켓과 함께 죽는다. 모든 빌린 쪽이 이미 반납했으므로(holders 0) 맵은
+      // 원칙적으로 비어 있지만, 정리를 소켓 수명에 묶어 잔존 카운트가 다음 소켓으로
+      // 넘어가는 경로를 막는다.
+      channelHolders.clear();
     }
   }, CLOSE_GRACE_MS);
+}
+
+/**
+ * 공유 소켓에서 채널을 구독한다 (KAN-56).
+ *
+ * 같은 채널을 여러 곳이 겹쳐 구독한다 — 활성 채팅 채널은 ChatRoom(메시지 렌더)과 안읽음
+ * 훅(뱃지)이 동시에 듣는다. pusher-js의 subscribe는 이름당 한 번만 인증하고 같은 Channel
+ * 객체를 돌려주므로 겹침 자체는 공짜지만, **unsubscribe는 이름 전체를 끊는다** — 한쪽이
+ * 나가면 다른 쪽 구독이 조용히 죽는다. 그래서 반납은 짝인 unsubscribeShared로만 하고,
+ * 마지막 반납에서만 실제 unsubscribe가 나간다.
+ *
+ * bind/unbind는 이 관리 밖이다 — 핸들러는 각자 붙이고 각자 떼면 겹쳐도 서로 안 밟는다.
+ */
+export function subscribeShared(client: PusherClient, name: string): Channel {
+  channelHolders.set(name, (channelHolders.get(name) ?? 0) + 1);
+  return client.subscribe(name);
+}
+
+/** subscribeShared의 반납 짝. 마지막 반납이면 실제로 구독을 끊는다. */
+export function unsubscribeShared(client: PusherClient, name: string): void {
+  const remaining = (channelHolders.get(name) ?? 1) - 1;
+  if (remaining > 0) {
+    channelHolders.set(name, remaining);
+    return;
+  }
+  channelHolders.delete(name);
+  client.unsubscribe(name);
 }

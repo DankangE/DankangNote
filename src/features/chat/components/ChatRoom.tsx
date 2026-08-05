@@ -11,6 +11,8 @@ import { fetchMentionCandidates, fetchOlderMessages } from '@/features/chat/api/
 import {
   acquirePusher,
   releasePusher,
+  subscribeShared,
+  unsubscribeShared,
   REALTIME_ENABLED,
 } from '@/features/chat/pusher-connection';
 import { CHAT_MESSAGE_EVENT, CHAT_REACTION_EVENT, chatChannel } from '@/features/chat/realtime';
@@ -285,7 +287,8 @@ export function ChatRoom({
     if (!client) {
       return;
     }
-    const channel = client.subscribe(chatChannel(channelId));
+    // 같은 채널을 안읽음 훅도 듣고 있다 — 구독·해지는 채널 단위 refcount를 거친다(KAN-56).
+    const channel = subscribeShared(client, chatChannel(channelId));
     const onMessage = (message: ChatMessageView) => {
       // 다른 채널의 이벤트는 버린다 — 채널 전환 직후 이전 구독이 잠깐 살아 있을 수 있다.
       if (message.channelId !== channelId) return;
@@ -312,7 +315,7 @@ export function ChatRoom({
     return () => {
       channel.unbind(CHAT_MESSAGE_EVENT, onMessage);
       channel.unbind(CHAT_REACTION_EVENT, onReaction);
-      client.unsubscribe(chatChannel(channelId));
+      unsubscribeShared(client, chatChannel(channelId));
       releasePusher();
     };
   }, [channelId, countReply, receiveReaction, stopTypingFor]);

@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { Bell } from 'lucide-react';
-import PusherClient from 'pusher-js';
+import {
+  acquirePusher,
+  releasePusher,
+  subscribeShared,
+  unsubscribeShared,
+} from '@/features/chat/pusher-connection';
 import { Button } from '@/components/ui/button';
 import { markNotificationsReadAction } from '@/features/notifications/api/actions';
 import {
@@ -13,9 +18,6 @@ import {
 } from '@/features/notifications/api/queries';
 import { NOTIFICATION_EVENT, notificationChannel } from '@/features/notifications/realtime';
 import { NotificationPanel } from './NotificationPanel';
-
-const PUSHER_KEY = process.env.NEXT_PUBLIC_PUSHER_KEY;
-const PUSHER_CLUSTER = process.env.NEXT_PUBLIC_PUSHER_CLUSTER;
 
 // 뱃지에 표시할 최대 숫자. 그 이상은 "99+"로 접는다.
 const BADGE_MAX = 99;
@@ -110,21 +112,23 @@ export function NotificationBell() {
   }, [orgId, userId, applyPage]);
 
   useEffect(() => {
-    if (!orgId || !userId || !PUSHER_KEY || !PUSHER_CLUSTER) {
+    if (!orgId || !userId) {
       return;
     }
-    const client = new PusherClient(PUSHER_KEY, {
-      cluster: PUSHER_CLUSTER,
-      channelAuthorization: { transport: 'ajax', endpoint: '/api/pusher/auth' },
-    });
+    // 채팅과 같은 공유 소켓을 쓴다(KAN-56) — 알림 채널 이름은 이 컴포넌트만 구독하지만,
+    // 소켓 하나에 웹소켓·재연결 처리가 모이고 페이지의 커넥션이 1개로 줄어든다.
+    const client = acquirePusher();
+    if (!client) {
+      return;
+    }
     const name = notificationChannel(orgId, userId);
-    const channel = client.subscribe(name);
+    const channel = subscribeShared(client, name);
     const onNew = () => scheduleRefresh();
     channel.bind(NOTIFICATION_EVENT, onNew);
     return () => {
       channel.unbind(NOTIFICATION_EVENT, onNew);
-      client.unsubscribe(name);
-      client.disconnect();
+      unsubscribeShared(client, name);
+      releasePusher();
     };
   }, [orgId, userId, scheduleRefresh]);
 
