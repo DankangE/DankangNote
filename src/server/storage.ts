@@ -1,6 +1,12 @@
 import 'server-only';
 
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { MAX_ATTACHMENT_BYTES } from '@/features/chat/attachments';
@@ -33,8 +39,17 @@ export const storage: { client: S3Client; bucket: string } | null = configured
     }
   : null;
 
+/**
+ * 조직의 첨부 오브젝트가 전부 이 아래에 있다 — 키 발급(attachments.ts)과 조직 삭제 시
+ * 프리픽스 정리(storage-cleanup.ts)가 같은 문자열을 봐야 하므로 여기 한 곳에서 만든다.
+ * 형식이 어긋나면 정리가 빈 프리픽스를 지우며 성공으로 끝난다 — 어긋날 자리를 없앤다.
+ */
+export function attachmentKeyPrefix(orgId: string): string {
+  return `org/${orgId}/att/`;
+}
+
 /** 업로드 presign 유효 시간. 큰 파일의 느린 회선을 감안해 넉넉히 둔다. */
-const UPLOAD_TTL_SECONDS = 600;
+export const UPLOAD_TTL_SECONDS = 600;
 /**
  * 다운로드 presign 유효 시간. 우리 라우트가 매 요청 접근 판정 후 새로 발급하므로 짧을수록
  * 좋다 — 이 URL이 밖으로 새도(주소 복사·리퍼러) 이 시간 뒤에는 죽는다.
@@ -103,4 +118,58 @@ export function presignAttachmentDownload(
     }),
     { expiresIn: DOWNLOAD_TTL_SECONDS },
   );
+}
+
+/**
+ * 오브젝트 단건 삭제 (KAN-70). S3 DELETE는 없는 키에도 성공으로 답하므로 재시도에 멱등하다
+ * — outbox 처리(storage-cleanup.ts)가 몇 번을 다시 돌아도 결과가 같다.
+ */
+export async function deleteObject(key: string): Promise<void> {
+  if (!storage) {
+    return;
+  }
+  await storage.client.send(new DeleteObjectCommand({ Bucket: storage.bucket, Key: key }));
+}
+
+/** 한 번의 프리픽스 정리 실행이 지울 상한 — list 1회 최대치 × 배치 수. */
+const PREFIX_DELETE_MAX_BATCHES = 10;
+
+/**
+ * 프리픽스 아래 오브젝트를 전부 지운다 (KAN-70, 조직 삭제). list → 일괄 삭제를 목록이 빌
+ * 때까지 반복하되, 한 실행에 상한을 둔다 — cron 호출 하나가 거대 조직의 삭제를 붙들고
+ * 있지 않게 한다. 다 못 지웠으면 false를 돌려 outbox 행을 남긴다: 지운 것은 이미
+ * 사라졌으므로 다음 실행이 이어서 지우면 되고, 재실행은 멱등하다.
+ *
+ * 일괄 삭제의 부분 실패(Errors)는 throw한다 — 성공으로 답하면 outbox 행이 사라져 남은
+ * 오브젝트를 다시 찾을 방법이 없다.
+ */
+export async function deleteObjectsUnderPrefix(prefix: string): Promise<boolean> {
+  if (!storage) {
+    return false;
+  }
+  for (let batch = 0; batch < PREFIX_DELETE_MAX_BATCHES; batch += 1) {
+    // 삭제로 목록이 줄었으므로 ContinuationToken 없이 매번 처음부터 다시 본다.
+    const listed = await storage.client.send(
+      new ListObjectsV2Command({ Bucket: storage.bucket, Prefix: prefix, MaxKeys: 1000 }),
+    );
+    const objects = (listed.Contents ?? []).flatMap((entry) =>
+      entry.Key ? [{ Key: entry.Key }] : [],
+    );
+    if (objects.length === 0) {
+      return true;
+    }
+    const result = await storage.client.send(
+      new DeleteObjectsCommand({
+        Bucket: storage.bucket,
+        Delete: { Objects: objects, Quiet: true },
+      }),
+    );
+    const failure = result.Errors?.[0];
+    if (failure) {
+      throw new Error(
+        `프리픽스 삭제 부분 실패 (${result.Errors?.length}건): ${failure.Code ?? ''} ${failure.Message ?? ''}`,
+      );
+    }
+  }
+  return false;
 }
