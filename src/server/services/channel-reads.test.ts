@@ -55,6 +55,22 @@ describe('안읽음 세기 (KAN-33)', () => {
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
   });
 
+  it('다른 워크스페이스의 참여는 집계에 섞이지 않는다', async () => {
+    // 격리 필터는 두 겹이다 — memberships 조회의 channel: { orgId }와 raw SQL의
+    // m."orgId". 어느 한쪽만 있어도 결과는 같아서(실측: 한쪽 삭제는 통과, 양쪽 삭제만
+    // 실패) 개별 필터의 삭제는 못 잡지만, 마지막 한 겹까지 사라지는 것은 여기서 잡는다.
+    await join(CHANNEL_A, USER_OWNER);
+    await join(CHANNEL_B, USER_OWNER);
+    await say(CHANNEL_A, USER_OTHER, 'A의 말');
+    await createMessage(ORG_B, USER_OTHER, CHANNEL_B, 'B의 말');
+
+    const counts = await unreadCounts(ORG_A, USER_OWNER);
+    expect(counts.get(CHANNEL_A)).toBe(1);
+    expect(counts.has(CHANNEL_B)).toBe(false);
+    // 반대쪽 org로 물으면 그 채널이 세어진다 — 위 miss가 '데이터가 없어서'가 아님을 고정한다.
+    expect((await unreadCounts(ORG_B, USER_OWNER)).get(CHANNEL_B)).toBe(1);
+  });
+
   it('스레드 답글은 세지 않는다', async () => {
     // 답글은 채널 본문에 안 보이므로(KAN-30) 뱃지를 눌러 가도 찾을 수 없다.
     await join(CHANNEL_A, USER_OWNER);
