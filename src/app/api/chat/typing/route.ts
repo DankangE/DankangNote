@@ -1,8 +1,16 @@
 import { getAuthState } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
 import * as channelService from '@/server/services/channels';
+import { allowOnceEvery } from '@/server/services/rate-limit';
 import { channelRefSchema } from '@/features/chat/api/validation';
+import { TYPING_PING_MS } from '@/features/chat/presence';
 import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
+
+// 서버가 강제하는 최소 간격은 클라이언트 핑 간격에서 파생하되 짧게 잡는다 — 걸러야 할
+// 것은 초당 수십 건의 루프이지, 네트워크 지터로 2.5초짜리 연속 핑이 압축돼 도착한 정상
+// 클라이언트가 아니다. 상수를 따로 적지 않고 파생하는 이유: 클라이언트 간격을 조정할 때
+// 이 값이 따라오지 않으면 정상 트래픽이 리밋에 걸리는 사고가 조용히 생긴다.
+const TYPING_MIN_INTERVAL_MS = TYPING_PING_MS * 0.8;
 
 /**
  * '나 지금 입력 중' 핑 (KAN-34).
@@ -18,9 +26,10 @@ import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
  * 페이로드는 userId 하나뿐이다 — 표시 이름은 이미 프레즌스 멤버 정보로 가 있고, 수신 측이
  * 거기서 찾는다. 이름을 여기 실으면 매 핑마다 Clerk을 다시 읽어야 한다.
  *
- * 핑 간격(TYPING_PING_MS)을 지키는 주체는 아직 클라이언트뿐이다 — 여기를 루프로 때리면
- * Pusher 쿼터를 태울 수 있다. 저장소에 레이트 리밋 기반이 없어 이 라우트만 인메모리로
- * 막으면 인스턴스마다 따로 세어 실효가 없으므로, 공용 헬퍼와 함께 KAN-57에서 다룬다.
+ * 핑 간격은 서버도 강제한다(KAN-57) — 클라이언트 스로틀만 믿으면 fetch 루프 한 줄이
+ * Pusher 쿼터를 태우고 같은 채널 화면 전부에 이벤트를 꽂는다. 판정은 인스턴스 간 공유되는
+ * allowOnceEvery(DB 한 문장)가 한다 — 인메모리 카운터는 서버리스 인스턴스마다 따로 세어
+ * 실효가 없다.
  */
 export async function POST(request: Request) {
   const { userId, orgId } = await getAuthState();
@@ -44,6 +53,14 @@ export async function POST(request: Request) {
   // 뷰가 아니라 canAccessChannel을 쓰는 이유는 빈도다(그쪽 주석 참조).
   if (!(await channelService.canAccessChannel(orgId, userId, parsed.data.id))) {
     return new Response('Not Found', { status: 404 });
+  }
+
+  // 리밋은 접근 판정 **뒤**다 — 검증 전 channelId를 리소스 키로 쓰면 임의 id 스프레이가
+  // RateLimit 테이블에 행을 무한히 만든다(rate-limit.ts 주석). 초과 응답이 429가 아니라
+  // 조용한 204인 것은 의도다: 타이핑 표시는 부가 정보라 정상 클라이언트는 응답을 보지
+  // 않고, 상태 코드로 리밋 여부를 구분해 줘 봐야 루프를 도는 쪽에 신호만 준다.
+  if (!(await allowOnceEvery(TYPING_MIN_INTERVAL_MS, userId, `typing:${parsed.data.id}`))) {
+    return new Response(null, { status: 204 });
   }
 
   if (!pusherServer) {

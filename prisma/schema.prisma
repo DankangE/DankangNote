@@ -391,6 +391,29 @@ model ClerkTombstone {
   deletedAt DateTime @default(now())
 }
 
+/// (userId, resource) 최소 간격 레이트 리밋의 기록 (KAN-57) — 마지막으로 허용된 시각 한 행.
+///
+/// 카운터·슬라이딩 윈도우가 아니라 시각 하나인 이유는 읽음 커서와 같다(규약 16): 증감을
+/// 놓치면 어긋난 채 굳는 파생 수치를 들지 않고, '마지막 허용에서 충분히 지났는가'만 다시
+/// 물으면 스스로 회복한다. 저장소가 Postgres인 이유: 인스턴스 간 공유되는 저장소가 스택에
+/// 이것뿐이다 — 전용 스토어(Redis류)는 새 계정 연결이 필요한데 그게 KAN-27이 막힌 지점이고,
+/// 지키려는 것(Pusher 쿼터·팬아웃)이 DB 문장 하나보다 훨씬 비싸다.
+///
+/// userId에 FK가 없는 것은 ChatMessage.authorId와 같은 이유다(웹훅 동기화 순서에 묶이면
+/// 안 된다). orgId가 없는 것은 이 행이 테넌트 데이터가 아니어서다 — 내용 없이 불투명
+/// 리소스 키와 시각뿐이고, 사람 단위로 스코프되며, 어떤 화면에도 조회되지 않는다.
+/// resource는 호출부가 실존을 검증한 id로만 만들므로(rate-limit.ts 주석) 행 수는
+/// 사용자 × 접근 가능한 리소스로 유계고, 낡은 행은 의미만 잃을 뿐 해가 없어 정리를
+/// 서두르지 않는다. lastAt은 앱 시계가 아니라 DB의 now()다 — 판정과 기록이 같은 시계여야
+/// 인스턴스 스큐가 간격을 왜곡하지 못한다(규약 20과 같은 이유).
+model RateLimit {
+  userId   String
+  resource String
+  lastAt   DateTime
+
+  @@id([userId, resource])
+}
+
 /// 칸반 보드 컬럼 (워크스페이스당 보드 1개, KAN-17). orgId는 Note와 같은 FK 패턴 —
 /// 조직 삭제 시 컬럼·카드까지 Cascade로 파기된다. position은 표시 순서(정수, 0부터).
 model BoardColumn {
