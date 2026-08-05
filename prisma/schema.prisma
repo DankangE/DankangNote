@@ -250,6 +250,33 @@ model MessageAttachment {
   @@index([orgId])
 }
 
+/// 스토리지 정리 outbox (KAN-70) — '지울 오브젝트의 좌표'를 행으로 먼저 적고, 실제
+/// 스토리지 호출은 cron 스윕이 나중에 한다(storage-cleanup.ts).
+///
+/// 삭제 트랜잭션(조직 웹훅·채널 삭제)에 스토리지 API를 직접 넣지 않는 이유: 부분 실패
+/// (DB는 지웠는데 스토리지 호출이 실패)라는 새 상태가 생기고, 재시도 시점엔 첨부 행이
+/// 이미 cascade로 사라져 지울 키 목록을 모른다. 좌표를 같은 트랜잭션에서 여기 남기면
+/// DB 커밋과 '지울 것' 기록이 원자이고, 스토리지 삭제는 멱등이라 몇 번이고 다시 시도할
+/// 수 있다.
+///
+/// 의도적으로 orgId FK가 없다 — 이 행은 조직 행이 파기된 **뒤에도** 남아야 하는 운영
+/// 데이터다(남는 것이 존재 이유다). 읽는 주체도 테넌트가 아니라 cron뿐이다.
+model StorageCleanup {
+  id        String   @id @default(cuid())
+  /// 'key' = 오브젝트 단건(채널 삭제·버려진 pending), 'prefix' = 프리픽스 전체(조직 삭제 —
+  /// 행 없이도 org/{orgId}/att/ 라는 좌표가 성립한다).
+  kind      String
+  /// 지울 좌표(키 또는 프리픽스). unique라 웹훅 재배달·중복 스윕의 enqueue가 멱등하다
+  /// (createMany skipDuplicates).
+  target    String   @unique
+  /// 실패 횟수 — 처리 순서를 뒤로 미는 용도(포이즌 행이 새 작업을 막지 않게). 상한은 두지
+  /// 않는다: 지울 것이 남아 있는 한 행이 남아 있는 게 맞고, cron 주기 재시도는 싸다.
+  attempts  Int      @default(0)
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 /// 채널 읽음 커서 (KAN-33) — 사람×채널마다 한 행.
 ///
 /// 안읽음을 카운터로 들고 있지 않고 **어디까지 읽었는지**만 남긴다. 카운터는 증감을

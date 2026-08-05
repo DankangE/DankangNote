@@ -431,8 +431,27 @@ export async function deleteChannel(
   }
 
   // 권한·기본채널 조건을 where에 실어 원자적으로 삭제한다(위 조회는 사유 구분용).
-  const { count } = await prisma.channel.deleteMany({
-    where: { ...manageWhere(orgId, actor, channelId), isDefault: false },
+  return prisma.$transaction(async (tx) => {
+    // cascade가 지울 첨부의 스토리지 키를 삭제 전에 읽어 둔다(KAN-70) — 행이 사라지면
+    // 좌표도 사라진다. outbox 기록은 삭제가 실제로 일어났을 때만 커밋한다(아래).
+    // 이 조회와 채널 DELETE 사이에 커밋된 신규 pending의 키는 놓친다 — 문장 사이의
+    // 마이크로 경합이라 받아들이고, 조직 삭제의 프리픽스 정리가 최종 안전망이다.
+    const attachments = await tx.messageAttachment.findMany({
+      where: { channelId, orgId },
+      select: { key: true },
+    });
+    const { count } = await tx.channel.deleteMany({
+      where: { ...manageWhere(orgId, actor, channelId), isDefault: false },
+    });
+    if (count === 0) {
+      return 'notfound';
+    }
+    if (attachments.length > 0) {
+      await tx.storageCleanup.createMany({
+        data: attachments.map((a) => ({ kind: 'key', target: a.key })),
+        skipDuplicates: true,
+      });
+    }
+    return 'ok';
   });
-  return count > 0 ? 'ok' : 'notfound';
 }
