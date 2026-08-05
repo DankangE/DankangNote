@@ -250,4 +250,53 @@ describe('자체 리뷰 반영 (KAN-33)', () => {
 
     expect((await unreadCounts(ORG_A, USER_OWNER)).get(CHANNEL_A)).toBe(1);
   });
+
+  it('채널 수십 개·기준선 혼재에서도 채널별 단순 카운트와 일치한다 (KAN-56)', async () => {
+    // 형태를 VALUES + 스칼라 서브쿼리로 바꾸며 잃기 쉬운 것은 정확성이 아니라 **정의의
+    // 유지**다 — raw SQL의 WHERE(답글 제외·내 메시지 제외·기준선 초과)는 타입이 지켜 주지
+    // 않는다. 채널마다 (참여 기준선만 / 커서가 앞 / 커서가 뒤 / 답글·내 메시지 섞임)을
+    // 흩뿌리고, 채널별로 따로 센 Prisma count와 전량 대조한다.
+    const channels: string[] = [];
+    for (let index = 0; index < 30; index += 1) {
+      const channel = await prisma.channel.create({
+        data: { orgId: ORG_A, name: `부하-${index}` },
+      });
+      channels.push(channel.id);
+      await join(channel.id, USER_OWNER);
+      // 남의 메시지 0~4건 + 내 메시지 1건 + 답글 1건(루트가 있을 때만).
+      let root: string | undefined;
+      for (let n = 0; n < index % 5; n += 1) {
+        const sent = await createMessage(ORG_A, USER_OTHER, channel.id, `남 ${n}`);
+        root ??= sent!.message.id;
+      }
+      await createMessage(ORG_A, USER_OWNER, channel.id, '내 말');
+      if (root) {
+        await createMessage(ORG_A, USER_OTHER, channel.id, '답글', root);
+        // 세 채널 중 하나는 루트 하나를 읽어 커서를 세운다(기준선 혼재).
+        if (index % 3 === 0) {
+          await markChannelRead(ORG_A, USER_OWNER, channel.id, root);
+        }
+      }
+    }
+
+    const counts = await unreadCounts(ORG_A, USER_OWNER);
+    for (const channelId of channels) {
+      const member = await prisma.channelMember.findUniqueOrThrow({
+        where: { channelId_userId: { channelId, userId: USER_OWNER } },
+      });
+      const cursor = await prisma.channelRead.findUnique({
+        where: { channelId_userId: { channelId, userId: USER_OWNER } },
+      });
+      const baseline = Math.max(member.joinedSeq, cursor?.lastReadSeq ?? 0);
+      const expected = await prisma.chatMessage.count({
+        where: {
+          channelId,
+          parentId: null,
+          authorId: { not: USER_OWNER },
+          seq: { gt: baseline },
+        },
+      });
+      expect(counts.get(channelId) ?? 0).toBe(expected);
+    }
+  });
 });

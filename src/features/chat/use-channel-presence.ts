@@ -5,6 +5,8 @@ import { pingTyping } from '@/features/chat/api/history';
 import {
   acquirePusher,
   releasePusher,
+  subscribeShared,
+  unsubscribeShared,
   REALTIME_ENABLED,
 } from '@/features/chat/pusher-connection';
 import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
@@ -66,7 +68,9 @@ export function useChannelPresence({
       return;
     }
     const name = presenceChannel(channelId);
-    const channel = client.subscribe(name);
+    // 프레즌스 이름은 이 훅만 쓰지만, 공유 소켓의 구독은 전부 같은 refcount 규약을 거친다
+    // — 한 군데만 직접 unsubscribe하면 나중에 겹치는 순간 그 자리가 구멍이 된다(KAN-56).
+    const channel = subscribeShared(client, name);
 
     // 구독이 성립하면 현재 멤버 전체가 한 번에 온다(이후로는 추가/제거만 온다).
     const onSubscribed = (current: PusherMembers) => {
@@ -112,7 +116,7 @@ export function useChannelPresence({
       channel.unbind('pusher:member_added', onAdded);
       channel.unbind('pusher:member_removed', onRemoved);
       channel.unbind(CHAT_TYPING_EVENT, onTyping);
-      client.unsubscribe(name);
+      unsubscribeShared(client, name);
       releasePusher();
       // 구독이 끊긴 뒤에도 남아 있으면 방금 떠난 채널의 접속자가 그대로 보인다.
       setMembers([]);
