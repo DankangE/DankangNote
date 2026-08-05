@@ -1,7 +1,12 @@
 import 'server-only';
 
 import { prisma } from '@/server/db';
-import { presignAttachmentDownload, presignAttachmentUpload, storage } from '@/server/storage';
+import {
+  attachmentKeyPrefix,
+  presignAttachmentDownload,
+  presignAttachmentUpload,
+  storage,
+} from '@/server/storage';
 import { canAccessChannel, visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { isInlineImage } from '@/features/chat/attachments';
@@ -58,8 +63,9 @@ export async function createPendingAttachment(
   // 아무 화면에도 보이지 않고(pending), org가 그 사이 지워지면 행도 cascade로 함께 사라진다.
   await assertNotTombstoned([orgId, userId]);
 
-  // 키에 파일명을 넣지 않는다(스키마 주석 참조). org 프리픽스는 나중의 테넌트 단위 정리용.
-  const key = `org/${orgId}/att/${crypto.randomUUID()}`;
+  // 키에 파일명을 넣지 않는다(스키마 주석 참조). org 프리픽스는 조직 삭제 시 테넌트 단위
+  // 정리의 좌표다(KAN-70) — 발급과 정리가 같은 헬퍼를 봐야 하므로 storage.ts에서 만든다.
+  const key = `${attachmentKeyPrefix(orgId)}${crypto.randomUUID()}`;
   const row = await prisma.messageAttachment.create({
     data: {
       orgId,

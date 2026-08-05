@@ -8,6 +8,7 @@ import type {
 
 import { prisma } from '@/server/db';
 import { findTombstoned } from '@/server/services/clerk-tombstone';
+import { attachmentKeyPrefix } from '@/server/storage';
 
 // Clerk가 보내는 payload(UserJSON 등)는 webhooks 엔트리에서 직접 export되지 않는다.
 // 대신 export되는 판별 유니온에서 upsert 이벤트의 data 타입만 파생한다
@@ -218,6 +219,15 @@ export async function deleteUser(id: string): Promise<void> {
 export async function deleteOrganization(id: string): Promise<void> {
   await prisma.$transaction([
     prisma.clerkTombstone.createMany({ data: [{ id }], skipDuplicates: true }),
+    // 첨부 스토리지 오브젝트는 행 cascade가 못 지운다(KAN-70) — 조직 프리픽스라는 좌표를
+    // 같은 트랜잭션에서 outbox에 적어 두고, 실제 스토리지 호출은 cron 스윕이 재시도
+    // 가능하게 따로 한다. 여기서 직접 부르면 웹훅의 단일 트랜잭션 멱등성이 깨지고, 부분
+    // 실패(DB만 지워짐) 후에는 지울 키를 알 수 없다. 좌표의 근거는 미러 조회가 아니라
+    // 이벤트의 id 자신이다(규약 19) — 행이 이미 없어도 프리픽스는 성립한다.
+    prisma.storageCleanup.createMany({
+      data: [{ kind: 'prefix', target: attachmentKeyPrefix(id) }],
+      skipDuplicates: true,
+    }),
     prisma.organization.deleteMany({ where: { id } }),
   ]);
   await prisma.organization.deleteMany({ where: { id } });
