@@ -11,11 +11,6 @@ import { noteIdSchema } from './validation';
 // 각 함수가 orgId 스코프를 스스로 붙여, 호출부가 조직을 착각해도 타 워크스페이스가
 // 새지 않는다(자기 스코프 보장).
 
-export async function fetchNotes(): Promise<Note[]> {
-  const orgId = await requireOrgId();
-  return notesService.listNotes(orgId);
-}
-
 // 사이드바 트리(KAN-37) — 전 노트의 최소 노드 flat 목록. 트리 조립은 클라이언트가 한다.
 export async function fetchNoteTree(): Promise<NoteTreeNode[]> {
   const orgId = await requireOrgId();

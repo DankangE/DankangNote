@@ -38,14 +38,6 @@ export type NoteAuthor = Pick<User, 'id' | 'firstName' | 'lastName' | 'email'>;
 // author: 소급 이전 노트·탈퇴 작성자(SetNull)는 null.
 export type NoteWithAuthor = Note & { author: NoteAuthor | null };
 
-export function listNotes(orgId: string): Promise<NoteWithAuthor[]> {
-  return prisma.note.findMany({
-    where: { orgId },
-    include: { author: { select: AUTHOR_SELECT } },
-    orderBy: { updatedAt: 'desc' },
-  });
-}
-
 export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | null> {
   return prisma.note.findFirst({
     where: { id, orgId },
