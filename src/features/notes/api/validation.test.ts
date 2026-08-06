@@ -76,6 +76,18 @@ describe('noteContentSchema — KAN-38 블록', () => {
     }
   });
 
+  it('이미지 src는 우리 첨부 라우트만 통과한다', () => {
+    const img = (src: string) => doc([{ type: 'image', attrs: { src, alt: null } }]);
+    expect(noteContentSchema.safeParse(img('/api/notes/attachments/cabc123')).success).toBe(true);
+    expect(noteContentSchema.safeParse(img('https://evil.example/x.png')).success).toBe(false);
+    // eslint-disable-next-line no-script-url
+    expect(noteContentSchema.safeParse(img('javascript:alert(1)')).success).toBe(false);
+    expect(noteContentSchema.safeParse(img('data:image/png;base64,AAAA')).success).toBe(false);
+    expect(
+      noteContentSchema.safeParse(img('/api/notes/attachments/../../secret')).success,
+    ).toBe(false);
+  });
+
   it('경계 밖 셀 병합 값은 거부한다', () => {
     const bad = doc([
       {

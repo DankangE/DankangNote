@@ -1,15 +1,14 @@
 'use client';
 
+import { useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { noteEditorExtensions } from '@/features/notes/editor';
+import { uploadNoteImage } from '@/features/notes/attachments';
 import { SlashCommand } from './SlashCommand';
-
-// 편집 전용 확장 — 슬래시 커맨드는 입력 플러그인이라 정적 뷰(스키마만 쓰는 static
-// renderer) 목록(editor.ts)에는 넣지 않는다.
-const editingExtensions = [...noteEditorExtensions, SlashCommand];
+import { FormError } from './FormError';
 
 type NoteEditorProps = {
   doc: JSONContent;
@@ -20,8 +19,23 @@ type NoteEditorProps = {
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
 export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // 편집 전용 확장 — 슬래시 커맨드는 입력 플러그인이라 정적 뷰(스키마만 쓰는 static
+  // renderer) 목록(editor.ts)에는 넣지 않는다. 이미지 선택기는 이 컴포넌트의 hidden
+  // input이므로 인스턴스별로 configure한다(ref 경유라 콜백은 안정적).
+  const extensions = useMemo(
+    () => [
+      ...noteEditorExtensions,
+      SlashCommand.configure({ pickImage: () => fileInputRef.current?.click() }),
+    ],
+    [],
+  );
+
   const editor = useEditor({
-    extensions: editingExtensions,
+    extensions,
     content: doc,
     // Next SSR에서 즉시 렌더하면 서버/클라 마크업이 어긋난다 — 클라 마운트 후 렌더.
     immediatelyRender: false,
@@ -41,9 +55,44 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
 
   if (!editor) return null;
 
+  async function handleImageChosen(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    // 같은 파일을 연속으로 고를 수 있게 비운다(change 이벤트는 값이 바뀔 때만 온다).
+    event.target.value = '';
+    if (!file || !editor || uploading) return;
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const result = await uploadNoteImage(file);
+      if (result.ok) {
+        editor.chain().focus().setImage({ src: result.src }).run();
+      } else {
+        setUploadError(result.error);
+      }
+    } catch {
+      setUploadError('이미지 업로드에 실패했어요. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <EditorToolbar editor={editor} />
+      <EditorToolbar
+        editor={editor}
+        uploading={uploading}
+        onPickImage={() => fileInputRef.current?.click()}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+        onChange={handleImageChosen}
+      />
+      <FormError message={uploadError} />
       <EditorContent editor={editor} />
     </div>
   );
@@ -51,7 +100,15 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
 
 // 툴바는 editor가 확정된 뒤에만 렌더된다 — useEditorState를 조건 없이 호출하기 위해
 // 별도 컴포넌트로 분리한다(훅 규칙).
-function EditorToolbar({ editor }: { editor: Editor }) {
+function EditorToolbar({
+  editor,
+  uploading,
+  onPickImage,
+}: {
+  editor: Editor;
+  uploading: boolean;
+  onPickImage: () => void;
+}) {
   const active = useEditorState({
     editor,
     selector: ({ editor }) => ({
@@ -130,6 +187,9 @@ function EditorToolbar({ editor }: { editor: Editor }) {
           표
         </Button>
       )}
+      <Button variant="ghost" size="sm" aria-label="이미지 넣기" disabled={uploading} onClick={onPickImage}>
+        {uploading ? '업로드 중…' : '이미지'}
+      </Button>
     </div>
   );
 }

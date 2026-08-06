@@ -33,9 +33,24 @@ const SLASH_ITEMS: SlashItem[] = [
   { key: 'table', label: '표', aliases: ['table'], run: (e, r) => block(e, r).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run() },
 ];
 
-function filterItems(editor: Editor, query: string): SlashItem[] {
+function filterItems(editor: Editor, query: string, pickImage: (() => void) | null): SlashItem[] {
+  const items = pickImage
+    ? [
+        ...SLASH_ITEMS,
+        {
+          key: 'image',
+          label: '이미지',
+          aliases: ['image', 'img', 'picture'],
+          // 파일 선택은 에디터 밖(NoteEditor의 hidden input) — 여기선 '/질의'만 지우고 연다.
+          run: (e: Editor, r: Range) => {
+            block(e, r).run();
+            pickImage();
+          },
+        },
+      ]
+    : SLASH_ITEMS;
   const q = query.trim().toLowerCase();
-  return SLASH_ITEMS.filter((item) => {
+  return items.filter((item) => {
     // 표 안의 표는 만들지 않는다 — 셀 안에서 표 항목을 숨긴다.
     if (item.key === 'table' && editor.isActive('table')) return false;
     if (!q) return true;
@@ -120,8 +135,17 @@ function placeMenu(element: HTMLElement, rect: DOMRect | null) {
   element.style.top = `${rect.bottom + 4}px`;
 }
 
-export const SlashCommand = Extension.create({
+interface SlashCommandOptions {
+  /** 이미지 파일 선택기를 여는 콜백 — 에디터 컴포넌트가 configure로 넘긴다(KAN-38). */
+  pickImage: (() => void) | null;
+}
+
+export const SlashCommand = Extension.create<SlashCommandOptions>({
   name: 'slashCommand',
+
+  addOptions() {
+    return { pickImage: null };
+  },
 
   addProseMirrorPlugins() {
     return [
@@ -130,7 +154,7 @@ export const SlashCommand = Extension.create({
         char: '/',
         // 코드 블록 안의 '/'는 코드다 — 메뉴를 열지 않는다.
         allow: ({ editor }) => !editor.isActive('codeBlock'),
-        items: ({ editor, query }) => filterItems(editor, query),
+        items: ({ editor, query }) => filterItems(editor, query, this.options.pickImage),
         command: ({ editor, range, props }) => props.run(editor, range),
         render: () => {
           let component: ReactRenderer<SlashMenuHandle, SlashMenuProps> | null = null;

@@ -3,26 +3,16 @@
 // 같은 위치 선정).
 
 /**
- * 파일 하나의 상한. 클라이언트 검증은 편의고, 강제는 presign의 POST 정책
- * (content-length-range)이 한다 — presigned PUT은 Content-Length가 서명에 안 들어가
- * 선언한 크기보다 큰 파일을 막을 수 없어서 POST 방식을 쓴다(src/server/storage.ts).
+ * 파일 하나의 상한과 인라인 안전 타입 — KAN-38에서 노트 이미지와 공유하게 돼 lib로
+ * 승격됐다(원 근거 주석은 lib/attachments.ts). 기존 호출부를 위해 재수출한다.
+ * 클라이언트 검증은 편의고, 강제는 presign의 POST 정책(content-length-range)이 한다 —
+ * presigned PUT은 Content-Length가 서명에 안 들어가 선언보다 큰 파일을 막을 수 없어
+ * POST 방식을 쓴다(src/server/storage.ts).
  */
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export { MAX_ATTACHMENT_BYTES, isInlineImage } from '@/lib/attachments';
 
 /** 메시지 하나에 붙일 수 있는 첨부 수. 페이로드(Pusher 10KB)와 화면 양쪽의 상한이다. */
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
-
-/**
- * `<img>`로 인라인 렌더해도 안전한 타입만. **SVG는 이미지지만 여기 없다** — 마크업이라
- * 스크립트를 품을 수 있고, 링크로 새 탭에서 열리는 순간 스토리지 origin에서 실행된다.
- * 목록에 없는 타입은 전부 다운로드 칩으로만 다루고, 다운로드 presign이
- * Content-Disposition: attachment를 강제한다.
- */
-const INLINE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
-
-export function isInlineImage(contentType: string): boolean {
-  return INLINE_IMAGE_TYPES.has(contentType);
-}
 
 /** 파일 크기 표시 — 칩에 들어가는 짧은 형태('812KB', '3.4MB'). */
 export function formatBytes(size: number): string {

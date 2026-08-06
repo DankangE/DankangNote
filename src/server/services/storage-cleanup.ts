@@ -64,13 +64,23 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
         LIMIT ${SWEEP_BATCH_SIZE}
       )
       RETURNING "key"`;
-    if (removed.length > 0) {
+    // 노트 이미지(KAN-38)도 같은 규칙으로 걷는다 — 저장 없이 버려진 pending(noteId null).
+    const removedNotes = await tx.$queryRaw<{ key: string }[]>`
+      DELETE FROM "NoteAttachment"
+      WHERE "noteId" IS NULL AND "id" IN (
+        SELECT "id" FROM "NoteAttachment"
+        WHERE "noteId" IS NULL AND "createdAt" < ${cutoff}
+        LIMIT ${SWEEP_BATCH_SIZE}
+      )
+      RETURNING "key"`;
+    const keys = [...removed, ...removedNotes];
+    if (keys.length > 0) {
       await tx.storageCleanup.createMany({
-        data: removed.map((row) => ({ kind: 'key', target: row.key })),
+        data: keys.map((row) => ({ kind: 'key', target: row.key })),
         skipDuplicates: true,
       });
     }
-    return removed.length;
+    return keys.length;
   });
 }
 

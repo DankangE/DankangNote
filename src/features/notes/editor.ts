@@ -1,6 +1,7 @@
 import StarterKit from '@tiptap/starter-kit';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { TableKit } from '@tiptap/extension-table';
+import Image from '@tiptap/extension-image';
 import type { Extensions } from '@tiptap/core';
 
 // 노트 본문에서 허용하는 제목 레벨. api/validation.ts의 zod 화이트리스트(1|2|3)와 값이
@@ -24,4 +25,8 @@ export const noteEditorExtensions: Extensions = [
   // 표 (KAN-38). 리사이즈는 켜지 않는다 — colwidth가 픽셀값으로 저장돼 화면 폭이 다른
   // 사람에게 그대로 강요되고, MVP에 드래그 리사이즈 UX까지 얹을 이유가 없다.
   TableKit,
+  // 이미지 (KAN-38). src는 우리 첨부 라우트만 저장된다 — zod 정규식(validation.ts)이
+  // 외부 URL·data:·javascript: 를 형태 수준에서 거부하고, 업로드는 attachments.ts의
+  // presign 경로만 있다. base64 인라인은 허용하지 않는다(50KB 본문 상한도 뚫린다).
+  Image,
 ];
