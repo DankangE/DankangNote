@@ -4,15 +4,19 @@ import { revalidatePath } from 'next/cache';
 import { guarded, parseOrError } from '@/lib/action-result';
 import { resolveOrg } from '@/server/auth';
 import * as notesService from '@/server/services/notes';
+import { moveNote } from '@/server/services/note-tree';
+import { toggleFavorite } from '@/server/services/note-favorites';
 import { serializeNoteContent } from '@/features/notes/content';
 import type { ActionResult, Note } from '@/features/notes/types';
-import { noteIdSchema, noteInputSchema } from './validation';
+import { createNoteInputSchema, moveNoteTargetSchema, noteIdSchema, noteInputSchema } from './validation';
 
 // 쓰기 커밋 이후의 revalidate 실패는 뮤테이션 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 생성/유령 삭제를 만든다. 로그만 남기고 성공으로 처리한다.
+// 'layout' 스코프인 이유: 트리 사이드바(KAN-37)가 notes/layout.tsx에서 조회되므로
+// 페이지만 revalidate하면 상세는 갱신되고 사이드바가 낡는다(채팅 KAN-28과 같은 결정).
 function revalidateNotes(action: string): void {
   try {
-    revalidatePath('/notes');
+    revalidatePath('/notes', 'layout');
   } catch (error) {
     console.error(`[notes] ${action} revalidate failed:`, error);
   }
@@ -27,19 +31,92 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
     return { ok: false, error: org.error };
   }
 
-  const parsed = parseOrError(noteInputSchema, input);
+  const parsed = parseOrError(createNoteInputSchema, input);
   if (!parsed.ok) {
     return parsed;
   }
 
   // content(Tiptap doc)는 저장 문자열로 직렬화한다. 빈 doc은 ''(컬럼 기본값)이 된다.
-  const { title, content } = parsed.data;
+  const { title, content, parentId } = parsed.data;
   const serialized = content ? serializeNoteContent(content) : '';
 
   return guarded('notes.createNote', async () => {
-    const note = await notesService.createNote(org.orgId, org.userId, { title, content: serialized });
+    const outcome = await notesService.createNote(org.orgId, org.userId, {
+      title,
+      content: serialized,
+      parentId: parentId ?? null,
+    });
+    if (outcome.status === 'invalidparent') {
+      return { ok: false, error: '상위 문서를 찾을 수 없습니다.' };
+    }
     revalidateNotes('createNote');
-    return { ok: true, data: note };
+    return { ok: true, data: outcome.note };
+  });
+}
+
+// 트리 이동(KAN-37) — 재부모화 + 형제 그룹 내 위치. 사이클·교차 org·소유권은 서비스가
+// 트랜잭션 안에서 판정한다(moveNote 주석 참조).
+export async function moveNoteAction(
+  id: unknown,
+  target: unknown,
+): Promise<ActionResult<{ id: string }>> {
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
+
+  const parsedId = parseOrError(noteIdSchema, id);
+  if (!parsedId.ok) {
+    return parsedId;
+  }
+  const parsedTarget = parseOrError(moveNoteTargetSchema, target);
+  if (!parsedTarget.ok) {
+    return parsedTarget;
+  }
+
+  return guarded('notes.moveNote', async () => {
+    const outcome = await moveNote(org.orgId, parsedId.data, parsedTarget.data, {
+      userId: org.userId,
+      isAdmin: org.isAdmin,
+    });
+    if (outcome === 'forbidden') {
+      return { ok: false, error: '이 문서를 이동할 권한이 없습니다. 작성자 또는 관리자만 이동할 수 있습니다.' };
+    }
+    if (outcome === 'notfound') {
+      return { ok: false, error: '노트를 찾을 수 없습니다.' };
+    }
+    if (outcome === 'invalidparent') {
+      return { ok: false, error: '이동할 위치를 찾을 수 없습니다.' };
+    }
+    if (outcome === 'cycle') {
+      return { ok: false, error: '문서를 자기 자신의 하위로 옮길 수 없습니다.' };
+    }
+    revalidateNotes('moveNote');
+    return { ok: true, data: { id: parsedId.data } };
+  });
+}
+
+// 즐겨찾기 토글(KAN-37) — 사용자별 상태라 소유권 판정이 없다(서비스 주석 참조).
+export async function toggleFavoriteAction(
+  id: unknown,
+): Promise<ActionResult<{ favorited: boolean }>> {
+  const org = await resolveOrg();
+  if ('error' in org) {
+    return { ok: false, error: org.error };
+  }
+
+  const parsedId = parseOrError(noteIdSchema, id);
+  if (!parsedId.ok) {
+    return parsedId;
+  }
+
+  return guarded('notes.toggleFavorite', async () => {
+    const outcome = await toggleFavorite(org.orgId, org.userId, parsedId.data);
+    if (outcome.status === 'notfound') {
+      return { ok: false, error: '노트를 찾을 수 없습니다.' };
+    }
+    revalidateNotes('toggleFavorite');
+    return { ok: true, data: { favorited: outcome.favorited } };
   });
 }
 

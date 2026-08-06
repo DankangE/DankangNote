@@ -90,3 +90,16 @@ export const noteInputSchema = z.object({
 });
 
 export const noteIdSchema = z.string().min(1, '노트 id가 필요합니다.');
+
+// 생성 전용 — parentId는 update 스키마(partial)에 섞지 않는다. 부모 변경은 사이클
+// 검사가 붙는 moveNote 경로만 쓴다(KAN-37).
+export const createNoteInputSchema = noteInputSchema.extend({
+  parentId: noteIdSchema.nullish(),
+});
+
+// 이동 대상 — index는 대상 형제 그룹 기준 삽입 위치. 상한은 서비스가 클램프하지만
+// 터무니없는 값(1e9 등)이 정수 오버플로 없이 통과하지 않게 여기서도 자른다.
+export const moveNoteTargetSchema = z.object({
+  parentId: noteIdSchema.nullable(),
+  index: z.number().int().min(0).max(100_000),
+});

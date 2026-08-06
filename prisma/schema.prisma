@@ -15,17 +15,50 @@ model Note {
   orgId    String
   // 작성자 Clerk user id. FK 소급 이전 노트는 null, 작성자 탈퇴 시에도 null로 남는다.
   authorId String?
+  /// 문서 트리(KAN-37). null이면 루트 문서. 부모 삭제 시 자식은 루트로 승격된다(SetNull) —
+  /// Cascade면 작성자 권한(KAN-18)으로 자기 노트 하나를 지우며 남의 하위 문서까지 파기할
+  /// 수 있어 권한 모델이 깨진다. 조직 삭제의 전체 파기는 orgId Cascade가 그대로 담당한다.
+  /// 사이클 방지는 DB로 표현할 수 없어 moveNote가 재귀 CTE로 강제한다(services/notes.ts).
+  parentId String?
+  /// 같은 부모 안에서의 수동 정렬 순서 — 보드(KAN-17)와 같은 패턴: 생성은 max+1 append,
+  /// 이동 시 대상 형제 그룹을 0..n으로 재작성. gap은 정렬에 무해하다. SetNull 승격으로
+  /// 루트에 편입된 문서는 옛 그룹의 position을 그대로 들고 오므로 (position, createdAt)
+  /// 복합 정렬로 순서를 결정적으로 유지한다.
+  position Int     @default(0)
 
   title     String
   content   String   @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  author       User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  author       User?          @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  parent       Note?          @relation("NoteTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Note[]         @relation("NoteTree")
+  favorites    NoteFavorite[]
 
-  @@index([orgId])
+  // 트리 조회·형제 그룹 재작성은 전부 (orgId, parentId) 스코프로 온다.
+  @@index([orgId, parentId])
   @@index([authorId])
+}
+
+/// 노트 즐겨찾기 (KAN-37) — 사용자별 상태라 행의 존재가 곧 토글이다(MessageReaction과
+/// 같은 의미론, 동시 클릭 경합은 복합 PK가 막는다). userId FK Cascade — '지금의 선호'라
+/// 계정과 함께 사라지는 게 맞다(ChannelMember와 같은 결정). orgId는 사이드바 즐겨찾기
+/// 목록을 노트 조인 없이 테넌트 스코프로 긁기 위한 비정규화 + 규약 6의 Cascade 경로.
+model NoteFavorite {
+  noteId    String
+  userId    String
+  orgId     String
+  createdAt DateTime @default(now())
+
+  note         Note         @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, userId])
+  @@index([userId, orgId])
+  @@index([orgId])
 }
 
 // 아래 세 모델은 Clerk의 사용자/조직/소속을 DB에 미러링한 것 — webhook으로만 채워진다.
@@ -46,6 +79,7 @@ model User {
 
   memberships     Membership[]
   notes           Note[]
+  noteFavorites   NoteFavorite[]
   boardCards      BoardCard[]
   createdChannels Channel[]
   channelMembers  ChannelMember[]
@@ -62,9 +96,10 @@ model Organization {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  memberships  Membership[]
-  notes        Note[]
-  boardColumns BoardColumn[]
+  memberships   Membership[]
+  notes         Note[]
+  noteFavorites NoteFavorite[]
+  boardColumns  BoardColumn[]
   boardCards   BoardCard[]
   chatMessages  ChatMessage[]
   channels      Channel[]

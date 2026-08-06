@@ -10,6 +10,12 @@ export interface NoteInput {
   content?: string;
 }
 
+// 생성 전용 입력 — parentId(KAN-37)는 update 경로에 섞지 않는다. 부모 변경은 형제 재정렬과
+// 사이클 검사가 따라붙는 구조 변이라 moveNote(note-tree.ts)만이 유일한 경로다.
+export interface CreateNoteInput extends NoteInput {
+  parentId?: string | null;
+}
+
 // 노트 수정·삭제 요청자. isAdmin은 Clerk 세션 클레임 기반(auth.ts) — 미러 role은 안 쓴다(KAN-18).
 export interface NoteActor {
   userId: string;
@@ -18,7 +24,8 @@ export interface NoteActor {
 
 // 소유권 where — admin은 org의 모든 노트, 그 외엔 본인(authorId) 노트만. authorId가 null인
 // 소급 이전 노트는 member의 authorId 조건에 안 걸리므로 admin만 수정·삭제할 수 있다(정책).
-function ownedWhere(orgId: string, id: string, actor: NoteActor) {
+// 이동(note-tree.ts)도 같은 판정을 쓴다 — 구조 변이도 노트 행의 update다.
+export function ownedNoteWhere(orgId: string, id: string, actor: NoteActor) {
   return actor.isAdmin
     ? { id, orgId }
     : { id, orgId, authorId: actor.userId };
@@ -46,6 +53,11 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
   });
 }
 
+// 생성 결과 — 부모 지정(KAN-37)이 생기며 '그 부모가 이 org에 없다'는 실패 경로가 생겼다.
+export type CreateOutcome =
+  | { status: 'ok'; note: NoteWithAuthor }
+  | { status: 'invalidparent' };
+
 // 생성은 org/작성자 스켈레톤 생성(create-if-absent)과 한 트랜잭션 — webhook이 아직
 // 미러를 채우기 전이어도 FK가 성립한다(부트스트랩 경합 회피, KAN-11 멤버십과 동일 패턴).
 // 스켈레톤의 실제 값(name·이메일 등)은 webhook 이벤트가 나중에 채운다.
@@ -55,8 +67,8 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
 export async function createNote(
   orgId: string,
   authorId: string,
-  input: NoteInput,
-): Promise<NoteWithAuthor> {
+  input: CreateNoteInput,
+): Promise<CreateOutcome> {
   // 삭제된 워크스페이스/사용자를 stale 세션(토큰 만료 전)이 스켈레톤으로 부활시키지
   // 않도록 tombstone을 pre/post 이중 확인한다(KAN-12, clerk-sync upsert와 같은 패턴).
   // pre-check만으로는 부족하다 — 확인과 쓰기 사이에 삭제가 커밋되면 cascade는 이미 끝난
@@ -66,6 +78,26 @@ export async function createNote(
   // 부활 잔재를 다음 시도가 치운다. Server Action은 웹훅과 달리 재전송이 없어 이 경로가
   // 크래시 잔재의 확정적 치유 기회다. org 삭제는 cascade로 노트까지 정리한다.
   await assertNotTombstoned([orgId, authorId]);
+
+  // 부모는 이 org의 노트여야 한다(KAN-37) — 확인 없이 붙이면 남의 워크스페이스 트리에
+  // 문서를 매다는 교차 테넌트 쓰기가 된다. 확인과 INSERT 사이에 부모가 지워지는 경합은
+  // parentId FK 위반으로 트랜잭션째 죽고 guarded가 일반 오류로 흡수한다(fail-closed).
+  const { title, content, parentId = null } = input;
+  if (parentId !== null) {
+    const parent = await prisma.note.findFirst({
+      where: { id: parentId, orgId },
+      select: { id: true },
+    });
+    if (!parent) return { status: 'invalidparent' };
+  }
+
+  // 형제 그룹 끝에 붙인다 = max(position)+1 (보드 KAN-17과 같은 패턴). 동시 생성이 같은
+  // 번호를 받을 수 있지만 (position, createdAt) 복합 정렬이 순서를 결정적으로 유지한다.
+  const { _max } = await prisma.note.aggregate({
+    where: { orgId, parentId },
+    _max: { position: true },
+  });
+  const position = (_max.position ?? -1) + 1;
 
   const [, , note] = await prisma.$transaction([
     prisma.organization.createMany({
@@ -78,7 +110,7 @@ export async function createNote(
       skipDuplicates: true,
     }),
     prisma.note.create({
-      data: { ...input, orgId, authorId },
+      data: { title, content, parentId, position, orgId, authorId },
       include: { author: { select: AUTHOR_SELECT } },
     }),
   ]);
@@ -90,7 +122,7 @@ export async function createNote(
     await prisma.note.deleteMany({ where: { id: note.id } });
   });
 
-  return note;
+  return { status: 'ok', note };
 }
 
 // 수정·삭제 결과 — 권한 없음(forbidden)과 미존재(notfound)를 구분해 액션이 알맞은 문구를
@@ -113,7 +145,7 @@ export async function updateNote(
 ): Promise<UpdateOutcome> {
   try {
     const note = await prisma.note.update({
-      where: ownedWhere(orgId, id, actor),
+      where: ownedNoteWhere(orgId, id, actor),
       data: input,
       include: { author: { select: AUTHOR_SELECT } },
     });
@@ -133,7 +165,7 @@ export async function deleteNote(
   id: string,
   actor: NoteActor,
 ): Promise<DeleteOutcome> {
-  const { count } = await prisma.note.deleteMany({ where: ownedWhere(orgId, id, actor) });
+  const { count } = await prisma.note.deleteMany({ where: ownedNoteWhere(orgId, id, actor) });
   if (count > 0) return 'ok';
   const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
   return exists ? 'forbidden' : 'notfound';

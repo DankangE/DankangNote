@@ -131,9 +131,10 @@ describe('createNote tombstone 가드 (KAN-12)', () => {
     await prisma.organization.deleteMany({});
     await prisma.user.deleteMany({});
 
-    const note = await createNote(ORG_A, USER_OWNER, { title: '부트스트랩' });
+    const created = await createNote(ORG_A, USER_OWNER, { title: '부트스트랩' });
 
-    expect(note.title).toBe('부트스트랩');
+    if (created.status !== 'ok') throw new Error(`생성 실패: ${created.status}`);
+    expect(created.note.title).toBe('부트스트랩');
     expect(await prisma.organization.count({ where: { id: ORG_A } })).toBe(1);
     expect(await prisma.user.count({ where: { id: USER_OWNER } })).toBe(1);
   });
