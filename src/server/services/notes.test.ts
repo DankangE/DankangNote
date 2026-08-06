@@ -9,7 +9,7 @@ import {
   resetDatabase,
   seedTenants,
 } from '../../../test/db';
-import { createNote, deleteNote, getNote, listNotes, updateNote } from './notes';
+import { createNote, deleteNote, getNote, updateNote } from './notes';
 
 const owner = { userId: USER_OWNER, isAdmin: false };
 const other = { userId: USER_OTHER, isAdmin: false };
@@ -28,18 +28,8 @@ async function noteInA(authorId: string | null = USER_OWNER): Promise<string> {
   return note.id;
 }
 
+// 목록 격리는 트리 조회가 이어받았다 — note-tree.test.ts의 listNoteTree 격리 참조(KAN-37).
 describe('멀티테넌시 격리', () => {
-  it('listNotes는 자기 org의 노트만 반환한다', async () => {
-    await noteInA();
-    await prisma.note.create({ data: { orgId: ORG_B, authorId: USER_OTHER, title: 'B의 노트' } });
-
-    const inA = await listNotes(ORG_A);
-    const inB = await listNotes(ORG_B);
-
-    expect(inA.map((n) => n.title)).toEqual(['A의 노트']);
-    expect(inB.map((n) => n.title)).toEqual(['B의 노트']);
-  });
-
   it('getNote는 다른 org의 노트를 id로 지정해도 null이다', async () => {
     const id = await noteInA();
     expect(await getNote(ORG_A, id)).not.toBeNull();
@@ -131,9 +121,10 @@ describe('createNote tombstone 가드 (KAN-12)', () => {
     await prisma.organization.deleteMany({});
     await prisma.user.deleteMany({});
 
-    const note = await createNote(ORG_A, USER_OWNER, { title: '부트스트랩' });
+    const created = await createNote(ORG_A, USER_OWNER, { title: '부트스트랩' });
 
-    expect(note.title).toBe('부트스트랩');
+    if (created.status !== 'ok') throw new Error(`생성 실패: ${created.status}`);
+    expect(created.note.title).toBe('부트스트랩');
     expect(await prisma.organization.count({ where: { id: ORG_A } })).toBe(1);
     expect(await prisma.user.count({ where: { id: USER_OWNER } })).toBe(1);
   });
