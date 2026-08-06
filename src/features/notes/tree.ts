@@ -137,11 +137,20 @@ export function applyMove(nodes: NoteTreeNode[], move: TreeMove): NoteTreeNode[]
   // 자기 자신·자손 밑으로의 이동은 클라이언트에서도 거른다(서버는 cycle로 거부).
   if (move.parentId !== null && subtreeIds(nodes, move.id).has(move.parentId)) return nodes;
 
-  const byParent = childrenByParent(nodes.filter((node) => node.id !== move.id));
-  const group = [...(byParent.get(move.parentId) ?? [])];
-  const at = Math.max(0, Math.min(move.index, group.length));
-  group.splice(at, 0, target);
-  byParent.set(move.parentId, group);
+  // 전체 노드로 그룹핑한 뒤 이동 노드만 옛 그룹에서 빼서 대상 그룹에 끼운다.
+  // 이동 노드를 목록에서 필터링해 놓고 그룹핑하면 그 자손들이 고아 폴백(루트)으로
+  // 떨어져, 재조립이 자손 전체의 parentId를 null로 도장 찍는다(자체 리뷰 Finding 1).
+  const byParent = childrenByParent(nodes);
+  for (const group of byParent.values()) {
+    const at = group.findIndex((node) => node.id === move.id);
+    if (at >= 0) {
+      group.splice(at, 1);
+      break;
+    }
+  }
+  const group = byParent.get(move.parentId) ?? [];
+  if (!byParent.has(move.parentId)) byParent.set(move.parentId, group);
+  group.splice(Math.max(0, Math.min(move.index, group.length)), 0, target);
 
   const result: NoteTreeNode[] = [];
   for (const [parentId, children] of byParent) {

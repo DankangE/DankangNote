@@ -106,6 +106,25 @@ describe('moveNote — 재배치', () => {
     expect(childRow.position).toBe(1);
   });
 
+  it('이동은 어느 노트의 updatedAt도 밀어 올리지 않는다 (Finding 2 회귀)', async () => {
+    // 구조 이동이 '오늘 수정한 문서'로 둔갑하면 안 된다 — 이동 노트 자신도 마찬가지.
+    await noteIn(ORG_A, '첫째', null, 0);
+    const second = await noteIn(ORG_A, '둘째', null, 1);
+    const before = new Map(
+      (await prisma.note.findMany({ select: { id: true, updatedAt: true } })).map((row) => [
+        row.id,
+        row.updatedAt.getTime(),
+      ]),
+    );
+
+    expect(await moveNote(ORG_A, second, { parentId: null, index: 0 }, owner)).toBe('ok');
+
+    const after = await prisma.note.findMany({ select: { id: true, updatedAt: true } });
+    for (const row of after) {
+      expect(row.updatedAt.getTime()).toBe(before.get(row.id));
+    }
+  });
+
   it('index가 범위를 넘으면 끝으로 클램프된다', async () => {
     await noteIn(ORG_A, '첫째', null, 0);
     const second = await noteIn(ORG_A, '둘째', null, 1);

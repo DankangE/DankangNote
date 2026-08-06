@@ -69,13 +69,19 @@ export async function moveNote(
 
     if (target.parentId !== null) {
       // 대상 부모의 조상 사슬(자기 자신 포함). 비어 있으면 부모가 이 org에 없다 —
-      // 교차 테넌트 id도 여기서 걸러진다(첫 SELECT에 orgId 스코프).
+      // 교차 테넌트 id도 여기서 걸러진다(첫 SELECT에 orgId 스코프). 재귀 단계의
+      // orgId는 심화 방어다 — parentId 쓰기 경로가 전부 same-org를 강제해 교차 org
+      // 링크는 생길 수 없지만, 그 불변식을 이 쿼리가 앱 계층에만 의존하지 않게 한다.
+      // depth 상한은 손상 데이터에 이미 사이클이 있을 때 무한 루프 대신 종료하기
+      // 위한 백스톱이다(1000보다 깊은 정상 트리는 없다고 본다).
       const chain = await tx.$queryRaw<{ id: string }[]>`
         WITH RECURSIVE chain AS (
-          SELECT "id", "parentId" FROM "Note"
+          SELECT "id", "parentId", 1 AS depth FROM "Note"
             WHERE "id" = ${target.parentId} AND "orgId" = ${orgId}
           UNION ALL
-          SELECT n."id", n."parentId" FROM "Note" n JOIN chain c ON n."id" = c."parentId"
+          SELECT n."id", n."parentId", c.depth + 1 FROM "Note" n
+            JOIN chain c ON n."id" = c."parentId"
+            WHERE n."orgId" = ${orgId} AND c.depth < 1000
         )
         SELECT "id" FROM chain
       `;
@@ -84,8 +90,9 @@ export async function moveNote(
     }
 
     // 대상 그룹(이동 노트 제외)을 현재 순서로 읽어 index에 끼우고 0..n으로 재작성.
-    // 위치가 이미 맞는 형제는 건너뛴다 — 재정렬이 남의 노트 updatedAt까지 밀어 올리면
-    // '구조를 만졌을 뿐인데 수정한 사람'이 되기 때문에 쓰기 자체를 안 낸다.
+    // 위치가 이미 맞는 행은 건너뛰고, 쓰기는 raw UPDATE로 낸다 — Prisma update는
+    // @updatedAt을 자동 주입해 순수 구조 이동이 '오늘 수정한 문서'로 둔갑한다
+    // (updateMany에도 적용됨 — 자체 리뷰 Finding 2 실측). 구조는 내용 수정이 아니다.
     const siblings = await tx.note.findMany({
       where: { orgId, parentId: target.parentId, id: { not: id } },
       select: { id: true, position: true },
@@ -100,10 +107,15 @@ export async function moveNote(
     ];
     for (const [index, row] of ordered.entries()) {
       if (row.position === index) continue;
-      await tx.note.updateMany({
-        where: { id: row.id, orgId },
-        data: row.id === id ? { parentId: target.parentId, position: index } : { position: index },
-      });
+      if (row.id === id) {
+        await tx.$executeRaw`
+          UPDATE "Note" SET "parentId" = ${target.parentId}, "position" = ${index}
+          WHERE "id" = ${row.id} AND "orgId" = ${orgId}`;
+      } else {
+        await tx.$executeRaw`
+          UPDATE "Note" SET "position" = ${index}
+          WHERE "id" = ${row.id} AND "orgId" = ${orgId}`;
+      }
     }
     return 'ok';
   });

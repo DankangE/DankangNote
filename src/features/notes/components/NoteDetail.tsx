@@ -164,7 +164,7 @@ export function NoteDetail({
           aria-pressed={optimisticFavorited}
           className={
             optimisticFavorited
-              ? 'rounded-lg p-2 text-amber-500 hover:bg-accent'
+              ? 'rounded-lg p-2 text-warning hover:bg-accent'
               : 'rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground'
           }
           onClick={handleToggleFavorite}

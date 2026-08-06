@@ -103,6 +103,16 @@ export function NoteTreePanel({
       const unchanged =
         node && projection.parentId === node.parentId && projection.index === currentIndex;
       if (!unchanged) {
+        // 접힌 부모 밑으로 드롭하면 즉시 펼친다 — 안 그러면 방금 끌던 행이 화면에서
+        // 사라져 이동이 실패한 것처럼 보인다(자체 리뷰 Finding 3).
+        const targetParentId = projection.parentId;
+        if (targetParentId !== null && collapsed.has(targetParentId)) {
+          setCollapsed((prev) => {
+            const next = new Set(prev);
+            next.delete(targetParentId);
+            return next;
+          });
+        }
         onMove({ id: dragId, parentId: projection.parentId, index: projection.index });
       }
     }
@@ -200,7 +210,7 @@ export function NoteTreePanel({
                 <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
                 <span className="truncate">{dragNode.title}</span>
                 {favoriteSet.has(dragNode.id) && (
-                  <Star className="size-3 shrink-0 fill-current text-amber-500" aria-hidden />
+                  <Star className="size-3 shrink-0 fill-current text-warning" aria-hidden />
                 )}
               </div>
             ) : null}

@@ -108,7 +108,7 @@ export function NoteTreeRow({
           className={cn(
             'rounded p-1 hover:bg-accent',
             favorited
-              ? 'text-amber-500'
+              ? 'text-warning'
               : 'text-muted-foreground opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100',
           )}
           onClick={() => onToggleFavorite(row.node.id)}
@@ -160,7 +160,7 @@ export function NoteFavoriteRow({
         type="button"
         aria-label="즐겨찾기 해제"
         aria-pressed
-        className="rounded p-1 text-amber-500 hover:bg-accent"
+        className="rounded p-1 text-warning hover:bg-accent"
         onClick={() => onToggleFavorite(node.id)}
       >
         <Star className="size-3.5 fill-current" aria-hidden />

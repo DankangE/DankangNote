@@ -87,6 +87,30 @@ describe('applyMove', () => {
     expect(a2?.position).toBe(2);
   });
 
+  it('자식을 가진 노드를 옮겨도 자손은 그대로 매달려 있다 (Finding 1 회귀)', () => {
+    // a(자식 a1·a2)를 루트 그룹의 b 뒤로 — 자손이 루트로 고아화되면 안 된다.
+    const next = applyMove(NODES, { id: 'a', parentId: null, index: 1 });
+    const rows = flattenTree(next, new Set());
+    expect(rows.map((row) => [row.node.id, row.depth])).toEqual([
+      ['b', 0],
+      ['a', 0],
+      ['a1', 1],
+      ['a2', 1],
+    ]);
+  });
+
+  it('자식을 가진 노드를 재부모화해도 자손이 따라간다', () => {
+    // a를 b의 자식으로 — a1·a2는 여전히 a의 자식이어야 한다.
+    const next = applyMove(NODES, { id: 'a', parentId: 'b', index: 0 });
+    const rows = flattenTree(next, new Set());
+    expect(rows.map((row) => [row.node.id, row.depth])).toEqual([
+      ['b', 0],
+      ['a', 1],
+      ['a1', 2],
+      ['a2', 2],
+    ]);
+  });
+
   it('자기 자손 밑으로의 이동은 무시한다 (사이클 방지)', () => {
     expect(applyMove(NODES, { id: 'a', parentId: 'a1', index: 0 })).toBe(NODES);
   });
