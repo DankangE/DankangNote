@@ -33,6 +33,10 @@ export function listNoteTree(orgId: string): Promise<NoteTreeNode[]> {
 
 export type MoveOutcome = 'ok' | 'forbidden' | 'notfound' | 'invalidparent' | 'cycle';
 
+// 조상 사슬을 걷는 최대 깊이 — 손상 데이터의 사이클에서 CTE가 무한히 돌지 않게 하는
+// 백스톱이자, 이 깊이에 닿으면 이동 자체를 거부하는 기준(아래 fail-closed 주석).
+const ANCESTOR_DEPTH_CAP = 1000;
+
 // 이동 = 재부모화 + 대상 형제 그룹 안의 위치 지정. index는 이동 노트를 뺀 대상 그룹
 // 기준의 삽입 위치다(범위 밖은 클램프).
 //
@@ -81,11 +85,15 @@ export async function moveNote(
           UNION ALL
           SELECT n."id", n."parentId", c.depth + 1 FROM "Note" n
             JOIN chain c ON n."id" = c."parentId"
-            WHERE n."orgId" = ${orgId} AND c.depth < 1000
+            WHERE n."orgId" = ${orgId} AND c.depth < ${ANCESTOR_DEPTH_CAP}
         )
         SELECT "id" FROM chain
       `;
       if (chain.length === 0) return 'invalidparent';
+      // 상한에 닿았다 = 사슬을 끝까지 못 봤다. 사이클 부재를 증명하지 못한 이동을
+      // 통과시키면 상한 너머의 조상이 곧 사이클 구멍이 된다(적대적 검증에서 실증) —
+      // 확인 못 하면 거부한다(fail-closed). 정상 사용에선 닿을 수 없는 깊이다.
+      if (chain.length >= ANCESTOR_DEPTH_CAP) return 'cycle';
       if (chain.some((row) => row.id === id)) return 'cycle';
     }
 

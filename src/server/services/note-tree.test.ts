@@ -140,6 +140,29 @@ describe('moveNote — 사이클 가드', () => {
     expect(await moveNote(ORG_A, root, { parentId: root, index: 0 }, owner)).toBe('cycle');
   });
 
+  it('조상 사슬이 검사 상한에 닿으면 이동을 거부한다 (fail-closed)', async () => {
+    // d0 ← d1 ← … 로 이어진 1002-깊이 사슬. 상한(1000) 너머의 조상은 검사할 수 없으므로
+    // '사이클 아님'을 증명 못 한 이동은 거부돼야 한다 — 통과시키면 d0이 d1001 밑으로
+    // 들어가 실제 사이클이 커밋된다(적대적 검증에서 실증된 구멍의 회귀 테스트).
+    const DEPTH = 1001;
+    await prisma.note.createMany({
+      data: Array.from({ length: DEPTH + 1 }, (_, i) => ({
+        id: `deep_${i}`,
+        orgId: ORG_A,
+        authorId: USER_OWNER,
+        title: `d${i}`,
+        parentId: i === 0 ? null : `deep_${i - 1}`,
+        position: 0,
+      })),
+    });
+
+    expect(await moveNote(ORG_A, 'deep_0', { parentId: `deep_${DEPTH}`, index: 0 }, owner)).toBe(
+      'cycle',
+    );
+    const root = await prisma.note.findUniqueOrThrow({ where: { id: 'deep_0' } });
+    expect(root.parentId).toBeNull();
+  });
+
   it('자기 자손 밑으로는 옮길 수 없다', async () => {
     const root = await noteIn(ORG_A, '루트');
     const child = await noteIn(ORG_A, '자식', root);
