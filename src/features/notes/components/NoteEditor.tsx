@@ -5,6 +5,11 @@ import type { Editor, JSONContent } from '@tiptap/core';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { noteEditorExtensions } from '@/features/notes/editor';
+import { SlashCommand } from './SlashCommand';
+
+// 편집 전용 확장 — 슬래시 커맨드는 입력 플러그인이라 정적 뷰(스키마만 쓰는 static
+// renderer) 목록(editor.ts)에는 넣지 않는다.
+const editingExtensions = [...noteEditorExtensions, SlashCommand];
 
 type NoteEditorProps = {
   doc: JSONContent;
@@ -16,7 +21,7 @@ type NoteEditorProps = {
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
 export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
   const editor = useEditor({
-    extensions: noteEditorExtensions,
+    extensions: editingExtensions,
     content: doc,
     // Next SSR에서 즉시 렌더하면 서버/클라 마크업이 어긋난다 — 클라 마운트 후 렌더.
     immediatelyRender: false,
