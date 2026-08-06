@@ -2,6 +2,7 @@
 
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import type { Editor, JSONContent } from '@tiptap/core';
+import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { noteEditorExtensions } from '@/features/notes/editor';
 
@@ -58,6 +59,8 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       orderedList: editor.isActive('orderedList'),
       blockquote: editor.isActive('blockquote'),
       code: editor.isActive('code'),
+      taskList: editor.isActive('taskList'),
+      table: editor.isActive('table'),
     }),
   });
 
@@ -90,6 +93,38 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       <Toggle size="sm" aria-label="코드" pressed={active.code} onPressedChange={() => editor.chain().focus().toggleCode().run()}>
         코드
       </Toggle>
+      <Toggle size="sm" aria-label="체크리스트" pressed={active.taskList} onPressedChange={() => editor.chain().focus().toggleTaskList().run()}>
+        체크리스트
+      </Toggle>
+      {/* 표는 토글이 아니라 삽입 액션 — 표 안에서는 중첩 삽입 대신 행/열 컨트롤을 보인다. */}
+      {active.table ? (
+        <span className="flex items-center gap-1" role="group" aria-label="표 편집">
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().addRowAfter().run()}>
+            +행
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteRow().run()}>
+            −행
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().addColumnAfter().run()}>
+            +열
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteColumn().run()}>
+            −열
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteTable().run()}>
+            표 삭제
+          </Button>
+        </span>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="표 삽입"
+          onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+        >
+          표
+        </Button>
+      )}
     </div>
   );
 }

@@ -21,5 +21,11 @@ export function NoteContent({ doc }: { doc: JSONContent }) {
     return <p className="whitespace-pre-wrap">{docToPlainText(doc)}</p>;
   }
   // prose로 Tiptap 렌더 콘텐츠(h1/ul 등)에 서식 부여 — Tailwind preflight가 리셋한 걸 복원.
-  return <div className="prose prose-sm dark:prose-invert max-w-none">{rendered}</div>;
+  // 체크박스 pointer-events 차단: 정적 렌더의 체크박스는 눌러도 저장되지 않는다(KAN-38) —
+  // 토글되는 척만 하는 UI보다 아예 안 눌리는 쪽이 정직하다. 편집은 에디터에서.
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none [&_input]:pointer-events-none">
+      {rendered}
+    </div>
+  );
 }

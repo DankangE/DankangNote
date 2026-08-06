@@ -1,4 +1,6 @@
 import StarterKit from '@tiptap/starter-kit';
+import { TaskItem, TaskList } from '@tiptap/extension-list';
+import { TableKit } from '@tiptap/extension-table';
 import type { Extensions } from '@tiptap/core';
 
 // 노트 본문에서 허용하는 제목 레벨. api/validation.ts의 zod 화이트리스트(1|2|3)와 값이
@@ -15,4 +17,11 @@ export const noteEditorExtensions: Extensions = [
     link: false,
     heading: { levels: [...HEADING_LEVELS] },
   }),
+  // 체크리스트 (KAN-38). nested: Tab으로 하위 체크 항목을 만든다 — 깊이 폭주는
+  // validation.ts의 MAX_DEPTH 선검사가 막는다.
+  TaskList,
+  TaskItem.configure({ nested: true }),
+  // 표 (KAN-38). 리사이즈는 켜지 않는다 — colwidth가 픽셀값으로 저장돼 화면 폭이 다른
+  // 사람에게 그대로 강요되고, MVP에 드래그 리사이즈 UX까지 얹을 이유가 없다.
+  TableKit,
 ];

@@ -19,6 +19,14 @@ const NODE_TYPES = [
   'codeBlock',
   'horizontalRule',
   'hardBreak',
+  // KAN-38 블록 확장. 에디터(editor.ts) 확장과 함께 늘어난다 — 여기서 빠지면
+  // 그 블록이 저장에서 조용히 잘린다(티켓 본문의 경고가 이 자리다).
+  'taskList',
+  'taskItem',
+  'table',
+  'tableRow',
+  'tableHeader',
+  'tableCell',
 ] as const;
 
 const MARK_TYPES = ['bold', 'italic', 'strike', 'code', 'underline'] as const;
@@ -37,6 +45,13 @@ const noteNodeSchema = z.object({
       level: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
       start: z.number().int().min(1).optional(),
       language: z.string().max(50).nullish(),
+      // taskItem — getJSON이 항상 방출한다(기본 false).
+      checked: z.boolean().optional(),
+      // 표 셀. colwidth는 리사이즈를 껐어도 스키마 attr라 null로 방출된다(nullish 필수 —
+      // codeBlock language와 같은 함정).
+      colspan: z.number().int().min(1).max(100).optional(),
+      rowspan: z.number().int().min(1).max(100).optional(),
+      colwidth: z.array(z.number().int().min(1).max(10_000)).max(100).nullish(),
     })
     .optional(),
   marks: z.array(markSchema).max(12).optional(),
