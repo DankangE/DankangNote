@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { Button } from '@/components/ui/button';
@@ -19,19 +19,28 @@ type NoteEditorProps = {
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
 export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputId = useId();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
+  // ref가 아니라 id 조회인 이유: 이 콜백은 useMemo(렌더 단계)에서 만든 클로저에 실려
+  // Tiptap 확장으로 들어가는데, react 컴파일러 린트는 그 경로의 ref 접근을 '렌더 중
+  // 읽기일 수 있음'으로 보수적으로 거부한다. 실행은 항상 이벤트 시점이라 DOM 조회로 충분.
+  function openImagePicker() {
+    document.getElementById(fileInputId)?.click();
+  }
+
   // 편집 전용 확장 — 슬래시 커맨드는 입력 플러그인이라 정적 뷰(스키마만 쓰는 static
   // renderer) 목록(editor.ts)에는 넣지 않는다. 이미지 선택기는 이 컴포넌트의 hidden
-  // input이므로 인스턴스별로 configure한다(ref 경유라 콜백은 안정적).
+  // input이므로 인스턴스별로 configure한다.
   const extensions = useMemo(
     () => [
       ...noteEditorExtensions,
-      SlashCommand.configure({ pickImage: () => fileInputRef.current?.click() }),
+      SlashCommand.configure({
+        pickImage: () => document.getElementById(fileInputId)?.click(),
+      }),
     ],
-    [],
+    [fileInputId],
   );
 
   const editor = useEditor({
@@ -78,13 +87,9 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
 
   return (
     <div className="flex flex-col gap-2">
-      <EditorToolbar
-        editor={editor}
-        uploading={uploading}
-        onPickImage={() => fileInputRef.current?.click()}
-      />
+      <EditorToolbar editor={editor} uploading={uploading} onPickImage={openImagePicker} />
       <input
-        ref={fileInputRef}
+        id={fileInputId}
         type="file"
         accept="image/png,image/jpeg,image/gif,image/webp"
         className="hidden"
