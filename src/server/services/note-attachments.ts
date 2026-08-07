@@ -9,6 +9,7 @@ import {
   storage,
 } from '@/server/storage';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
+import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
 import { isInlineImage } from '@/lib/attachments';
 import type { UploadTicket } from '@/server/storage';
 
@@ -37,15 +38,28 @@ export async function createPendingNoteAttachment(
 
   // 채팅과 같은 org 프리픽스 — 조직 삭제의 프리픽스 정리(KAN-70)가 노트 이미지까지 덮는다.
   const key = `${attachmentKeyPrefix(orgId)}${crypto.randomUUID()}`;
-  const row = await prisma.noteAttachment.create({
-    data: {
-      orgId,
-      uploaderId: userId,
-      key,
-      fileName: input.fileName,
-      contentType: input.contentType,
-      size: input.size,
-    },
+  // 스켈레톤이 먼저다 — orgId·uploaderId가 Clerk 미러 FK라 웹훅이 아직 안 왔으면 create가
+  // P2003으로 죽는다(KAN-11). 채팅 첨부는 앞선 canAccessChannel이 Channel 행을, 따라서
+  // Organization 행을 보장해 이 문장이 필요 없지만, 노트 이미지는 **첫 문서를 저장하기도
+  // 전에** 쓰이는 첫 write라 그 보장이 없다.
+  const row = await prisma.$transaction(async (tx) => {
+    await orgSkeleton(orgId, tx);
+    await userSkeleton(userId, tx);
+    return tx.noteAttachment.create({
+      data: {
+        orgId,
+        uploaderId: userId,
+        key,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        size: input.size,
+      },
+    });
+  });
+  // 스켈레톤이 삭제된 org·user를 되살렸을 수 있다 — 되살아났으면 이 행째 정리하고 throw
+  // 한다(createNote와 같은 pre/post 이중 가드).
+  await assertNotTombstoned([orgId, userId], async () => {
+    await prisma.noteAttachment.deleteMany({ where: { id: row.id } });
   });
   const upload = await presignAttachmentUpload(key, input.contentType);
   if (!upload) {

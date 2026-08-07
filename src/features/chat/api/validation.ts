@@ -1,6 +1,7 @@
 import { z } from '@/lib/zod';
 import { REACTION_EMOJIS } from '@/features/chat/reactions';
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS_PER_MESSAGE } from '@/features/chat/attachments';
+import { MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '@/features/chat/attachments';
 
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.

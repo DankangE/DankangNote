@@ -1,5 +1,6 @@
 import { FileText } from 'lucide-react';
-import { attachmentUrl, formatBytes, isInlineImage } from '@/features/chat/attachments';
+import { isInlineImage } from '@/lib/attachments';
+import { attachmentUrl, formatBytes } from '@/features/chat/attachments';
 import type { AttachmentView } from '@/features/chat/types';
 
 // 메시지에 붙은 첨부 렌더 (KAN-35). 안전한 이미지 타입은 인라인으로, 나머지는 다운로드

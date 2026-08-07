@@ -153,8 +153,9 @@ export async function updateNote(
   attachmentIds: string[] = [],
 ): Promise<UpdateOutcome> {
   try {
-    // 첨부 바인딩·미참조 정리는 본문 저장과 원자적이어야 한다 — content가 바뀔 때만
-    // 대화형 트랜잭션으로 확장한다(제목만 수정하는 경로는 기존 단문 그대로).
+    // 첨부 바인딩·미참조 정리는 본문 저장과 원자적이어야 한다 — 그래서 KAN-38에서 단문
+    // update를 대화형 트랜잭션으로 바꿨다. 바인딩 문장만 조건부다(제목만 바꾸는 수정은
+    // 참조 목록을 들고 오지 않으므로, 돌렸다간 멀쩡한 첨부를 미참조로 보고 지운다).
     const note = await prisma.$transaction(async (tx) => {
       const updated = await tx.note.update({
         where: ownedNoteWhere(orgId, id, actor),

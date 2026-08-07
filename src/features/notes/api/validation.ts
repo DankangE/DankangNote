@@ -121,6 +121,11 @@ export const createNoteInputSchema = noteInputSchema.extend({
 
 // 이동 대상 — index는 대상 형제 그룹 기준 삽입 위치. 상한은 서비스가 클램프하지만
 // 터무니없는 값(1e9 등)이 정수 오버플로 없이 통과하지 않게 여기서도 자른다.
+export const moveNoteTargetSchema = z.object({
+  parentId: noteIdSchema.nullable(),
+  index: z.number().int().min(0).max(100_000),
+});
+
 // 이미지 presign 입력 (KAN-38) — 노트 본문에는 인라인 안전 이미지 타입만 올린다.
 // 크기·타입의 실제 강제는 스토리지 POST 정책이 한다(storage.ts) — 이건 이른 거절이다.
 export const presignNoteImageSchema = z.object({
@@ -129,9 +134,4 @@ export const presignNoteImageSchema = z.object({
     .string()
     .refine(isInlineImage, '이미지 파일(PNG·JPEG·GIF·WebP)만 넣을 수 있습니다.'),
   size: z.number().int().min(1).max(MAX_ATTACHMENT_BYTES, '10MB 이하만 올릴 수 있습니다.'),
-});
-
-export const moveNoteTargetSchema = z.object({
-  parentId: noteIdSchema.nullable(),
-  index: z.number().int().min(0).max(100_000),
 });
