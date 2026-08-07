@@ -4,6 +4,11 @@ import { prisma } from '@/server/db';
 import { Prisma } from '@/server/generated/prisma/client';
 import type { Note, User } from '@/server/generated/prisma/client';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
+import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
+import {
+  InvalidNoteAttachmentError,
+  syncNoteAttachments,
+} from '@/server/services/note-attachments';
 
 export interface NoteInput {
   title: string;
@@ -45,10 +50,12 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
   });
 }
 
-// 생성 결과 — 부모 지정(KAN-37)이 생기며 '그 부모가 이 org에 없다'는 실패 경로가 생겼다.
+// 생성 결과 — 부모 지정(KAN-37)의 '그 부모가 이 org에 없다', 이미지(KAN-38)의 '본문이
+// 참조한 첨부를 이 노트에 묶을 수 없다'가 실패 경로다.
 export type CreateOutcome =
   | { status: 'ok'; note: NoteWithAuthor }
-  | { status: 'invalidparent' };
+  | { status: 'invalidparent' }
+  | { status: 'invalidattachment' };
 
 // 생성은 org/작성자 스켈레톤 생성(create-if-absent)과 한 트랜잭션 — webhook이 아직
 // 미러를 채우기 전이어도 FK가 성립한다(부트스트랩 경합 회피, KAN-11 멤버십과 동일 패턴).
@@ -60,6 +67,8 @@ export async function createNote(
   orgId: string,
   authorId: string,
   input: CreateNoteInput,
+  // 본문이 참조하는 첨부 id(KAN-38) — 액션이 검증된 doc에서 뽑아 넘긴다.
+  attachmentIds: string[] = [],
 ): Promise<CreateOutcome> {
   // 삭제된 워크스페이스/사용자를 stale 세션(토큰 만료 전)이 스켈레톤으로 부활시키지
   // 않도록 tombstone을 pre/post 이중 확인한다(KAN-12, clerk-sync upsert와 같은 패턴).
@@ -91,21 +100,26 @@ export async function createNote(
   });
   const position = (_max.position ?? -1) + 1;
 
-  const [, , note] = await prisma.$transaction([
-    prisma.organization.createMany({
-      // name은 세션에서 알 수 없다 — 임시로 orgId를 쓰고 organization.* webhook이 교정.
-      data: [{ id: orgId, name: orgId }],
-      skipDuplicates: true,
-    }),
-    prisma.user.createMany({
-      data: [{ id: authorId }],
-      skipDuplicates: true,
-    }),
-    prisma.note.create({
-      data: { title, content, parentId, position, orgId, authorId },
-      include: { author: { select: AUTHOR_SELECT } },
-    }),
-  ]);
+  let note: NoteWithAuthor;
+  try {
+    // KAN-38에서 배열 → 대화형 트랜잭션으로: 첨부 바인딩(syncNoteAttachments)이 생성과
+    // 원자적이어야 한다. 스켈레톤 헬퍼는 tx 클라이언트를 받는다(skeleton.ts 주석).
+    note = await prisma.$transaction(async (tx) => {
+      await orgSkeleton(orgId, tx);
+      await userSkeleton(authorId, tx);
+      const created = await tx.note.create({
+        data: { title, content, parentId, position, orgId, authorId },
+        include: { author: { select: AUTHOR_SELECT } },
+      });
+      await syncNoteAttachments(tx, orgId, authorId, created.id, attachmentIds);
+      return created;
+    });
+  } catch (error) {
+    if (error instanceof InvalidNoteAttachmentError) {
+      return { status: 'invalidattachment' };
+    }
+    throw error;
+  }
 
   // post-check — 방금 되살렸을 수 있는 것들을 자가 정리(org 삭제는 cascade로 노트까지).
   // post-check가 tombstone 커밋보다 앞서는 문장 단위 인터리빙은 delete 핸들러의 커밋 후
@@ -122,7 +136,8 @@ export async function createNote(
 export type UpdateOutcome =
   | { status: 'ok'; note: NoteWithAuthor }
   | { status: 'forbidden' }
-  | { status: 'notfound' };
+  | { status: 'notfound' }
+  | { status: 'invalidattachment' };
 
 export type DeleteOutcome = 'ok' | 'forbidden' | 'notfound';
 
@@ -134,15 +149,29 @@ export async function updateNote(
   id: string,
   input: Partial<NoteInput>,
   actor: NoteActor,
+  // 본문이 참조하는 첨부 id(KAN-38) — content가 없는 부분 수정(제목만)에서는 무시된다.
+  attachmentIds: string[] = [],
 ): Promise<UpdateOutcome> {
   try {
-    const note = await prisma.note.update({
-      where: ownedNoteWhere(orgId, id, actor),
-      data: input,
-      include: { author: { select: AUTHOR_SELECT } },
+    // 첨부 바인딩·미참조 정리는 본문 저장과 원자적이어야 한다 — 그래서 KAN-38에서 단문
+    // update를 대화형 트랜잭션으로 바꿨다. 바인딩 문장만 조건부다(제목만 바꾸는 수정은
+    // 참조 목록을 들고 오지 않으므로, 돌렸다간 멀쩡한 첨부를 미참조로 보고 지운다).
+    const note = await prisma.$transaction(async (tx) => {
+      const updated = await tx.note.update({
+        where: ownedNoteWhere(orgId, id, actor),
+        data: input,
+        include: { author: { select: AUTHOR_SELECT } },
+      });
+      if (input.content !== undefined) {
+        await syncNoteAttachments(tx, orgId, actor.userId, id, attachmentIds);
+      }
+      return updated;
     });
     return { status: 'ok', note };
   } catch (error) {
+    if (error instanceof InvalidNoteAttachmentError) {
+      return { status: 'invalidattachment' };
+    }
     // P2025: 조건에 맞는 레코드 없음. 소유권 때문인지(권한) 노트가 없어서인지(미존재) 구분.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
       const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
@@ -157,8 +186,30 @@ export async function deleteNote(
   id: string,
   actor: NoteActor,
 ): Promise<DeleteOutcome> {
-  const { count } = await prisma.note.deleteMany({ where: ownedNoteWhere(orgId, id, actor) });
-  if (count > 0) return 'ok';
-  const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
-  return exists ? 'forbidden' : 'notfound';
+  return prisma.$transaction(async (tx) => {
+    // 노트 행 잠금(KAN-38) — 첨부 키 수집과 삭제 사이에 다른 저장이 새 첨부를 바인딩하면
+    // 그 행이 cascade로 사라지며 '지울 좌표'를 못 적는다(영구 고아). FOR UPDATE는 바인딩
+    // 트랜잭션의 FK 검증(KEY SHARE)과 충돌하므로, 경합한 저장은 여기 커밋 뒤 FK 위반으로
+    // 죽고 그 첨부는 pending으로 남아 24h 스윕이 걷는다.
+    const locked = await tx.$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "Note" WHERE "id" = ${id} AND "orgId" = ${orgId} FOR UPDATE`;
+    if (locked.length === 0) return 'notfound';
+
+    // cascade가 지우기 전에 키를 outbox(KAN-70)에 적는다 — 행과 함께 좌표가 사라지면
+    // 스토리지 오브젝트가 영영 고아가 된다. enqueue는 삭제가 확정된 뒤에만 커밋된다
+    // (같은 트랜잭션 — forbidden이면 통째로 버려진다).
+    const attachments = await tx.noteAttachment.findMany({
+      where: { noteId: id, orgId },
+      select: { key: true },
+    });
+    const { count } = await tx.note.deleteMany({ where: ownedNoteWhere(orgId, id, actor) });
+    if (count === 0) return 'forbidden';
+    if (attachments.length > 0) {
+      await tx.storageCleanup.createMany({
+        data: attachments.map((row) => ({ kind: 'key', target: row.key })),
+        skipDuplicates: true,
+      });
+    }
+    return 'ok';
+  });
 }

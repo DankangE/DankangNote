@@ -9,7 +9,7 @@ import {
 } from '@/server/storage';
 import { canAccessChannel, visibleWhere } from '@/server/services/channels';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
-import { isInlineImage } from '@/features/chat/attachments';
+import { isInlineImage } from '@/lib/attachments';
 import type { AttachmentView } from '@/features/chat/types';
 import type { UploadTicket } from '@/server/storage';
 

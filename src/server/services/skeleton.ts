@@ -13,9 +13,10 @@ import type { Prisma } from '@/server/generated/prisma/client';
 // 스켈레톤은 삭제된 리소스를 되살릴 수 있으므로 반드시 assertNotTombstoned pre/post와
 // 함께 쓴다(clerk-tombstone.ts).
 
-/** org 미러 스켈레톤. name은 세션에서 알 수 없어 orgId로 두고 webhook이 교정한다. */
-export const orgSkeleton = (orgId: string) =>
-  prisma.organization.createMany({ data: [{ id: orgId, name: orgId }], skipDuplicates: true });
+/** org 미러 스켈레톤. name은 세션에서 알 수 없어 orgId로 두고 webhook이 교정한다.
+ *  client 파라미터는 userSkeleton과 같은 이유(대화형 트랜잭션 — 아래 주석). */
+export const orgSkeleton = (orgId: string, client: Prisma.TransactionClient = prisma) =>
+  client.organization.createMany({ data: [{ id: orgId, name: orgId }], skipDuplicates: true });
 
 /**
  * 사용자 미러 스켈레톤. 표시 정보는 user.* webhook이 채운다.

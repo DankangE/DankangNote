@@ -1,9 +1,14 @@
 'use client';
 
+import { useId, useMemo, useState } from 'react';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import type { Editor, JSONContent } from '@tiptap/core';
+import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { noteEditorExtensions } from '@/features/notes/editor';
+import { uploadNoteImage } from '@/features/notes/attachments';
+import { SlashCommand } from './SlashCommand';
+import { FormError } from './FormError';
 
 type NoteEditorProps = {
   doc: JSONContent;
@@ -14,8 +19,32 @@ type NoteEditorProps = {
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
 export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
+  const fileInputId = useId();
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // ref가 아니라 id 조회인 이유: 이 콜백은 useMemo(렌더 단계)에서 만든 클로저에 실려
+  // Tiptap 확장으로 들어가는데, react 컴파일러 린트는 그 경로의 ref 접근을 '렌더 중
+  // 읽기일 수 있음'으로 보수적으로 거부한다. 실행은 항상 이벤트 시점이라 DOM 조회로 충분.
+  function openImagePicker() {
+    document.getElementById(fileInputId)?.click();
+  }
+
+  // 편집 전용 확장 — 슬래시 커맨드는 입력 플러그인이라 정적 뷰(스키마만 쓰는 static
+  // renderer) 목록(editor.ts)에는 넣지 않는다. 이미지 선택기는 이 컴포넌트의 hidden
+  // input이므로 인스턴스별로 configure한다.
+  const extensions = useMemo(
+    () => [
+      ...noteEditorExtensions,
+      SlashCommand.configure({
+        pickImage: () => document.getElementById(fileInputId)?.click(),
+      }),
+    ],
+    [fileInputId],
+  );
+
   const editor = useEditor({
-    extensions: noteEditorExtensions,
+    extensions,
     content: doc,
     // Next SSR에서 즉시 렌더하면 서버/클라 마크업이 어긋난다 — 클라 마운트 후 렌더.
     immediatelyRender: false,
@@ -35,9 +64,40 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
 
   if (!editor) return null;
 
+  async function handleImageChosen(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    // 같은 파일을 연속으로 고를 수 있게 비운다(change 이벤트는 값이 바뀔 때만 온다).
+    event.target.value = '';
+    if (!file || !editor || uploading) return;
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const result = await uploadNoteImage(file);
+      if (result.ok) {
+        editor.chain().focus().setImage({ src: result.src }).run();
+      } else {
+        setUploadError(result.error);
+      }
+    } catch {
+      setUploadError('이미지 업로드에 실패했어요. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <EditorToolbar editor={editor} />
+      <EditorToolbar editor={editor} uploading={uploading} onPickImage={openImagePicker} />
+      <input
+        id={fileInputId}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+        onChange={handleImageChosen}
+      />
+      <FormError message={uploadError} />
       <EditorContent editor={editor} />
     </div>
   );
@@ -45,7 +105,15 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
 
 // 툴바는 editor가 확정된 뒤에만 렌더된다 — useEditorState를 조건 없이 호출하기 위해
 // 별도 컴포넌트로 분리한다(훅 규칙).
-function EditorToolbar({ editor }: { editor: Editor }) {
+function EditorToolbar({
+  editor,
+  uploading,
+  onPickImage,
+}: {
+  editor: Editor;
+  uploading: boolean;
+  onPickImage: () => void;
+}) {
   const active = useEditorState({
     editor,
     selector: ({ editor }) => ({
@@ -58,6 +126,8 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       orderedList: editor.isActive('orderedList'),
       blockquote: editor.isActive('blockquote'),
       code: editor.isActive('code'),
+      taskList: editor.isActive('taskList'),
+      table: editor.isActive('table'),
     }),
   });
 
@@ -90,6 +160,41 @@ function EditorToolbar({ editor }: { editor: Editor }) {
       <Toggle size="sm" aria-label="코드" pressed={active.code} onPressedChange={() => editor.chain().focus().toggleCode().run()}>
         코드
       </Toggle>
+      <Toggle size="sm" aria-label="체크리스트" pressed={active.taskList} onPressedChange={() => editor.chain().focus().toggleTaskList().run()}>
+        체크리스트
+      </Toggle>
+      {/* 표는 토글이 아니라 삽입 액션 — 표 안에서는 중첩 삽입 대신 행/열 컨트롤을 보인다. */}
+      {active.table ? (
+        <span className="flex items-center gap-1" role="group" aria-label="표 편집">
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().addRowAfter().run()}>
+            +행
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteRow().run()}>
+            −행
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().addColumnAfter().run()}>
+            +열
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteColumn().run()}>
+            −열
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => editor.chain().focus().deleteTable().run()}>
+            표 삭제
+          </Button>
+        </span>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="표 삽입"
+          onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
+        >
+          표
+        </Button>
+      )}
+      <Button variant="ghost" size="sm" aria-label="이미지 넣기" disabled={uploading} onClick={onPickImage}>
+        {uploading ? '업로드 중…' : '이미지'}
+      </Button>
     </div>
   );
 }

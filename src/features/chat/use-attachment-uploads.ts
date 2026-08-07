@@ -1,11 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  isInlineImage,
-  MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-} from '@/features/chat/attachments';
+import { isInlineImage, MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '@/features/chat/attachments';
 import type { AttachmentView } from '@/features/chat/types';
 
 // 컴포저의 첨부 준비 상태 (KAN-35). 파일을 고르면 presign → 스토리지 직접 업로드까지를

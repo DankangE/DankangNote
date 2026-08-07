@@ -7,6 +7,7 @@ import * as notesService from '@/server/services/notes';
 import { moveNote } from '@/server/services/note-tree';
 import { toggleFavorite } from '@/server/services/note-favorites';
 import { serializeNoteContent } from '@/features/notes/content';
+import { collectNoteAttachmentIds } from '@/features/notes/attachments';
 import type { ActionResult, Note } from '@/features/notes/types';
 import { createNoteInputSchema, moveNoteTargetSchema, noteIdSchema, noteInputSchema } from './validation';
 
@@ -41,13 +42,18 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
   const serialized = content ? serializeNoteContent(content) : '';
 
   return guarded('notes.createNote', async () => {
-    const outcome = await notesService.createNote(org.orgId, org.userId, {
-      title,
-      content: serialized,
-      parentId: parentId ?? null,
-    });
+    const outcome = await notesService.createNote(
+      org.orgId,
+      org.userId,
+      { title, content: serialized, parentId: parentId ?? null },
+      // 본문 이미지 바인딩(KAN-38) — 검증된 doc에서 참조 id를 뽑아 생성과 한 트랜잭션으로.
+      content ? collectNoteAttachmentIds(content) : [],
+    );
     if (outcome.status === 'invalidparent') {
       return { ok: false, error: '상위 문서를 찾을 수 없습니다.' };
+    }
+    if (outcome.status === 'invalidattachment') {
+      return { ok: false, error: '본문의 이미지를 확인할 수 없습니다. 이미지를 다시 넣어 주세요.' };
     }
     revalidateNotes('createNote');
     return { ok: true, data: outcome.note };
@@ -146,10 +152,18 @@ export async function updateNoteAction(
   }
 
   return guarded('notes.updateNote', async () => {
-    const outcome = await notesService.updateNote(org.orgId, parsedId.data, patch, {
-      userId: org.userId,
-      isAdmin: org.isAdmin,
-    });
+    const outcome = await notesService.updateNote(
+      org.orgId,
+      parsedId.data,
+      patch,
+      { userId: org.userId, isAdmin: org.isAdmin },
+      parsedInput.data.content !== undefined
+        ? collectNoteAttachmentIds(parsedInput.data.content)
+        : [],
+    );
+    if (outcome.status === 'invalidattachment') {
+      return { ok: false, error: '본문의 이미지를 확인할 수 없습니다. 이미지를 다시 넣어 주세요.' };
+    }
     if (outcome.status === 'forbidden') {
       return { ok: false, error: '이 노트를 수정할 권한이 없습니다. 작성자 또는 관리자만 수정할 수 있습니다.' };
     }

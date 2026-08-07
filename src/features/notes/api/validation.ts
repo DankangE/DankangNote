@@ -1,4 +1,6 @@
 import { z } from '@/lib/zod';
+import { isInlineImage, MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
+import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
 
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.
@@ -19,6 +21,15 @@ const NODE_TYPES = [
   'codeBlock',
   'horizontalRule',
   'hardBreak',
+  // KAN-38 블록 확장. 에디터(editor.ts) 확장과 함께 늘어난다 — 여기서 빠지면
+  // 그 블록이 저장에서 조용히 잘린다(티켓 본문의 경고가 이 자리다).
+  'taskList',
+  'taskItem',
+  'table',
+  'tableRow',
+  'tableHeader',
+  'tableCell',
+  'image',
 ] as const;
 
 const MARK_TYPES = ['bold', 'italic', 'strike', 'code', 'underline'] as const;
@@ -37,6 +48,17 @@ const noteNodeSchema = z.object({
       level: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
       start: z.number().int().min(1).optional(),
       language: z.string().max(50).nullish(),
+      // taskItem — getJSON이 항상 방출한다(기본 false).
+      checked: z.boolean().optional(),
+      // 표 셀. colwidth는 리사이즈를 껐어도 스키마 attr라 null로 방출된다(nullish 필수 —
+      // codeBlock language와 같은 함정).
+      colspan: z.number().int().min(1).max(100).optional(),
+      rowspan: z.number().int().min(1).max(100).optional(),
+      colwidth: z.array(z.number().int().min(1).max(10_000)).max(100).nullish(),
+      // 이미지 src는 우리 첨부 라우트만 — 외부 URL·data:·javascript: 스킴이 저장형
+      // XSS/추적 벡터가 되는 것을 형태 수준에서 끊는다(KAN-38). alt는 표시용 텍스트.
+      src: z.string().regex(NOTE_ATTACHMENT_SRC_RE, '올바른 이미지 주소가 아닙니다.').optional(),
+      alt: z.string().max(300).nullish(),
     })
     .optional(),
   marks: z.array(markSchema).max(12).optional(),
@@ -102,4 +124,14 @@ export const createNoteInputSchema = noteInputSchema.extend({
 export const moveNoteTargetSchema = z.object({
   parentId: noteIdSchema.nullable(),
   index: z.number().int().min(0).max(100_000),
+});
+
+// 이미지 presign 입력 (KAN-38) — 노트 본문에는 인라인 안전 이미지 타입만 올린다.
+// 크기·타입의 실제 강제는 스토리지 POST 정책이 한다(storage.ts) — 이건 이른 거절이다.
+export const presignNoteImageSchema = z.object({
+  fileName: z.string().trim().min(1, '파일 이름이 필요합니다.').max(200, '파일 이름이 너무 깁니다.'),
+  contentType: z
+    .string()
+    .refine(isInlineImage, '이미지 파일(PNG·JPEG·GIF·WebP)만 넣을 수 있습니다.'),
+  size: z.number().int().min(1).max(MAX_ATTACHMENT_BYTES, '10MB 이하만 올릴 수 있습니다.'),
 });

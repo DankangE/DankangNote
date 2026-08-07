@@ -9,7 +9,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { MAX_ATTACHMENT_BYTES } from '@/features/chat/attachments';
+import { MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
 
 // S3 호환 오브젝트 스토리지 (KAN-35). 로컬은 docker-compose의 MinIO, 스테이징은 관리형
 // S3 호환 서비스로 env만 바꿔 간다 — Vercel Blob을 안 쓴 이유는 로컬 개발에도 Vercel 계정

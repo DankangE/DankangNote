@@ -33,13 +33,38 @@ model Note {
 
   organization Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   author       User?          @relation(fields: [authorId], references: [id], onDelete: SetNull)
-  parent       Note?          @relation("NoteTree", fields: [parentId], references: [id], onDelete: SetNull)
-  children     Note[]         @relation("NoteTree")
+  parent       Note?            @relation("NoteTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     Note[]           @relation("NoteTree")
   favorites    NoteFavorite[]
+  attachments  NoteAttachment[]
 
   // 트리 조회·형제 그룹 재작성은 전부 (orgId, parentId) 스코프로 온다.
   @@index([orgId, parentId])
   @@index([authorId])
+}
+
+/// 노트 본문 이미지 (KAN-38) — MessageAttachment(KAN-35)와 같은 수명 구조: presign 시
+/// pending 행(noteId null), 저장 시 본문이 참조하는 것만 바인딩. 본문에서 빠진 첨부는
+/// 저장 트랜잭션이 행을 지우며 키를 outbox(KAN-70)에 적고, 노트 삭제도 같은 방식으로
+/// 키를 먼저 적는다(cascade만 믿으면 행과 함께 '지울 좌표'가 사라진다). 키는 채팅과 같은
+/// org/{orgId}/att/ 프리픽스라 조직 삭제의 프리픽스 정리가 그대로 덮는다.
+model NoteAttachment {
+  id          String   @id @default(cuid())
+  orgId       String
+  uploaderId  String
+  /// 바인딩 전(pending)에는 null — 업로더 본인에게만 보이고 24h 스윕 대상이다.
+  noteId      String?
+  key         String   @unique
+  fileName    String
+  contentType String
+  size        Int
+  createdAt   DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  note         Note?        @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId])
+  @@index([orgId])
 }
 
 /// 노트 즐겨찾기 (KAN-37) — 사용자별 상태라 행의 존재가 곧 토글이다(MessageReaction과
@@ -96,10 +121,11 @@ model Organization {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  memberships   Membership[]
-  notes         Note[]
-  noteFavorites NoteFavorite[]
-  boardColumns  BoardColumn[]
+  memberships     Membership[]
+  notes           Note[]
+  noteFavorites   NoteFavorite[]
+  noteAttachments NoteAttachment[]
+  boardColumns    BoardColumn[]
   boardCards   BoardCard[]
   chatMessages  ChatMessage[]
   channels      Channel[]
