@@ -36,35 +36,50 @@ model Note {
   parent       Note?            @relation("NoteTree", fields: [parentId], references: [id], onDelete: SetNull)
   children     Note[]           @relation("NoteTree")
   favorites    NoteFavorite[]
-  attachments  NoteAttachment[]
+  attachmentRefs NoteAttachmentRef[]
 
   // 트리 조회·형제 그룹 재작성은 전부 (orgId, parentId) 스코프로 온다.
   @@index([orgId, parentId])
   @@index([authorId])
 }
 
-/// 노트 본문 이미지 (KAN-38) — MessageAttachment(KAN-35)와 같은 수명 구조: presign 시
-/// pending 행(noteId null), 저장 시 본문이 참조하는 것만 바인딩. 본문에서 빠진 첨부는
-/// 저장 트랜잭션이 행을 지우며 키를 outbox(KAN-70)에 적고, 노트 삭제도 같은 방식으로
-/// 키를 먼저 적는다(cascade만 믿으면 행과 함께 '지울 좌표'가 사라진다). 키는 채팅과 같은
-/// org/{orgId}/att/ 프리픽스라 조직 삭제의 프리픽스 정리가 그대로 덮는다.
+/// 노트 본문 이미지의 **오브젝트** (KAN-38) — MessageAttachment(KAN-35)와 같은 수명 구조:
+/// presign 시 참조 없는 행, 저장 시 본문이 참조하는 것만 바인딩. 본문에서 빠져 참조가
+/// 0이 된 첨부는 저장 트랜잭션이 행을 지우며 키를 outbox(KAN-70)에 적고, 노트 삭제도 같은
+/// 방식으로 키를 먼저 적는다(cascade만 믿으면 행과 함께 '지울 좌표'가 사라진다). 키는
+/// 채팅과 같은 org/{orgId}/att/ 프리픽스라 조직 삭제의 프리픽스 정리가 그대로 덮는다.
+///
+/// 어느 노트가 쓰는지는 NoteAttachmentRef가 들고 있다 — 참조를 1:N으로 뗀 이유는 KAN-71:
+/// 이미지 블록을 다른 문서로 복사하는 정상적인 흐름이 1:1 모델에서는 '남의 첨부를 실어
+/// 왔다'와 구분되지 않아 저장이 통째로 거부됐고, 원본 노트에서 그 이미지를 빼는 순간
+/// 오브젝트까지 지워져 복사본이 영영 저장 불가가 됐다.
 model NoteAttachment {
   id          String   @id @default(cuid())
   orgId       String
   uploaderId  String
-  /// 바인딩 전(pending)에는 null — 업로더 본인에게만 보이고 24h 스윕 대상이다.
-  noteId      String?
   key         String   @unique
   fileName    String
   contentType String
   size        Int
   createdAt   DateTime @default(now())
 
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  note         Note?        @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  refs         NoteAttachmentRef[]
 
-  @@index([noteId])
   @@index([orgId])
+}
+
+/// 노트 ↔ 첨부 참조. 행이 없으면 pending(업로더 본인에게만 보이고 24h 스윕 대상)이고,
+/// 마지막 행이 사라지면 오브젝트를 지운다 — 즉 이 표가 곧 참조 카운트다.
+model NoteAttachmentRef {
+  noteId       String
+  attachmentId String
+
+  note       Note           @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  attachment NoteAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, attachmentId])
+  @@index([attachmentId])
 }
 
 /// 노트 즐겨찾기 (KAN-37) — 사용자별 상태라 행의 존재가 곧 토글이다(MessageReaction과

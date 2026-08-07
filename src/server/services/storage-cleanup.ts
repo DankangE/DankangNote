@@ -64,12 +64,16 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
         LIMIT ${SWEEP_BATCH_SIZE}
       )
       RETURNING "key"`;
-    // 노트 이미지(KAN-38)도 같은 규칙으로 걷는다 — 저장 없이 버려진 pending(noteId null).
+    // 노트 이미지(KAN-38)도 같은 규칙으로 걷는다 — 저장 없이 버려진 것. KAN-71 이후
+    // 'pending'은 컬럼이 아니라 **참조 0**이다(NoteAttachmentRef 행이 없다). 노트 저장·삭제
+    // 경로는 참조가 0이 되는 순간 스스로 정리하므로, 여기 걸리는 건 presign만 받고 저장에
+    // 도달하지 못한 업로드다.
     const removedNotes = await tx.$queryRaw<{ key: string }[]>`
       DELETE FROM "NoteAttachment"
-      WHERE "noteId" IS NULL AND "id" IN (
-        SELECT "id" FROM "NoteAttachment"
-        WHERE "noteId" IS NULL AND "createdAt" < ${cutoff}
+      WHERE "id" IN (
+        SELECT a."id" FROM "NoteAttachment" a
+        WHERE a."createdAt" < ${cutoff}
+          AND NOT EXISTS (SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id")
         LIMIT ${SWEEP_BATCH_SIZE}
       )
       RETURNING "key"`;

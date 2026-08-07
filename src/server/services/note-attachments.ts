@@ -69,8 +69,10 @@ export async function createPendingNoteAttachment(
 }
 
 /**
- * 다운로드 접근 판정 + 짧은 presigned GET. 노트는 org 전체 공개라 바인딩된 첨부는 org
- * 멤버 누구나, pending은 업로더 본인만(저장 전 에디터 미리보기용) — 채팅과 같은 이유다.
+ * 다운로드 접근 판정 + 짧은 presigned GET. 노트는 org 전체 공개라 어느 노트든 참조하는
+ * 첨부는 org 멤버 누구나, 아직 아무 데서도 안 쓰이는 것(pending)은 업로더 본인만(저장 전
+ * 에디터 미리보기용) — 채팅과 같은 이유다. 참조 판정(syncNoteAttachments ①)이 이 규칙을
+ * 그대로 따른다: 볼 수 있는 이미지는 인용할 수도 있어야 앞뒤가 맞는다.
  */
 export async function resolveNoteAttachmentUrl(
   orgId: string,
@@ -85,7 +87,7 @@ export async function resolveNoteAttachmentUrl(
     where: {
       id: attachmentId,
       orgId,
-      OR: [{ noteId: { not: null } }, { uploaderId: userId }],
+      OR: [{ refs: { some: {} } }, { uploaderId: userId }],
     },
   });
   if (!row) {
@@ -103,16 +105,18 @@ export class InvalidNoteAttachmentError extends Error {
 }
 
 /**
- * 저장 트랜잭션 안에서 본문의 첨부 참조와 행을 일치시킨다.
+ * 저장 트랜잭션 안에서 본문의 첨부 참조와 참조 행을 일치시킨다.
  *
- * ① 바인딩 — 참조된 것 중 pending(내 업로드)을 이 노트에 묶는다. where가 (orgId,
- *    noteId null, uploaderId)를 전부 물어 남의 org·남의 pending·이미 다른 노트의 첨부는
- *    묶이지 않는다.
- * ② 검증 — 참조 전부가 '이 노트의 첨부'가 됐는지 센다. 모자라면 남의 첨부 id를 본문에
- *    실어 온 것이므로 throw로 트랜잭션째 거부한다(fail-closed). 채팅의 count 불일치
- *    롤백과 같은 원리다(KAN-35).
- * ③ 정리 — 본문에서 빠진 첨부는 행을 지우며 키를 outbox(KAN-70)에 적는다. cascade가
- *    아니라 여기서 지우는 이유: 행만 사라지면 '지울 좌표'도 함께 사라진다.
+ * ① 참조 가능 판정 — 이 org의 첨부이고, **이미 어딘가에서 쓰이고 있거나(=조직에 공개된
+ *    이미지) 내가 올린 것**이어야 한다. 다운로드 판정(resolveNoteAttachmentUrl)과 같은
+ *    규칙이다 — 볼 수 있는 이미지는 인용할 수도 있어야 앞뒤가 맞는다.
+ * ② 검증 — 참조 전부가 통과했는지 센다. 모자라면 남의 org 또는 남의 저장 전 pending id를
+ *    실어 온 것이므로 throw로 트랜잭션째 거부한다(fail-closed, KAN-35의 count 불일치 롤백).
+ * ③ 참조 갱신 — 이 노트의 참조를 본문과 맞춘다(추가는 skipDuplicates, 빠진 것은 삭제).
+ * ④ 정리 — 그 결과 **참조가 0이 된** 첨부만 행을 지우며 키를 outbox(KAN-70)에 적는다.
+ *    cascade가 아니라 여기서 지우는 이유: 행만 사라지면 '지울 좌표'도 함께 사라진다.
+ *    참조가 남아 있으면 지우지 않는다 — 그게 KAN-71이 고친 데이터 유실의 핵심이다.
+ *    단 한 번도 참조된 적 없는 pending은 여기 걸리지 않는다(애초에 이 노트의 참조가 아니다).
  */
 export async function syncNoteAttachments(
   tx: Prisma.TransactionClient,
@@ -122,29 +126,56 @@ export async function syncNoteAttachments(
   referencedIds: string[],
 ): Promise<void> {
   if (referencedIds.length > 0) {
-    await tx.noteAttachment.updateMany({
-      where: { id: { in: referencedIds }, orgId, noteId: null, uploaderId: userId },
-      data: { noteId },
+    const usable = await tx.noteAttachment.findMany({
+      where: {
+        id: { in: referencedIds },
+        orgId,
+        OR: [{ refs: { some: {} } }, { uploaderId: userId }],
+      },
+      select: { id: true },
     });
-    const bound = await tx.noteAttachment.count({
-      where: { id: { in: referencedIds }, orgId, noteId },
-    });
-    if (bound !== referencedIds.length) {
+    if (usable.length !== referencedIds.length) {
       throw new InvalidNoteAttachmentError();
     }
-  }
-
-  const removed = await tx.noteAttachment.findMany({
-    where: { noteId, orgId, id: { notIn: referencedIds } },
-    select: { id: true, key: true },
-  });
-  if (removed.length > 0) {
-    await tx.storageCleanup.createMany({
-      data: removed.map((row) => ({ kind: 'key', target: row.key })),
+    await tx.noteAttachmentRef.createMany({
+      data: usable.map((row) => ({ noteId, attachmentId: row.id })),
       skipDuplicates: true,
     });
-    await tx.noteAttachment.deleteMany({
-      where: { id: { in: removed.map((row) => row.id) }, orgId },
-    });
   }
+
+  // 이 노트가 더는 참조하지 않는 것들 — 그 첨부가 다른 곳에서도 안 쓰이면 그때 지운다.
+  const dropped = await tx.noteAttachmentRef.findMany({
+    where: { noteId, attachmentId: { notIn: referencedIds } },
+    select: { attachmentId: true },
+  });
+  if (dropped.length === 0) return;
+
+  await tx.noteAttachmentRef.deleteMany({
+    where: { noteId, attachmentId: { in: dropped.map((row) => row.attachmentId) } },
+  });
+  await collectUnreferenced(tx, orgId, dropped.map((row) => row.attachmentId));
+}
+
+/**
+ * 참조가 0이 된 첨부의 행을 지우고 키를 outbox에 적는다 — 참조 삭제의 유일한 뒷정리 지점
+ * (노트 저장·노트 삭제가 공유한다). 여기서 `refs: { none: {} }`가 곧 참조 카운트 0이다.
+ */
+export async function collectUnreferenced(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  candidateIds: string[],
+): Promise<void> {
+  if (candidateIds.length === 0) return;
+  const orphaned = await tx.noteAttachment.findMany({
+    where: { id: { in: candidateIds }, orgId, refs: { none: {} } },
+    select: { id: true, key: true },
+  });
+  if (orphaned.length === 0) return;
+  await tx.storageCleanup.createMany({
+    data: orphaned.map((row) => ({ kind: 'key', target: row.key })),
+    skipDuplicates: true,
+  });
+  await tx.noteAttachment.deleteMany({
+    where: { id: { in: orphaned.map((row) => row.id) }, orgId },
+  });
 }

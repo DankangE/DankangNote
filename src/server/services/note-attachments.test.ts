@@ -43,6 +43,13 @@ async function pending(orgId: string, uploaderId: string): Promise<{ id: string;
   return row;
 }
 
+/** 이 첨부를 참조하는 노트 수 — KAN-71 이후 '바인딩'은 이 표의 행이다. */
+const refCount = (attachmentId: string) =>
+  prisma.noteAttachmentRef.count({ where: { attachmentId } });
+/** 이 노트가 이 첨부를 참조하는가. */
+const isRefBy = async (noteId: string, attachmentId: string) =>
+  (await prisma.noteAttachmentRef.count({ where: { noteId, attachmentId } })) === 1;
+
 // 본문에 이미지 하나가 든 doc의 저장 문자열.
 const docWithImage = (id: string) =>
   JSON.stringify({
@@ -58,8 +65,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     const outcome = await updateNote(ORG_A, noteId, { content: docWithImage(att.id) }, owner, [att.id]);
 
     expect(outcome.status).toBe('ok');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: att.id } });
-    expect(row.noteId).toBe(noteId);
+    expect(await isRefBy(noteId, att.id)).toBe(true);
   });
 
   it('다른 org의 첨부 id는 거부되고 본문 저장도 롤백된다', async () => {
@@ -73,8 +79,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     expect(outcome.status).toBe('invalidattachment');
     const note = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
     expect(note.content).toBe('');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: foreign.id } });
-    expect(row.noteId).toBeNull();
+    expect(await refCount(foreign.id)).toBe(0);
   });
 
   // 위 테스트는 org와 업로더가 **함께** 다르다 — where가 uploaderId도 물기 때문에 orgId
@@ -90,7 +95,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
 
     expect(outcome.status).toBe('invalidattachment');
     const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: mineElsewhere.id } });
-    expect(row.noteId).toBeNull();
+    expect(await refCount(mineElsewhere.id)).toBe(0);
     expect(row.orgId).toBe(ORG_B);
   });
 
@@ -113,8 +118,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     );
 
     expect(outcome.status).toBe('ok');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: att.id } });
-    expect(outcome.status === 'ok' && row.noteId === outcome.note.id).toBe(true);
+    expect(outcome.status === 'ok' && (await isRefBy(outcome.note.id, att.id))).toBe(true);
   });
 });
 
@@ -151,7 +155,7 @@ describe('미참조 정리와 삭제 (KAN-70 outbox)', () => {
     expect(await deleteNote(ORG_A, noteId, { userId: USER_OTHER, isAdmin: false })).toBe('forbidden');
 
     expect(await prisma.storageCleanup.count()).toBe(0);
-    expect(await prisma.noteAttachment.count({ where: { noteId } })).toBe(1);
+    expect(await prisma.noteAttachmentRef.count({ where: { noteId } })).toBe(1);
   });
 });
 
@@ -264,5 +268,103 @@ describe('수명 — 행은 테넌트와 함께 사라진다', () => {
     await prisma.organization.delete({ where: { id: ORG_A } });
 
     expect(await prisma.noteAttachment.count()).toBe(0);
+  });
+});
+
+// KAN-71 — 1:1 시절에는 이미지 블록을 다른 문서로 복사하는 정상 흐름이 '남의 첨부를 실어
+// 왔다'와 구분되지 않아 저장이 통째로 거부됐고, 원본에서 그 이미지를 빼는 순간 오브젝트까지
+// 지워져 복사본이 영영 저장 불가가 됐다. 참조를 1:N으로 떼면서 그 부류가 닫힌다.
+describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
+  /** 노트 하나를 만들고 이미지를 넣어 저장한다. */
+  async function noteWithImage(attachmentId: string, title = '문서'): Promise<string> {
+    const outcome = await createNote(
+      ORG_A, USER_OWNER, { title, content: docWithImage(attachmentId) }, [attachmentId],
+    );
+    if (outcome.status !== 'ok') throw new Error(`저장 실패: ${outcome.status}`);
+    return outcome.note.id;
+  }
+
+  it('같은 이미지를 다른 문서에 붙여넣어도 저장된다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+
+    const second = await createNote(
+      ORG_A, USER_OWNER, { title: '노트2', content: docWithImage(att.id) }, [att.id],
+    );
+
+    expect(second.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(2);
+    expect(await isRefBy(first, att.id)).toBe(true);
+  });
+
+  it('원본에서 이미지를 빼도 다른 문서가 쓰는 한 오브젝트는 남는다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    // 노트1에서 이미지를 뺀다 — 1:1 시절에는 여기서 키가 삭제 outbox로 갔다.
+    await updateNote(ORG_A, first, { content: '{"type":"doc"}' }, owner, []);
+
+    expect(await refCount(att.id)).toBe(1);
+    expect(await isRefBy(second, att.id)).toBe(true);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    // 그리고 노트2는 계속 저장된다(옛 구조에서는 여기서 영구히 막혔다).
+    const resave = await updateNote(ORG_A, second, { content: docWithImage(att.id) }, owner, [att.id]);
+    expect(resave.status).toBe('ok');
+  });
+
+  it('마지막 참조가 사라질 때만 오브젝트를 지운다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    await updateNote(ORG_A, first, { content: '{"type":"doc"}' }, owner, []);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    await updateNote(ORG_A, second, { content: '{"type":"doc"}' }, owner, []);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
+    expect(await prisma.storageCleanup.count({ where: { kind: 'key', target: att.key } })).toBe(1);
+  });
+
+  it('노트를 지워도 다른 문서가 쓰는 이미지는 남는다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    expect(await deleteNote(ORG_A, first, owner)).toBe('ok');
+
+    expect(await refCount(att.id)).toBe(1);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    // 마지막 참조자를 지우면 그때 정리된다.
+    expect(await deleteNote(ORG_A, second, owner)).toBe('ok');
+    expect(await prisma.noteAttachment.count()).toBe(0);
+    expect(await prisma.storageCleanup.count({ where: { kind: 'key', target: att.key } })).toBe(1);
+  });
+
+  it('다른 사람도 이미 쓰이고 있는 이미지를 자기 문서에서 인용할 수 있다 (노트는 org 공개)', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    await noteWithImage(att.id, '원본');
+
+    const theirs = await createNote(
+      ORG_A, USER_OTHER, { title: '남의 문서', content: docWithImage(att.id) }, [att.id],
+    );
+
+    expect(theirs.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(2);
+  });
+
+  it('아직 아무 데서도 안 쓰이는 남의 pending은 여전히 인용할 수 없다', async () => {
+    const theirPending = await pending(ORG_A, USER_OTHER);
+
+    const mine = await createNote(
+      ORG_A, USER_OWNER, { title: '내 문서', content: docWithImage(theirPending.id) }, [theirPending.id],
+    );
+
+    expect(mine.status).toBe('invalidattachment');
+    expect(await refCount(theirPending.id)).toBe(0);
   });
 });
