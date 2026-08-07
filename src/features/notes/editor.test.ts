@@ -6,7 +6,16 @@ import { generateJSON } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import { noteEditorExtensions } from './editor';
 import { noteInputSchema } from './api/validation';
-import { TABLE_SPAN_MAX, TABLE_SPAN_MIN } from './content-limits';
+import {
+  clampStart,
+  CODE_LANGUAGE_MAX_LEN,
+  normalizeColwidth,
+  ORDERED_LIST_START_MAX,
+  ORDERED_LIST_START_MIN,
+  TABLE_COLWIDTH_UNSET,
+  TABLE_SPAN_MAX,
+  TABLE_SPAN_MIN,
+} from './content-limits';
 
 // 붙여넣기·드롭으로 들어오는 HTML은 이 확장 목록의 parseHTML이 해석한다 (KAN-38).
 // 여기가 느슨하면 **에디터가 저장 불가능한 문서를 만든다** — zod가 doc 전체를 거부해
@@ -121,5 +130,55 @@ describe('붙여넣은 attr이 범위를 벗어나도 저장은 막히지 않는
 
     const td = save(cell('colspan="2"'));
     expect(td.success && nodesOfType(td.data.content as JSONContent, 'tableCell')[0].attrs?.colspan).toBe(2);
+  });
+});
+
+// 접기가 실제로 일어나는지는 attr 값으로만 확인된다 — `success === true`는 zod가
+// z.unknown()을 받으므로 정규화를 통째로 지워도 참이다 (KAN-72 자체 리뷰 ③).
+describe('접기가 값 수준에서 일어난다 (5벡터 전부)', () => {
+  const parseAttrs = (doc: JSONContent, type: string) => {
+    const parsed = noteInputSchema.safeParse({ title: '제목', content: doc });
+    if (!parsed.success) throw new Error(parsed.error.issues[0].message);
+    return nodesOfType(parsed.data.content as JSONContent, type)[0]?.attrs;
+  };
+  const cellDoc = (attr: string) =>
+    paste(`<table><tbody><tr><td ${attr}><p>a</p></td><td><p>b</p></td></tr><tr><td><p>c</p></td><td><p>d</p></td></tr></tbody></table>`);
+
+  it('start — 0은 1로 접히고 상한도 있다', () => {
+    expect(parseAttrs(paste('<ol start="0"><li><p>a</p></li></ol>'), 'orderedList')?.start).toBe(
+      ORDERED_LIST_START_MIN,
+    );
+    expect(
+      noteInputSchema.safeParse({
+        title: '제목',
+        content: { type: 'doc', content: [{ type: 'orderedList', attrs: { start: 1e308 } }] },
+      }),
+    ).toMatchObject({ success: true });
+    expect(clampStart(1e308)).toBe(ORDERED_LIST_START_MAX);
+    expect(clampStart(-5)).toBe(ORDERED_LIST_START_MIN);
+  });
+
+  it('language — 상한 길이로 잘린다', () => {
+    const long = 'x'.repeat(200);
+    const attrs = parseAttrs(paste(`<pre><code class="language-${long}">c</code></pre>`), 'codeBlock');
+    expect((attrs?.language as string).length).toBe(CODE_LANGUAGE_MAX_LEN);
+  });
+
+  it('colspan·rowspan — 경계로 접힌다', () => {
+    expect(parseAttrs(cellDoc('colspan="300"'), 'tableCell')?.colspan).toBe(TABLE_SPAN_MAX);
+    expect(parseAttrs(cellDoc('rowspan="0"'), 'tableCell')?.rowspan).toBe(TABLE_SPAN_MIN);
+  });
+
+  it('colwidth — 자리를 지키고 값만 미지정으로 바꾼다 (버리면 뒤 너비가 밀린다)', () => {
+    expect(normalizeColwidth(['auto', 150])).toEqual([TABLE_COLWIDTH_UNSET, 150]);
+    // 0은 prosemirror-tables의 '미지정' 센티넬이다 — 1로 접으면 그 열이 25px로 굳는다.
+    expect(normalizeColwidth([0, 150])).toEqual([TABLE_COLWIDTH_UNSET, 150]);
+    expect(normalizeColwidth(['auto'])).toBeNull();
+  });
+
+  it('정규화는 멱등이다 — 저장·재열기·재저장이 값을 흔들지 않는다', () => {
+    const once = normalizeColwidth(['auto', 99_999, 150]);
+    expect(normalizeColwidth(once)).toEqual(once);
+    expect(clampStart(clampStart(0))).toBe(clampStart(0));
   });
 });

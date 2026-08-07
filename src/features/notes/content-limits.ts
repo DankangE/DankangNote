@@ -16,6 +16,8 @@
 
 /** 순서목록 시작 번호. HTML `<ol start>`는 0·음수를 허용하지만 ProseMirror 목록은 1부터다. */
 export const ORDERED_LIST_START_MIN = 1;
+/** 상한도 둔다 — 없으면 1e308 같은 값이 DB까지 그대로 간다(어떤 에디터도 못 만드는 값이다). */
+export const ORDERED_LIST_START_MAX = 1_000_000;
 
 /** 코드블록 언어 이름 — `class="language-…"`에서 온다. 표시용이라 길이만 막으면 된다. */
 export const CODE_LANGUAGE_MAX_LEN = 50;
@@ -29,10 +31,25 @@ export const TABLE_COLWIDTH_MIN = 1;
 export const TABLE_COLWIDTH_MAX = 10_000;
 /** 한 셀의 colwidth 배열 길이 상한 — 거대한 배열이 메모리를 먹지 않게. */
 export const TABLE_COLWIDTH_MAX_LEN = 100;
+/**
+ * prosemirror-tables가 '너비 미지정'을 나타내는 값. `setColumnWidth`가 `zeroes(colspan)`으로
+ * 배열을 깔기 때문에, 리사이즈를 켠 에디터에서 복사한 표는 `colwidth="0,150"` 형태로 온다.
+ * 이걸 1로 접으면 그 칸이 '명시적으로 25px'로 취급돼 표가 칸마다 24px씩 좁아진다.
+ */
+export const TABLE_COLWIDTH_UNSET = 0;
 
+/**
+ * **전역 함수여야 한다** — zod transform 안에서 돌고, zod는 ZodError가 아닌 throw를 잡지
+ * 않는다. `parseOrError`는 `guarded` 밖에 있으므로 여기서 던지면 Server Action이 그대로
+ * 500이 된다(KAN-72 자체 리뷰). 그래서 `String(raw)`를 쓰지 않는다: 배열에 대한 `String()`은
+ * `Array.prototype.toString → join → toString`으로 재귀해 중첩 배열에서 스택을 터뜨리고,
+ * 임의 객체의 `toString`/`valueOf`는 사용자 코드라 던질 수 있다. 타입을 좁혀서 받는다.
+ */
 function toInt(raw: unknown): number | null {
-  const parsed = typeof raw === 'number' ? raw : Number.parseInt(String(raw ?? ''), 10);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+  if (typeof raw === 'number') return Number.isFinite(raw) ? Math.trunc(raw) : null;
+  if (typeof raw !== 'string') return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -42,7 +59,7 @@ export function clampStart(raw: unknown): number | undefined {
   if (raw === undefined || raw === null) return undefined;
   const parsed = toInt(raw);
   if (parsed === null) return ORDERED_LIST_START_MIN;
-  return Math.max(ORDERED_LIST_START_MIN, parsed);
+  return clamp(parsed, ORDERED_LIST_START_MIN, ORDERED_LIST_START_MAX);
 }
 
 export function clampSpan(raw: unknown): number | undefined {
@@ -52,16 +69,28 @@ export function clampSpan(raw: unknown): number | undefined {
   return clamp(parsed, TABLE_SPAN_MIN, TABLE_SPAN_MAX);
 }
 
-/** 숫자가 아닌 칸은 버린다. 전부 버려지면 null = '지정 없음'(스키마의 기본 상태). */
+/**
+ * colwidth는 **위치로 읽힌다** — prosemirror-tables의 `updateColumns`가 `colwidth[j]`로
+ * j번째 열을 집는다. 그래서 잘못된 칸을 **버리면 안 된다**: 버리는 순간 뒤 너비들이 한 칸씩
+ * 앞으로 밀려 엉뚱한 열에 붙는다(`['auto', 150]`을 `[150]`으로 접으면 0번 열이 1번 열의
+ * 너비를 갖는다). 자리를 지키고 값만 '미지정'(0)으로 바꾼다.
+ *
+ * 전부 미지정이면 null을 준다 — 배열 자체가 없는 것과 같은 뜻이고, 그게 스키마 기본 상태다.
+ */
 export function normalizeColwidth(raw: unknown): number[] | null {
-  const source = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : null;
+  const source = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? // split의 limit으로 자른다 — 거대한 문자열이 slice 전에 통째로 배열이 되지 않게.
+        raw.split(',', TABLE_COLWIDTH_MAX_LEN)
+      : null;
   if (!source) return null;
-  const widths = source
-    .slice(0, TABLE_COLWIDTH_MAX_LEN)
-    .map(toInt)
-    .filter((value): value is number => value !== null)
-    .map((value) => clamp(value, TABLE_COLWIDTH_MIN, TABLE_COLWIDTH_MAX));
-  return widths.length > 0 ? widths : null;
+  const widths = source.slice(0, TABLE_COLWIDTH_MAX_LEN).map((value) => {
+    const parsed = toInt(value);
+    if (parsed === null || parsed <= TABLE_COLWIDTH_UNSET) return TABLE_COLWIDTH_UNSET;
+    return clamp(parsed, TABLE_COLWIDTH_MIN, TABLE_COLWIDTH_MAX);
+  });
+  return widths.some((value) => value !== TABLE_COLWIDTH_UNSET) ? widths : null;
 }
 
 /** 과길이는 자른다 — 표시용 값이라 절삭으로 잃는 게 없다. */
