@@ -87,20 +87,55 @@ describe('noteContentSchema — KAN-38 블록', () => {
     ).toBe(false);
   });
 
-  it('경계 밖 셀 병합 값은 거부한다', () => {
-    const bad = doc([
-      {
-        type: 'table',
-        content: [
-          {
-            type: 'tableRow',
-            content: [
-              { type: 'tableCell', attrs: { colspan: 0 }, content: [{ type: 'paragraph' }] },
-            ],
-          },
-        ],
-      },
-    ]);
-    expect(noteContentSchema.safeParse(bad).success).toBe(false);
+  // KAN-72에서 판단이 바뀌었다: 거부 → 정규화. 이 값들은 표시용이라 경계로 접어도 잃는 게
+  // 없는 반면, 거부하면 그 셀 하나가 제목까지 포함한 doc 전체의 저장을 막는다. 붙여넣은
+  // HTML에는 `rowspan="0"`(유효한 HTML5)·`colwidth="auto"`가 실제로 들어온다.
+  it('경계 밖 셀 병합 값은 거부하지 않고 범위 안으로 접는다', () => {
+    const cell = (attrs: Record<string, unknown>) =>
+      doc([
+        {
+          type: 'table',
+          content: [
+            { type: 'tableRow', content: [{ type: 'tableCell', attrs, content: [{ type: 'paragraph' }] }] },
+          ],
+        },
+      ]);
+
+    const parsed = noteContentSchema.safeParse(
+      cell({ colspan: 0, rowspan: 300, colwidth: ['auto', 99_999] }),
+    );
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const td = parsed.data.content?.[0].content?.[0].content?.[0];
+    expect(td?.attrs).toMatchObject({ colspan: 1, rowspan: 100, colwidth: [10_000] });
+  });
+
+  it('정상 범위의 셀 병합 값은 그대로 통과한다', () => {
+    const parsed = noteContentSchema.safeParse(
+      doc([
+        {
+          type: 'table',
+          content: [
+            {
+              type: 'tableRow',
+              content: [
+                {
+                  type: 'tableCell',
+                  attrs: { colspan: 2, rowspan: 3, colwidth: [120] },
+                  content: [{ type: 'paragraph' }],
+                },
+              ],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.content?.[0].content?.[0].content?.[0]?.attrs).toMatchObject({
+      colspan: 2,
+      rowspan: 3,
+      colwidth: [120],
+    });
   });
 });

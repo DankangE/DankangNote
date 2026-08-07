@@ -19,6 +19,10 @@ import { createMessage, listMessages } from './chat';
 // 실제 바이트가 오가는 경로(정책의 크기·타입 거부 포함)는 dev 런타임 검증 몫이다.
 
 const PRIVATE_A = 'chan_a_private';
+// presigned URL에서 '무엇으로 내려보내는가'를 보는 유일한 자리. 그냥 'attachment'를 찾으면
+// **버킷 이름**(dankangnote-attachments / test-attachments)에 걸려 무엇을 서명하든 통과하는
+// 공허한 어서션이 된다 — forcePathStyle이라 버킷이 항상 경로에 있다 (KAN-72).
+const DISPOSITION = 'response-content-disposition=';
 
 const FILE = { fileName: '보고서.pdf', contentType: 'application/pdf', size: 1234 };
 const IMAGE = { fileName: '사진.png', contentType: 'image/png', size: 2048 };
@@ -184,7 +188,7 @@ describe('resolveDownloadUrl — 접근 판정', () => {
     const url = await resolveDownloadUrl(ORG_A, USER_OTHER, id, false);
     expect(url).not.toBeNull();
     // 안전한 이미지 타입은 inline으로 서빙된다.
-    expect(url).toContain('inline');
+    expect(url).toContain(`${DISPOSITION}inline`);
   });
 
   it('비공개 채널의 첨부는 참여자만 — 남의 워크스페이스는 아예 없다', async () => {
@@ -202,10 +206,10 @@ describe('resolveDownloadUrl — 접근 판정', () => {
 
   it('이미지가 아닌 타입과 download 강제는 attachment로 내린다', async () => {
     const pdf = await bound(CHANNEL_A, FILE);
-    expect(await resolveDownloadUrl(ORG_A, USER_OWNER, pdf, false)).toContain('attachment');
+    expect(await resolveDownloadUrl(ORG_A, USER_OWNER, pdf, false)).toContain(`${DISPOSITION}attachment`);
 
     const image = await presign(ORG_A, USER_OWNER, CHANNEL_A, IMAGE);
-    expect(await resolveDownloadUrl(ORG_A, USER_OWNER, image, true)).toContain('attachment');
+    expect(await resolveDownloadUrl(ORG_A, USER_OWNER, image, true)).toContain(`${DISPOSITION}attachment`);
   });
 });
 

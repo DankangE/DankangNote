@@ -19,6 +19,10 @@ import { sweepAbandonedPending } from './storage-cleanup';
 const owner = { userId: USER_OWNER, isAdmin: false };
 
 const IMAGE = { fileName: 'a.png', contentType: 'image/png', size: 10 };
+// presigned URL에서 '무엇으로 내려보내는가'를 보는 유일한 자리. 그냥 'attachment'를 찾으면
+// **버킷 이름**(dankangnote-attachments / test-attachments)에 걸려 무엇을 서명하든 통과하는
+// 공허한 어서션이 된다 — forcePathStyle이라 버킷이 항상 경로에 있다 (KAN-72).
+const DISPOSITION = 'response-content-disposition=';
 
 beforeEach(async () => {
   await resetDatabase();
@@ -248,7 +252,9 @@ describe('createPendingNoteAttachment — 업로드 자리', () => {
 
     expect(outcome.status).toBe('ok');
     expect(await prisma.organization.count({ where: { id: ORG_A } })).toBe(1);
-    expect(await prisma.user.count({ where: { id: USER_OWNER } })).toBe(1);
+    // User 미러는 만들지 않는다 — uploaderId에는 FK가 없어 필요 없고, 만들면 웹훅이 언급한
+    // 적 없는 사용자 행이 presign의 부수효과로 생긴다 (KAN-72).
+    expect(await prisma.user.count({ where: { id: USER_OWNER } })).toBe(0);
   });
 
   it('삭제된 조직(tombstone)의 업로드는 거부되고 스켈레톤도 부활하지 않는다', async () => {
@@ -284,7 +290,7 @@ describe('resolveNoteAttachmentUrl — 접근 판정', () => {
     const url = await resolveNoteAttachmentUrl(ORG_A, USER_OTHER, att.id, false);
     expect(url).not.toBeNull();
     // 안전한 이미지 타입은 inline으로 서빙된다.
-    expect(url).toContain('inline');
+    expect(url).toContain(`${DISPOSITION}inline`);
   });
 
   it('남의 워크스페이스에서는 id를 알아도 아예 없다', async () => {
@@ -301,7 +307,8 @@ describe('resolveNoteAttachmentUrl — 접근 판정', () => {
 
   it('download 강제는 attachment로 내린다', async () => {
     const att = await bound();
-    expect(await resolveNoteAttachmentUrl(ORG_A, USER_OWNER, att.id, true)).toContain('attachment');
+    const url = await resolveNoteAttachmentUrl(ORG_A, USER_OWNER, att.id, true);
+    expect(url).toContain(`${DISPOSITION}attachment`);
   });
 
   it('없는 id는 조용히 null이다 (존재 오라클 없음)', async () => {

@@ -9,7 +9,7 @@ import {
   storage,
 } from '@/server/storage';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
-import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
+import { orgSkeleton } from '@/server/services/skeleton';
 import { isInlineImage } from '@/lib/attachments';
 import type { UploadTicket } from '@/server/storage';
 
@@ -38,13 +38,16 @@ export async function createPendingNoteAttachment(
 
   // 채팅과 같은 org 프리픽스 — 조직 삭제의 프리픽스 정리(KAN-70)가 노트 이미지까지 덮는다.
   const key = `${attachmentKeyPrefix(orgId)}${crypto.randomUUID()}`;
-  // 스켈레톤이 먼저다 — orgId·uploaderId가 Clerk 미러 FK라 웹훅이 아직 안 왔으면 create가
-  // P2003으로 죽는다(KAN-11). 채팅 첨부는 앞선 canAccessChannel이 Channel 행을, 따라서
-  // Organization 행을 보장해 이 문장이 필요 없지만, 노트 이미지는 **첫 문서를 저장하기도
-  // 전에** 쓰이는 첫 write라 그 보장이 없다.
+  // 스켈레톤이 먼저다 — orgId가 Organization FK라 웹훅이 아직 안 왔으면 create가 P2003으로
+  // 죽는다(KAN-11). 채팅 첨부는 앞선 canAccessChannel이 Channel 행을, 따라서 Organization
+  // 행을 보장해 이 문장이 필요 없지만, 노트 이미지는 **첫 문서를 저장하기도 전에** 쓰이는
+  // 첫 write라 그 보장이 없다.
+  //
+  // userSkeleton은 부르지 않는다 — uploaderId에는 FK가 없다(마이그레이션 확인: orgId·noteId
+  // 둘뿐. MessageAttachment도 같다). 부르면 웹훅이 언급한 적도 없는 사용자의 User 미러 행을
+  // presign의 부수효과로 만들게 된다.
   const row = await prisma.$transaction(async (tx) => {
     await orgSkeleton(orgId, tx);
-    await userSkeleton(userId, tx);
     return tx.noteAttachment.create({
       data: {
         orgId,

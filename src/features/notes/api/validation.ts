@@ -1,6 +1,12 @@
 import { z } from '@/lib/zod';
 import { isInlineImage, MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
 import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
+import {
+  clampStart,
+  clampSpan,
+  normalizeCodeLanguage,
+  normalizeColwidth,
+} from '@/features/notes/content-limits';
 
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.
@@ -46,15 +52,22 @@ const noteNodeSchema = z.object({
   attrs: z
     .object({
       level: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
-      start: z.number().int().min(1).optional(),
-      language: z.string().max(50).nullish(),
+      // 아래 네 attr은 **거부하지 않고 접는다** (KAN-72). 에디터 확장들의 parseHTML은
+      // 붙여넣은 HTML의 attr을 검증 없이 받는다 — `<ol start="0">`, `<td rowspan="0">`
+      // (유효한 HTML5다), `<td colwidth="auto">`(parseInt → NaN), 60자 language. 거부하면
+      // 그 블록 하나가 제목까지 포함한 doc 전체의 저장을 막고, 사용자는 어느 블록인지
+      // 알 수 없어 편집 세션을 통째로 잃는다. 전부 표시용 값이라 경계로 접어도 잃는 게
+      // 없으므로, 검증을 **전역 함수로** 만들어 그 부류를 닫는다. src는 반대다 — 접을
+      // '가까운 올바른 값'이 없어 노드째 떨군다(에디터 parseHTML + 아래 정규식).
+      start: z.unknown().transform(clampStart).optional(),
+      language: z.unknown().transform(normalizeCodeLanguage).nullish(),
       // taskItem — getJSON이 항상 방출한다(기본 false).
       checked: z.boolean().optional(),
       // 표 셀. colwidth는 리사이즈를 껐어도 스키마 attr라 null로 방출된다(nullish 필수 —
       // codeBlock language와 같은 함정).
-      colspan: z.number().int().min(1).max(100).optional(),
-      rowspan: z.number().int().min(1).max(100).optional(),
-      colwidth: z.array(z.number().int().min(1).max(10_000)).max(100).nullish(),
+      colspan: z.unknown().transform(clampSpan).optional(),
+      rowspan: z.unknown().transform(clampSpan).optional(),
+      colwidth: z.unknown().transform(normalizeColwidth).nullish(),
       // 이미지 src는 우리 첨부 라우트만 — 외부 URL·data:·javascript: 스킴이 저장형
       // XSS/추적 벡터가 되는 것을 형태 수준에서 끊는다(KAN-38). alt는 표시용 텍스트.
       src: z.string().regex(NOTE_ATTACHMENT_SRC_RE, '올바른 이미지 주소가 아닙니다.').optional(),
