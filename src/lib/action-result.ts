@@ -13,7 +13,18 @@ export function parseOrError<Output>(
   schema: z.ZodType<Output>,
   input: unknown,
 ): ActionResult<Output> {
-  const parsed = schema.safeParse(input);
+  // safeParse는 ZodError만 결과로 돌려준다 — 그 밖의 throw(스키마의 transform이 던지거나,
+  // 입력 객체의 접근자가 던지는 경우)는 그대로 빠져나간다. 이 호출은 `guarded` **밖**에
+  // 있으므로(액션들이 검증을 먼저 하고 그 뒤 트랜잭션을 guarded로 감싼다) 여기서 새면
+  // 사용자는 digest만 담긴 불투명한 500을 받는다. 검증 단계가 500을 내는 건 계약 위반이라
+  // 여기서 닫는다 — 개별 transform의 전역성에 기대지 않는다 (KAN-72 자체 리뷰).
+  let parsed: z.ZodSafeParseResult<Output>;
+  try {
+    parsed = schema.safeParse(input);
+  } catch (error) {
+    console.error('[action] schema.safeParse threw:', error);
+    return { ok: false, error: GENERIC_ACTION_ERROR };
+  }
   if (!parsed.success) {
     return { ok: false, error: parsed.error.issues[0].message };
   }

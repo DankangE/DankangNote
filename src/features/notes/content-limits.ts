@@ -22,6 +22,13 @@ export const ORDERED_LIST_START_MAX = 1_000_000;
 /** 코드블록 언어 이름 — `class="language-…"`에서 온다. 표시용이라 길이만 막으면 된다. */
 export const CODE_LANGUAGE_MAX_LEN = 50;
 
+/** 이미지 대체 텍스트. 붙여넣은 `<img alt>`는 길이 제한이 없다 — 역시 표시용이라 자른다. */
+export const IMAGE_ALT_MAX_LEN = 300;
+
+/** 표 셀 정렬 — @tiptap/extension-table이 style.text-align·align에서 뽑아 이 셋으로 정규화한다. */
+export const TABLE_ALIGNMENTS = ['left', 'center', 'right'] as const;
+export type TableAlignment = (typeof TABLE_ALIGNMENTS)[number];
+
 /** 표 셀 병합 수. HTML5는 `rowspan="0"`('남은 행 전부')을 허용하지만 우리 스키마는 1 이상. */
 export const TABLE_SPAN_MIN = 1;
 export const TABLE_SPAN_MAX = 100;
@@ -95,6 +102,21 @@ export function normalizeColwidth(raw: unknown): number[] | null {
 
 /** 과길이는 자른다 — 표시용 값이라 절삭으로 잃는 게 없다. */
 export function normalizeCodeLanguage(raw: unknown): string | null {
+  return truncateOrNull(raw, CODE_LANGUAGE_MAX_LEN);
+}
+
+/** alt도 같은 이유로 자른다 — 거부하면 그 이미지 하나가 문서 전체의 저장을 막는다. */
+export function normalizeAltText(raw: unknown): string | null {
+  return truncateOrNull(raw, IMAGE_ALT_MAX_LEN);
+}
+
+/** 표 셀 정렬. 아는 값이 아니면 null(정렬 없음) — 거부하지 않는다. */
+export function normalizeAlignment(raw: unknown): TableAlignment | null {
+  return TABLE_ALIGNMENTS.includes(raw as TableAlignment) ? (raw as TableAlignment) : null;
+}
+
+/** `typeof` 가드가 먼저다 — String(raw)는 중첩 배열·악의적 toString에서 던진다(toInt 주석). */
+function truncateOrNull(raw: unknown, maxLen: number): string | null {
   if (typeof raw !== 'string' || raw.length === 0) return null;
-  return raw.slice(0, CODE_LANGUAGE_MAX_LEN);
+  return raw.slice(0, maxLen);
 }

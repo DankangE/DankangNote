@@ -128,7 +128,7 @@ describe('noteContentSchema — KAN-38 블록', () => {
       () => 1,
     ];
     for (const value of hostile) {
-      for (const key of ['start', 'colspan', 'rowspan', 'colwidth']) {
+      for (const key of ['start', 'colspan', 'rowspan', 'colwidth', 'language', 'alt', 'align']) {
         expect(() => noteContentSchema.safeParse(cell({ [key]: value }))).not.toThrow();
       }
     }

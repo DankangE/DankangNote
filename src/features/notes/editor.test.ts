@@ -9,6 +9,8 @@ import { noteInputSchema } from './api/validation';
 import {
   clampStart,
   CODE_LANGUAGE_MAX_LEN,
+  IMAGE_ALT_MAX_LEN,
+  normalizeAlignment,
   normalizeColwidth,
   ORDERED_LIST_START_MAX,
   ORDERED_LIST_START_MIN,
@@ -180,5 +182,40 @@ describe('접기가 값 수준에서 일어난다 (5벡터 전부)', () => {
     const once = normalizeColwidth(['auto', 99_999, 150]);
     expect(normalizeColwidth(once)).toEqual(once);
     expect(clampStart(clampStart(0))).toBe(clampStart(0));
+  });
+});
+
+// KAN-72 재검증 — 부류를 세 번째로 훑는다. 앞선 두 라운드가 매번 '닫았다'고 선언한 뒤
+// 남은 벡터를 찾아냈으므로, 이제는 attrs 화이트리스트 전체를 대상으로 본다.
+describe('표시용 attr은 무엇이 와도 저장을 막지 않는다 (부류 전체)', () => {
+  const save = (doc: JSONContent) => noteInputSchema.safeParse({ title: '제목', content: doc });
+
+  it('긴 alt를 가진 이미지도 저장된다 (재검증 ①)', () => {
+    const doc = paste(
+      `<p>본문</p><img src="/api/notes/attachments/abc123" alt="${'a'.repeat(400)}">`,
+    );
+    const parsed = save(doc);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const img = nodesOfType(parsed.data.content as JSONContent, 'image')[0];
+    expect((img.attrs?.alt as string).length).toBe(IMAGE_ALT_MAX_LEN);
+  });
+
+  it('셀 정렬은 저장에서 사라지지 않는다 (재검증 ③ — 조용한 서식 유실)', () => {
+    const doc = paste(
+      '<table><tbody><tr><td align="center"><p>a</p></td>' +
+        '<td style="text-align:right"><p>b</p></td></tr></tbody></table>',
+    );
+    const parsed = save(doc);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const cells = nodesOfType(parsed.data.content as JSONContent, 'tableCell');
+    expect(cells.map((c) => c.attrs?.align)).toEqual(['center', 'right']);
+  });
+
+  it('아는 값이 아닌 정렬은 거부가 아니라 null이다', () => {
+    expect(normalizeAlignment('justify')).toBeNull();
+    expect(normalizeAlignment(42)).toBeNull();
+    expect(normalizeAlignment('center')).toBe('center');
   });
 });
