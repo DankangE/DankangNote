@@ -209,3 +209,14 @@ export async function deleteNote(
     return 'ok';
   });
 }
+
+/**
+ * 이 org에 이 노트가 있는가 — 공동 편집 채널 인증(KAN-39)이 쓰는 최소 판정.
+ *
+ * getNote를 부르지 않는 이유: 채널을 열 때마다 불리는데 author까지 조인해 올 필요가 없다.
+ * 접근 규칙은 같다(노트는 org 전체 공개) — 그래서 같은 where를 쓴다.
+ */
+export async function noteExistsInOrg(orgId: string, id: string): Promise<boolean> {
+  const note = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });
+  return note !== null;
+}

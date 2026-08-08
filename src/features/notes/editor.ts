@@ -49,17 +49,29 @@ const NoteImage = Image.extend({
 // 확장들의 parseHTML이 붙여넣은 HTML의 값을 검증 없이 받지만, 그건 저장 쪽 zod가
 // **거부가 아니라 정규화**로 흡수한다(KAN-72, validation.ts). src와 달리 '가까운 올바른
 // 값'이 있어 접을 수 있고, 그렇게 두면 액션에 raw JSON을 직접 POST하는 경로까지 덮인다.
-export const noteEditorExtensions: Extensions = [
-  StarterKit.configure({
-    link: false,
-    heading: { levels: [...HEADING_LEVELS] },
-  }),
-  // 체크리스트 (KAN-38). nested: Tab으로 하위 체크 항목을 만든다 — 깊이 폭주는
-  // validation.ts의 MAX_DEPTH 선검사가 막는다.
-  TaskList,
-  TaskItem.configure({ nested: true }),
-  // 표 (KAN-38). 리사이즈는 켜지 않는다 — colwidth가 픽셀값으로 저장돼 화면 폭이 다른
-  // 사람에게 그대로 강요되고, MVP에 드래그 리사이즈 UX까지 얹을 이유가 없다.
-  TableKit,
-  NoteImage,
-];
+/**
+ * 확장 목록. `undoRedo`만 갈라지는 이유는 공동 편집(KAN-39) 때문이다 — Yjs는 자기 되돌리기
+ * 스택(UndoManager)을 들고 오는데, ProseMirror의 히스토리를 함께 켜 두면 남이 친 글자까지
+ * 내 Ctrl+Z가 되돌린다. 그래서 협업 모드에서만 끈다.
+ */
+export function buildNoteEditorExtensions(options?: { undoRedo?: boolean }): Extensions {
+  return [
+    StarterKit.configure({
+      link: false,
+      heading: { levels: [...HEADING_LEVELS] },
+      ...(options?.undoRedo === false ? { undoRedo: false as const } : {}),
+    }),
+    // 체크리스트 (KAN-38). nested: Tab으로 하위 체크 항목을 만든다 — 깊이 폭주는
+    // validation.ts의 MAX_DEPTH 선검사가 막는다.
+    TaskList,
+    TaskItem.configure({ nested: true }),
+    // 표 (KAN-38). 리사이즈는 켜지 않는다 — colwidth가 픽셀값으로 저장돼 화면 폭이 다른
+    // 사람에게 그대로 강요되고, MVP에 드래그 리사이즈 UX까지 얹을 이유가 없다.
+    TableKit,
+    NoteImage,
+  ];
+}
+
+// 편집(에디터)과 뷰(정적 렌더)가 공유하는 기본 목록 — 스키마가 갈라지면 저장된 문서가
+// 뷰에서 다르게 읽힌다.
+export const noteEditorExtensions: Extensions = buildNoteEditorExtensions();

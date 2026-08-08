@@ -13,6 +13,7 @@ import {
   collectNoteAttachmentIds,
 } from '@/features/notes/attachments';
 import { syncNoteAttachments } from '@/server/services/note-attachments';
+import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
 // 실시간 공동 편집 (KAN-39) — 문서의 진실이 편집 중에는 Yjs 상태로 옮겨간다.
 //
@@ -21,12 +22,7 @@ import { syncNoteAttachments } from '@/server/services/note-attachments';
 // 볼 수 있는가'를 우리가 판정할 자리가 사라진다(타이핑 핑에서 내린 것과 같은 결정, KAN-34).
 // Vercel에는 상주 WebSocket 서버를 둘 수 없다는 제약도 같은 방향을 가리킨다.
 
-/**
- * Yjs 문서 안에서 본문을 담는 XML 조각의 이름. 클라이언트의 Collaboration 확장 설정
- * (`field`)과 **반드시** 같아야 한다 — 다르면 양쪽이 서로 다른 조각을 편집해 화면에는
- * 아무 일도 일어나지 않고 데이터만 조용히 갈라진다.
- */
-export const NOTE_DOC_FIELD = 'default';
+export { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
 /** 접기 임계 — 이만큼 쌓이면 다음 쓰기가 docState로 접고 접힌 몫을 지운다. */
 const COMPACT_THRESHOLD = 200;

@@ -18,6 +18,7 @@ import { authorLabel, noteDateFormat } from '@/features/notes/format';
 import type { Note, NoteViewer } from '@/features/notes/types';
 import { NoteContent } from './NoteContent';
 import { NoteEditor } from './NoteEditor';
+import { useCollaborativeDoc } from '@/features/notes/use-collaborative-doc';
 import { FormError } from './FormError';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
@@ -180,7 +181,7 @@ export function NoteDetail({
       </p>
 
       {isEditing && doc !== null ? (
-        <NoteEditor doc={doc} onChange={setDoc} ariaLabel="문서 내용 편집" />
+        <CollaborativeBody noteId={note.id} doc={doc} onChange={setDoc} />
       ) : optimisticNote.content ? (
         <NoteContent doc={viewDoc} />
       ) : (
@@ -228,5 +229,41 @@ export function NoteDetail({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * 편집 중에만 공동 편집 연결을 연다 (KAN-39).
+ *
+ * 별도 컴포넌트인 이유가 둘이다. 훅은 조건부로 부를 수 없고, 무엇보다 **읽기만 하는 사람이
+ * 채널을 열 이유가 없다** — 문서를 스크롤만 하는 화면마다 Pusher 구독과 스냅샷 요청이
+ * 붙으면 열람이 편집만큼 비싸진다.
+ *
+ * 연결에 실패하면 협업 없이 편집을 계속하게 둔다(collabDoc = null). 그때는 명시적 저장이
+ * 본문을 그대로 저장하므로 편집이 막히지 않는다 — 실시간이 꺼진 로컬 개발과 같은 상태다.
+ */
+function CollaborativeBody({
+  noteId,
+  doc,
+  onChange,
+}: {
+  noteId: string;
+  doc: JSONContent;
+  onChange: (next: JSONContent) => void;
+}) {
+  const { doc: collabDoc, status } = useCollaborativeDoc(noteId);
+
+  // 로딩 중에 에디터를 먼저 띄우면 Collaboration이 빈 Y.Doc으로 붙었다가 서버 상태가
+  // 도착하며 본문이 겹친다. 잠깐 비워 두는 편이 낫다.
+  if (status === 'loading') {
+    return <p className="text-sm text-muted-foreground">문서를 여는 중…</p>;
+  }
+  return (
+    <NoteEditor
+      doc={doc}
+      onChange={onChange}
+      ariaLabel="문서 내용 편집"
+      collabDoc={collabDoc}
+    />
   );
 }
