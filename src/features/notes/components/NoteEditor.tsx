@@ -5,7 +5,10 @@ import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
-import { noteEditorExtensions } from '@/features/notes/editor';
+import type * as Y from 'yjs';
+import Collaboration from '@tiptap/extension-collaboration';
+import { buildNoteEditorExtensions } from '@/features/notes/editor';
+import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 import { uploadNoteImage } from '@/features/notes/attachments';
 import { SlashCommand } from './SlashCommand';
 import { FormError } from './FormError';
@@ -14,11 +17,17 @@ type NoteEditorProps = {
   doc: JSONContent;
   onChange: (doc: JSONContent) => void;
   ariaLabel: string;
+  /**
+   * 공동 편집 문서 (KAN-39). 주면 본문의 진실이 이 Y.Doc으로 옮겨간다 — content는 seed하지
+   * 않고(Collaboration이 Y.Doc에서 채운다, 둘 다 하면 본문이 두 벌로 겹친다) 저장도 이
+   * 컴포넌트 밖의 CRDT 경로가 맡는다.
+   */
+  collabDoc?: Y.Doc | null;
 };
 
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
-export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
+export function NoteEditor({ doc, onChange, ariaLabel, collabDoc }: NoteEditorProps) {
   const fileInputId = useId();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -35,17 +44,20 @@ export function NoteEditor({ doc, onChange, ariaLabel }: NoteEditorProps) {
   // input이므로 인스턴스별로 configure한다.
   const extensions = useMemo(
     () => [
-      ...noteEditorExtensions,
+      ...buildNoteEditorExtensions({ undoRedo: !collabDoc }),
       SlashCommand.configure({
         pickImage: () => document.getElementById(fileInputId)?.click(),
       }),
+      ...(collabDoc ? [Collaboration.configure({ document: collabDoc, field: NOTE_DOC_FIELD })] : []),
     ],
-    [fileInputId],
+    [fileInputId, collabDoc],
   );
 
   const editor = useEditor({
     extensions,
-    content: doc,
+    // 협업 모드에서는 seed하지 않는다 — Collaboration이 Y.Doc에서 채우는데 content까지
+    // 주면 같은 본문이 두 번 들어간다.
+    content: collabDoc ? undefined : doc,
     // Next SSR에서 즉시 렌더하면 서버/클라 마크업이 어긋난다 — 클라 마운트 후 렌더.
     immediatelyRender: false,
     editorProps: {

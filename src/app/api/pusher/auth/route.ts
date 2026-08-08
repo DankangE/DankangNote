@@ -2,11 +2,13 @@ import type Pusher from 'pusher';
 import { getAuthState, getViewerIdentity } from '@/server/auth';
 import { pusherServer } from '@/server/pusher';
 import * as channelService from '@/server/services/channels';
+import * as noteService from '@/server/services/notes';
 import {
   channelIdFromPresenceChannel,
   channelIdFromPusherChannel,
 } from '@/features/chat/realtime';
 import { notificationTargetFromChannel } from '@/features/notifications/realtime';
+import { noteIdFromPusherChannel } from '@/features/notes/realtime';
 
 /**
  * 이 세션이 이 Pusher 채널을 구독해도 되는가. 채널 종류마다 판정이 다르다.
@@ -22,6 +24,13 @@ async function maySubscribe(
   const target = notificationTargetFromChannel(pusherChannel);
   if (target) {
     return target.orgId === session.orgId && target.userId === session.userId;
+  }
+
+  // 문서 공동 편집 채널 (KAN-39). 노트는 org 전체 공개라 판정이 'org 안에 있는가' 하나다 —
+  // getNote와 같은 근거이고, 없는 노트와 남의 org 노트가 똑같이 false다(존재 오라클 방지).
+  const noteId = noteIdFromPusherChannel(pusherChannel);
+  if (noteId) {
+    return noteService.noteExistsInOrg(session.orgId, noteId);
   }
 
   // 메시지 채널과 프레즌스 채널은 접근 규칙이 같다 — 볼 수 있는 채널이면 거기 누가 와

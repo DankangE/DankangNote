@@ -27,7 +27,14 @@ model Note {
   position Int     @default(0)
 
   title     String
+  /// 화면·검색·정적 렌더가 읽는 **구체화된** 본문 JSON. 공동 편집(KAN-39) 이후 편집 중의
+  /// 진실은 docState이고, 이 컬럼은 거기서 주기적으로 구체화된다 — 그래서 편집 세션 도중에는
+  /// 몇 초 뒤처질 수 있다. 구체화 시점이 곧 zod 검증·첨부 참조 동기화가 도는 자리다
+  /// (KAN-38·71·72의 보장이 CRDT 경로를 우회하지 않도록).
   content   String   @default("")
+  /// Yjs 문서의 접힌 상태 (KAN-39). null이면 아직 공동 편집이 시작되지 않은 노트이고,
+  /// 그때는 content가 유일한 진실이라 첫 편집자가 이 값을 만들며 옮겨 담는다.
+  docState  Bytes?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -37,6 +44,7 @@ model Note {
   children     Note[]           @relation("NoteTree")
   favorites    NoteFavorite[]
   attachmentRefs NoteAttachmentRef[]
+  docUpdates     NoteDocUpdate[]
 
   // 트리 조회·형제 그룹 재작성은 전부 (orgId, parentId) 스코프로 온다.
   @@index([orgId, parentId])
@@ -74,6 +82,27 @@ model NoteAttachment {
   refs         NoteAttachmentRef[]
 
   @@index([orgId])
+}
+
+/// 공동 편집 업데이트 로그 (KAN-39) — Yjs가 내놓는 바이너리 델타를 도착 순서대로 쌓는다.
+///
+/// 왜 append-only인가: CRDT 업데이트는 교환법칙이 성립해 순서와 무관하게 수렴하므로 쓰기
+/// 경합을 잠금으로 막을 필요가 없다. 같은 문서를 여럿이 동시에 치는 것이 정상 경로이고,
+/// 매 타건마다 한 행을 UPDATE하면 그 행이 전체 편집의 직렬화 지점이 된다.
+///
+/// 무한히 쌓이지 않게 주기적으로 Note.docState로 접고(compaction) 접힌 몫을 지운다. id가
+/// 곧 순서라 '어디까지 접었는지'를 그 값으로 표현한다.
+model NoteDocUpdate {
+  id     BigInt @id @default(autoincrement())
+  noteId String
+  /// Y.encodeStateAsUpdate가 내놓는 그대로. 서버는 내용을 해석하지 않고 쌓고 퍼뜨린다 —
+  /// 검증은 구체화(materialize) 시점에 완성된 문서에 대해 한다.
+  update Bytes
+  createdAt DateTime @default(now())
+
+  note Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  @@index([noteId, id])
 }
 
 /// 노트 ↔ 첨부 참조. 행이 없으면 pending(업로더 본인에게만 보이고 24h 스윕 대상)이고,
