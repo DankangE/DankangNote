@@ -143,26 +143,14 @@ async function lockAttachments(
     FOR UPDATE`;
 }
 
-/**
- * 참조 수를 첨부 행에 다시 적는다 (KAN-74) — 스윕이 후보를 부분 인덱스로 좁히기 위한 색인이고,
- * 판정의 권위는 여전히 NoteAttachmentRef에 있다.
- *
- * 증감(+1/-1)이 아니라 **다시 세는** 이유: 증감은 참조를 바꾸는 경로가 하나라도 호출을
- * 빠뜨리면 조용히 어긋나고, 그 드리프트가 어느 방향인지도 알 수 없다. 여기서는 호출자가
- * 이미 lockAttachments로 그 행을 잡고 있어 세는 동안 값이 바뀌지 않는다.
- *
- * 호출을 빠뜨렸을 때의 결과도 양쪽 다 안전하다 — 실제보다 크면 스윕 후보에서 빠져 쓰레기가
- * 남고, 작으면 후보로 올라오지만 삭제문의 NOT EXISTS가 거른다.
- */
-async function recountAttachments(tx: Prisma.TransactionClient, ids: string[]): Promise<void> {
-  if (ids.length === 0) return;
-  await tx.$executeRaw`
-    UPDATE "NoteAttachment" a
-    SET "refCount" = (
-      SELECT count(*)::int FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id"
-    )
-    WHERE a."id" IN (${Prisma.join(ids)})`;
-}
+// NoteAttachment.refCount는 **DB 트리거**가 유지한다 (KAN-74) — 여기 코드에는 갱신 문장이
+// 없다. 애플리케이션에서 다시 세는 방식은 참조 행이 cascade로 사라지는 경로(노트 삭제)를
+// 못 덮어서, 한 곳이라도 빠지면 색인이 실제보다 크게 굳고 그 첨부는 스윕 후보에서 영영
+// 빠진다. 트리거는 앱·cascade·raw SQL을 가리지 않으므로 부류가 닫힌다.
+//
+// 대신 **잠금 순서**를 지켜야 한다: 트리거의 UPDATE도 첨부 행 잠금을 잡으므로, 참조를
+// 건드리기 전에 lockAttachments로 그 행들을 id 순으로 먼저 잡아 둔다. 안 그러면 cascade가
+// 임의 순서로 잠가 정렬 순서로 잡는 저장과 교착할 수 있다.
 
 /**
  * 저장 트랜잭션 안에서 본문의 첨부 참조와 참조 행을 일치시킨다.
@@ -213,16 +201,32 @@ export async function syncNoteAttachments(
 
   // 이 노트가 더는 참조하지 않는 것들 — 그 첨부가 다른 곳에서도 안 쓰이면 그때 지운다.
   const dropped = existingIds.filter((id) => !wanted.includes(id));
-  if (dropped.length > 0) {
-    await tx.noteAttachmentRef.deleteMany({ where: { noteId, attachmentId: { in: dropped } } });
-  }
-  // 색인은 참조가 늘어난 쪽·줄어든 쪽 모두 다시 적는다 — collectUnreferenced가 dropped만
-  // 보므로 새로 참조된 첨부는 여기서 갱신하지 않으면 refCount 0으로 남아 스윕 후보가 된다
-  // (삭제문의 NOT EXISTS가 막아 주긴 하지만, 그러면 인덱스가 좁히는 일을 못 한다).
-  await recountAttachments(tx, touched);
   if (dropped.length === 0) return;
 
+  await tx.noteAttachmentRef.deleteMany({ where: { noteId, attachmentId: { in: dropped } } });
   await collectUnreferenced(tx, orgId, dropped);
+}
+
+/**
+ * 이 노트가 참조하는 첨부를 읽고 **미리 잠근다** — 노트를 지우기 전에 부른다.
+ *
+ * 노트 삭제는 참조 행을 cascade로 없애고, 그때 트리거가 첨부 행을 UPDATE하며 잠근다.
+ * cascade의 순서는 우리가 정하지 못하므로, 먼저 id 순으로 전부 잡아 두어야 정렬 순서로
+ * 잡는 저장 경로와 교착하지 않는다. 반환값은 그대로 collectUnreferenced에 넘긴다 —
+ * 노트가 사라진 뒤에는 '무엇이 고아가 됐는지' 알 방법이 없다.
+ */
+export async function lockNoteAttachments(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  noteId: string,
+): Promise<string[]> {
+  const rows = await tx.noteAttachmentRef.findMany({
+    where: { noteId },
+    select: { attachmentId: true },
+  });
+  const ids = [...new Set(rows.map((row) => row.attachmentId))].sort();
+  await lockAttachments(tx, orgId, ids);
+  return ids;
 }
 
 /**
@@ -239,9 +243,6 @@ export async function collectUnreferenced(
   if (candidateIds.length === 0) return;
   const candidates = [...new Set(candidateIds)].sort();
   await lockAttachments(tx, orgId, candidates);
-  // 노트 삭제 경로는 참조 행이 cascade로 사라진 뒤 여기로 온다 — 색인을 여기서 맞춰야
-  // 지워지지 않고 남는 첨부(다른 노트가 여전히 쓰는 것)의 refCount가 옛값으로 굳지 않는다.
-  await recountAttachments(tx, candidates);
   const orphaned = await tx.noteAttachment.findMany({
     where: { id: { in: candidateIds }, orgId, refs: { none: {} } },
     select: { id: true, key: true },
