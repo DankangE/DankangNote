@@ -8,6 +8,7 @@ import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
 import {
   collectUnreferenced,
   InvalidNoteAttachmentError,
+  lockNoteAttachments,
   syncNoteAttachments,
 } from '@/server/services/note-attachments';
 
@@ -195,18 +196,16 @@ export async function deleteNote(
       SELECT "id" FROM "Note" WHERE "id" = ${id} AND "orgId" = ${orgId} FOR UPDATE`;
     if (locked.length === 0) return 'notfound';
 
-    // 이 노트가 참조하던 첨부를 먼저 적어 둔다 — 노트를 지우면 참조 행이 cascade로
-    // 사라져 '무엇이 고아가 됐는지' 알 방법이 없어진다.
-    const referenced = await tx.noteAttachmentRef.findMany({
-      where: { noteId: id },
-      select: { attachmentId: true },
-    });
+    // 이 노트가 참조하던 첨부를 먼저 적고 **잠근다** — 노트를 지우면 참조 행이 cascade로
+    // 사라져 '무엇이 고아가 됐는지' 알 방법이 없어지고, 그 cascade가 refCount 트리거를
+    // 통해 첨부 행을 임의 순서로 잠가 정렬 순서로 잡는 저장과 교착할 수 있다(KAN-74).
+    const referenced = await lockNoteAttachments(tx, orgId, id);
     const { count } = await tx.note.deleteMany({ where: ownedNoteWhere(orgId, id, actor) });
     if (count === 0) return 'forbidden';
     // 참조가 0이 된 것만 지우고 키를 outbox(KAN-70)에 적는다. 다른 노트가 같은 이미지를
     // 쓰고 있으면 남긴다 — 1:1 시절에는 여기서 남의 문서가 쓰는 오브젝트까지 지웠다(KAN-71).
     // enqueue는 삭제가 확정된 뒤에만 커밋된다(같은 트랜잭션 — forbidden이면 통째로 버려진다).
-    await collectUnreferenced(tx, orgId, referenced.map((row) => row.attachmentId));
+    await collectUnreferenced(tx, orgId, referenced);
     return 'ok';
   });
 }

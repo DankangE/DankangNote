@@ -68,7 +68,14 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
     }
   }
   if (failures.length > 0) {
-    throw new AggregateError(failures, '스윕 분기 실패');
+    // 메시지에 원인을 펼쳐 담는다 — AggregateError는 `String(err)`이 "AggregateError: …"만
+    // 내놓아 causes가 통째로 사라진다. 그러면 응답에도 로그에도 '왜 실패했는지'가 남지 않아,
+    // 실패를 알린다는 목적 자체가 무너진다. 부분 성과도 여기 실어 둔다(앞 분기의 커밋은
+    // 남았는데 반환값은 던져 버리므로 유일한 기록이다).
+    throw new Error(
+      `스윕 분기 실패 (이번 회차에 걷은 행 ${swept}): ${failures.map(String).join(' / ')}`,
+      { cause: failures },
+    );
   }
   return swept;
 }

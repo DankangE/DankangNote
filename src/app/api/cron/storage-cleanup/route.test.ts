@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 이 파일만 모듈을 대역으로 세운다 — 검증 대상이 '두 단계가 서로의 실패에 묶이지 않는가'라
 // 실패를 실제로 만들 수단이 필요하고, 그 실패는 규모(수백만 행)에서만 나오는 것이라 DB로는
@@ -10,7 +10,14 @@ vi.mock('@/server/services/storage-cleanup', () => ({
   processStorageCleanup: () => processStorageCleanup(),
 }));
 
+// 워커가 파일 간에 공유되므로(fileParallelism: false) 끝나면 되돌린다.
+const previousSecret = process.env.CRON_SECRET;
 process.env.CRON_SECRET = 'test-cron-secret';
+afterAll(() => {
+  if (previousSecret === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = previousSecret;
+});
+
 const { GET } = await import('./route');
 
 const call = (secret = 'test-cron-secret') =>

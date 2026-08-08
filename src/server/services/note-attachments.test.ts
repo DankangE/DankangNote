@@ -482,6 +482,27 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
     expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
   });
 
+  it('deleteNote를 거치지 않고 노트가 사라져도 그 첨부는 스윕이 걷는다', async () => {
+    // createNote의 tombstone post-check는 서비스 코드를 거치지 않고 note.deleteMany로 지운다
+    // — 참조 행은 cascade로 사라진다. 색인을 애플리케이션이 갱신하는 구조였다면 refCount가
+    // 1로 굳어 이 첨부는 스윕 후보로 **영영** 올라오지 못하고 행과 오브젝트가 영구히 남는다.
+    // 색인 유지가 DB 트리거라 cascade도 덮인다(KAN-74).
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteWithImage(att.id, '노트1');
+    expect(await refCountColumn(att.id)).toBe(1);
+
+    await prisma.note.deleteMany({ where: { id: noteId } });
+
+    expect(await refCountColumn(att.id)).toBe(0);
+    await prisma.noteAttachment.update({
+      where: { id: att.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
+    expect(await sweepAbandonedPending()).toBe(1);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(1);
+  });
+
   it('색인이 어긋나도 참조가 있으면 스윕이 지우지 않고, 색인을 고쳐 둔다', async () => {
     // 색인(refCount)은 후보를 좁히는 용도일 뿐 판정의 권위가 아니다. 어긋난 값이 후보를
     // 만들어도 삭제문의 NOT EXISTS가 막아야 하고, 그대로 두면 매 회차 배치 자리를 차지하므로

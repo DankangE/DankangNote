@@ -35,7 +35,10 @@ export async function GET(request: Request) {
       failed: outbox.ok ? outbox.value.failed : null,
       errors,
     },
-    // 실패를 200으로 삼키면 cron 대시보드가 초록으로 남아 정체를 아무도 모른다.
+    // 단계가 통째로 죽은 것만 500이다 — 삼키면 cron 대시보드가 초록으로 남아 정체를
+    // 아무도 모른다. 반면 `failed`(개별 outbox 태스크 실패)는 500이 아니다: 그건 행이 남아
+    // 다음 회차가 다시 시도하는 **정상 재시도 경로**라, 여기서 빨갛게 만들면 스토리지가
+    // 잠깐 흔들릴 때마다 cron이 실패로 뜬다. 그 신호는 attempts·lastError가 들고 있다.
     { status: errors.length > 0 ? 500 : 200 },
   );
 }
@@ -46,6 +49,8 @@ async function attempt<T>(run: () => Promise<T>): Promise<Attempt<T>> {
   try {
     return { ok: true, value: await run() };
   } catch (error) {
+    // 응답 본문은 호출한 스케줄러만 본다 — 사후 진단은 로그에 남아야 한다.
+    console.error('[storage-cleanup cron]', error);
     return { ok: false, error: String(error).slice(0, 500) };
   }
 }
