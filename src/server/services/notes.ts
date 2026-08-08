@@ -6,6 +6,7 @@ import type { Note, User } from '@/server/generated/prisma/client';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
 import {
+  collectUnreferenced,
   InvalidNoteAttachmentError,
   syncNoteAttachments,
 } from '@/server/services/note-attachments';
@@ -187,29 +188,25 @@ export async function deleteNote(
   actor: NoteActor,
 ): Promise<DeleteOutcome> {
   return prisma.$transaction(async (tx) => {
-    // 노트 행 잠금(KAN-38) — 첨부 키 수집과 삭제 사이에 다른 저장이 새 첨부를 바인딩하면
-    // 그 행이 cascade로 사라지며 '지울 좌표'를 못 적는다(영구 고아). FOR UPDATE는 바인딩
-    // 트랜잭션의 FK 검증(KEY SHARE)과 충돌하므로, 경합한 저장은 여기 커밋 뒤 FK 위반으로
-    // 죽고 그 첨부는 pending으로 남아 24h 스윕이 걷는다.
+    // 노트 행 잠금(KAN-38) — 이 노트에 대한 동시 저장과 직렬화한다. 첨부 쪽 경합은 이
+    // 잠금이 막지 못한다(KAN-71: 참조가 노트 경계를 넘으므로 다른 노트가 같은 첨부를
+    // 바인딩하는 것은 이 행과 무관하다) — 그건 collectUnreferenced의 첨부 행 잠금이 막는다.
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "Note" WHERE "id" = ${id} AND "orgId" = ${orgId} FOR UPDATE`;
     if (locked.length === 0) return 'notfound';
 
-    // cascade가 지우기 전에 키를 outbox(KAN-70)에 적는다 — 행과 함께 좌표가 사라지면
-    // 스토리지 오브젝트가 영영 고아가 된다. enqueue는 삭제가 확정된 뒤에만 커밋된다
-    // (같은 트랜잭션 — forbidden이면 통째로 버려진다).
-    const attachments = await tx.noteAttachment.findMany({
-      where: { noteId: id, orgId },
-      select: { key: true },
+    // 이 노트가 참조하던 첨부를 먼저 적어 둔다 — 노트를 지우면 참조 행이 cascade로
+    // 사라져 '무엇이 고아가 됐는지' 알 방법이 없어진다.
+    const referenced = await tx.noteAttachmentRef.findMany({
+      where: { noteId: id },
+      select: { attachmentId: true },
     });
     const { count } = await tx.note.deleteMany({ where: ownedNoteWhere(orgId, id, actor) });
     if (count === 0) return 'forbidden';
-    if (attachments.length > 0) {
-      await tx.storageCleanup.createMany({
-        data: attachments.map((row) => ({ kind: 'key', target: row.key })),
-        skipDuplicates: true,
-      });
-    }
+    // 참조가 0이 된 것만 지우고 키를 outbox(KAN-70)에 적는다. 다른 노트가 같은 이미지를
+    // 쓰고 있으면 남긴다 — 1:1 시절에는 여기서 남의 문서가 쓰는 오브젝트까지 지웠다(KAN-71).
+    // enqueue는 삭제가 확정된 뒤에만 커밋된다(같은 트랜잭션 — forbidden이면 통째로 버려진다).
+    await collectUnreferenced(tx, orgId, referenced.map((row) => row.attachmentId));
     return 'ok';
   });
 }

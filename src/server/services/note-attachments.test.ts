@@ -9,7 +9,11 @@ import {
   seedTenants,
 } from '../../../test/db';
 import { createNote, deleteNote, updateNote } from './notes';
-import { createPendingNoteAttachment, resolveNoteAttachmentUrl } from './note-attachments';
+import {
+  createPendingNoteAttachment,
+  resolveNoteAttachmentUrl,
+  syncNoteAttachments,
+} from './note-attachments';
 import { sweepAbandonedPending } from './storage-cleanup';
 
 const owner = { userId: USER_OWNER, isAdmin: false };
@@ -43,6 +47,13 @@ async function pending(orgId: string, uploaderId: string): Promise<{ id: string;
   return row;
 }
 
+/** 이 첨부를 참조하는 노트 수 — KAN-71 이후 '바인딩'은 이 표의 행이다. */
+const refCount = (attachmentId: string) =>
+  prisma.noteAttachmentRef.count({ where: { attachmentId } });
+/** 이 노트가 이 첨부를 참조하는가. */
+const isRefBy = async (noteId: string, attachmentId: string) =>
+  (await prisma.noteAttachmentRef.count({ where: { noteId, attachmentId } })) === 1;
+
 // 본문에 이미지 하나가 든 doc의 저장 문자열.
 const docWithImage = (id: string) =>
   JSON.stringify({
@@ -58,8 +69,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     const outcome = await updateNote(ORG_A, noteId, { content: docWithImage(att.id) }, owner, [att.id]);
 
     expect(outcome.status).toBe('ok');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: att.id } });
-    expect(row.noteId).toBe(noteId);
+    expect(await isRefBy(noteId, att.id)).toBe(true);
   });
 
   it('다른 org의 첨부 id는 거부되고 본문 저장도 롤백된다', async () => {
@@ -73,8 +83,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     expect(outcome.status).toBe('invalidattachment');
     const note = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
     expect(note.content).toBe('');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: foreign.id } });
-    expect(row.noteId).toBeNull();
+    expect(await refCount(foreign.id)).toBe(0);
   });
 
   // 위 테스트는 org와 업로더가 **함께** 다르다 — where가 uploaderId도 물기 때문에 orgId
@@ -90,7 +99,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
 
     expect(outcome.status).toBe('invalidattachment');
     const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: mineElsewhere.id } });
-    expect(row.noteId).toBeNull();
+    expect(await refCount(mineElsewhere.id)).toBe(0);
     expect(row.orgId).toBe(ORG_B);
   });
 
@@ -113,8 +122,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
     );
 
     expect(outcome.status).toBe('ok');
-    const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: att.id } });
-    expect(outcome.status === 'ok' && row.noteId === outcome.note.id).toBe(true);
+    expect(outcome.status === 'ok' && (await isRefBy(outcome.note.id, att.id))).toBe(true);
   });
 });
 
@@ -151,7 +159,7 @@ describe('미참조 정리와 삭제 (KAN-70 outbox)', () => {
     expect(await deleteNote(ORG_A, noteId, { userId: USER_OTHER, isAdmin: false })).toBe('forbidden');
 
     expect(await prisma.storageCleanup.count()).toBe(0);
-    expect(await prisma.noteAttachment.count({ where: { noteId } })).toBe(1);
+    expect(await prisma.noteAttachmentRef.count({ where: { noteId } })).toBe(1);
   });
 });
 
@@ -174,10 +182,58 @@ describe('버려진 pending 스윕', () => {
     const noteId = await noteInA();
     const bound = await pending(ORG_A, USER_OWNER);
     await updateNote(ORG_A, noteId, { content: docWithImage(bound.id) }, owner, [bound.id]);
+    // 바인딩된 쪽을 **오래된 것으로** 만든다. 신선한 채로 두면 나이 필터만으로 통과해
+    // '참조가 있으면 안 걷는다'는 조건이 검증되지 않는다 — 그 조건을 지워도 초록이었다.
+    await prisma.noteAttachment.update({
+      where: { id: bound.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
     await pending(ORG_A, USER_OWNER); // 신선한 pending
 
     expect(await sweepAbandonedPending()).toBe(0);
     expect(await prisma.noteAttachment.count()).toBe(2);
+    expect(await prisma.storageCleanup.count()).toBe(0);
+  });
+
+  it('저장이 붙잡고 있는 첨부는 건너뛴다 (스윕이 산 참조를 지우지 않는다)', async () => {
+    // 24h 넘게 열어 둔 초안 탭이 저장되는 순간 스윕과 겹치는 경우다. 잠금이 없으면 스윕은
+    // 미커밋 참조를 못 보고 그 행을 지우며, cascade가 방금 만든 참조까지 데려간다.
+    const att = await pending(ORG_A, USER_OWNER);
+    await prisma.noteAttachment.update({
+      where: { id: att.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
+    const note = await prisma.note.create({
+      data: { orgId: ORG_A, authorId: USER_OWNER, title: '초안' },
+    });
+
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+
+    const saving = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, note.id, [att.id]);
+        signalLocked();
+        await gate;
+      },
+      { timeout: 20000 },
+    );
+    await locked;
+
+    const swept = await sweepAbandonedPending();
+    openGate();
+    await saving;
+
+    expect(swept).toBe(0);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await isRefBy(note.id, att.id)).toBe(true);
+    expect(await prisma.storageCleanup.count()).toBe(0);
   });
 });
 
@@ -264,5 +320,180 @@ describe('수명 — 행은 테넌트와 함께 사라진다', () => {
     await prisma.organization.delete({ where: { id: ORG_A } });
 
     expect(await prisma.noteAttachment.count()).toBe(0);
+  });
+});
+
+// KAN-71 — 1:1 시절에는 이미지 블록을 다른 문서로 복사하는 정상 흐름이 '남의 첨부를 실어
+// 왔다'와 구분되지 않아 저장이 통째로 거부됐고, 원본에서 그 이미지를 빼는 순간 오브젝트까지
+// 지워져 복사본이 영영 저장 불가가 됐다. 참조를 1:N으로 떼면서 그 부류가 닫힌다.
+describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
+  /** 노트 하나를 만들고 이미지를 넣어 저장한다. */
+  async function noteWithImage(attachmentId: string, title = '문서'): Promise<string> {
+    const outcome = await createNote(
+      ORG_A, USER_OWNER, { title, content: docWithImage(attachmentId) }, [attachmentId],
+    );
+    if (outcome.status !== 'ok') throw new Error(`저장 실패: ${outcome.status}`);
+    return outcome.note.id;
+  }
+
+  it('같은 이미지를 다른 문서에 붙여넣어도 저장된다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+
+    const second = await createNote(
+      ORG_A, USER_OWNER, { title: '노트2', content: docWithImage(att.id) }, [att.id],
+    );
+
+    expect(second.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(2);
+    expect(await isRefBy(first, att.id)).toBe(true);
+  });
+
+  it('원본에서 이미지를 빼도 다른 문서가 쓰는 한 오브젝트는 남는다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    // 노트1에서 이미지를 뺀다 — 1:1 시절에는 여기서 키가 삭제 outbox로 갔다.
+    await updateNote(ORG_A, first, { content: '{"type":"doc"}' }, owner, []);
+
+    expect(await refCount(att.id)).toBe(1);
+    expect(await isRefBy(second, att.id)).toBe(true);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    // 그리고 노트2는 계속 저장된다(옛 구조에서는 여기서 영구히 막혔다).
+    const resave = await updateNote(ORG_A, second, { content: docWithImage(att.id) }, owner, [att.id]);
+    expect(resave.status).toBe('ok');
+  });
+
+  it('마지막 참조가 사라질 때만 오브젝트를 지운다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    await updateNote(ORG_A, first, { content: '{"type":"doc"}' }, owner, []);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    await updateNote(ORG_A, second, { content: '{"type":"doc"}' }, owner, []);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
+    expect(await prisma.storageCleanup.count({ where: { kind: 'key', target: att.key } })).toBe(1);
+  });
+
+  it('노트를 지워도 다른 문서가 쓰는 이미지는 남는다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const first = await noteWithImage(att.id, '노트1');
+    const second = await noteWithImage(att.id, '노트2');
+
+    expect(await deleteNote(ORG_A, first, owner)).toBe('ok');
+
+    expect(await refCount(att.id)).toBe(1);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+
+    // 마지막 참조자를 지우면 그때 정리된다.
+    expect(await deleteNote(ORG_A, second, owner)).toBe('ok');
+    expect(await prisma.noteAttachment.count()).toBe(0);
+    expect(await prisma.storageCleanup.count({ where: { kind: 'key', target: att.key } })).toBe(1);
+  });
+
+  it('다른 사람도 이미 쓰이고 있는 이미지를 자기 문서에서 인용할 수 있다 (노트는 org 공개)', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    await noteWithImage(att.id, '원본');
+
+    const theirs = await createNote(
+      ORG_A, USER_OTHER, { title: '남의 문서', content: docWithImage(att.id) }, [att.id],
+    );
+
+    expect(theirs.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(2);
+  });
+
+  it('아직 아무 데서도 안 쓰이는 남의 pending은 여전히 인용할 수 없다', async () => {
+    const theirPending = await pending(ORG_A, USER_OTHER);
+
+    const mine = await createNote(
+      ORG_A, USER_OWNER, { title: '내 문서', content: docWithImage(theirPending.id) }, [theirPending.id],
+    );
+
+    expect(mine.status).toBe('invalidattachment');
+    expect(await refCount(theirPending.id)).toBe(0);
+  });
+
+  it('제목만 고치는 저장은 참조를 건드리지 않는다', async () => {
+    // 이 표를 통째로 비울 수 있는 유일한 경로다 — updateNote는 partial이라 title만 오는
+    // 저장(사이드바 이름 변경)이 실제 경로이고, content 가드가 빠지면 attachmentIds=[]로
+    // sync가 돌아 그 노트의 참조가 전부 끊기고 마지막 참조면 오브젝트까지 지워진다.
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteWithImage(att.id, '노트1');
+
+    const renamed = await updateNote(ORG_A, noteId, { title: '새 제목' }, owner);
+
+    expect(renamed.status).toBe('ok');
+    expect(await isRefBy(noteId, att.id)).toBe(true);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+  });
+
+  it('같은 이미지를 한 문서에 두 번 넣어도 저장된다', async () => {
+    // 수집기가 Set이라 지금은 중복이 안 오지만, 대조가 호출자의 dedupe에 기대면 수집기가
+    // Set을 잃는 날 그런 문서가 전부 영구 저장 불가가 된다(1 !== 2 → invalidattachment).
+    const att = await pending(ORG_A, USER_OWNER);
+    const image = { type: 'image', attrs: { src: `/api/notes/attachments/${att.id}` } };
+    const doc = JSON.stringify({ type: 'doc', content: [image, image] });
+
+    const outcome = await createNote(ORG_A, USER_OWNER, { title: '두 번', content: doc }, [
+      att.id,
+      att.id,
+    ]);
+
+    expect(outcome.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(1);
+  });
+
+  it('참조를 놓는 저장과 잡는 저장이 겹쳐도 산 참조를 지우지 않는다', async () => {
+    // 판정('참조가 0인가')과 삭제 사이에 다른 노트가 참조를 커밋하면, 잠금이 없을 때
+    // DELETE가 그 참조를 못 보고 ON DELETE CASCADE가 산 참조까지 지운다 — 그 노트는
+    // 본문에 이미지가 있는데 행이 없어 영구히 저장 불가가 된다(KAN-71 증상의 재발).
+    const att = await pending(ORG_A, USER_OWNER);
+    const holder = await noteWithImage(att.id, '노트1');
+    const other = await prisma.note.create({
+      data: { orgId: ORG_A, authorId: USER_OWNER, title: '노트2' },
+    });
+
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let signalBound!: () => void;
+    const bound = new Promise<void>((resolve) => {
+      signalBound = resolve;
+    });
+
+    // 잡는 쪽: 참조를 만들고 커밋하지 않은 채 대기한다.
+    const binder = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, other.id, [att.id]);
+        signalBound();
+        await gate;
+      },
+      { timeout: 20000 },
+    );
+
+    await bound;
+    // 놓는 쪽: 노트1에서 이미지를 뺀다 — 잠금이 있으면 여기서 막혔다가 새 참조를 본다.
+    const releaser = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, holder, []);
+      },
+      { timeout: 20000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    openGate();
+    await Promise.all([binder, releaser]);
+
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await isRefBy(other.id, att.id)).toBe(true);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
   });
 });
