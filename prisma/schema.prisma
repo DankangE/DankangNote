@@ -71,6 +71,11 @@ model NoteAttachment {
 
 /// 노트 ↔ 첨부 참조. 행이 없으면 pending(업로더 본인에게만 보이고 24h 스윕 대상)이고,
 /// 마지막 행이 사라지면 오브젝트를 지운다 — 즉 이 표가 곧 참조 카운트다.
+///
+/// NoteFavorite와 달리 orgId를 싣지 않는다(규약 1의 의도된 예외): 이 표를 org로 조회하는
+/// 경로가 없다 — 행을 만드는 곳은 syncNoteAttachments 하나뿐이고 거기서 첨부는 orgId로,
+/// noteId는 호출자의 org 스코프 update가 이미 판정했다. 파기는 양쪽 FK Cascade가 덮는다.
+/// 비정규화한 orgId는 여기서는 '두 번째 진실'이 될 뿐이라 판정에 쓰이지 않는 컬럼이 된다.
 model NoteAttachmentRef {
   noteId       String
   attachmentId String

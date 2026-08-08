@@ -188,10 +188,9 @@ export async function deleteNote(
   actor: NoteActor,
 ): Promise<DeleteOutcome> {
   return prisma.$transaction(async (tx) => {
-    // 노트 행 잠금(KAN-38) — 첨부 키 수집과 삭제 사이에 다른 저장이 새 첨부를 바인딩하면
-    // 그 행이 cascade로 사라지며 '지울 좌표'를 못 적는다(영구 고아). FOR UPDATE는 바인딩
-    // 트랜잭션의 FK 검증(KEY SHARE)과 충돌하므로, 경합한 저장은 여기 커밋 뒤 FK 위반으로
-    // 죽고 그 첨부는 pending으로 남아 24h 스윕이 걷는다.
+    // 노트 행 잠금(KAN-38) — 이 노트에 대한 동시 저장과 직렬화한다. 첨부 쪽 경합은 이
+    // 잠금이 막지 못한다(KAN-71: 참조가 노트 경계를 넘으므로 다른 노트가 같은 첨부를
+    // 바인딩하는 것은 이 행과 무관하다) — 그건 collectUnreferenced의 첨부 행 잠금이 막는다.
     const locked = await tx.$queryRaw<{ id: string }[]>`
       SELECT "id" FROM "Note" WHERE "id" = ${id} AND "orgId" = ${orgId} FOR UPDATE`;
     if (locked.length === 0) return 'notfound';

@@ -68,13 +68,22 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
     // 'pending'은 컬럼이 아니라 **참조 0**이다(NoteAttachmentRef 행이 없다). 노트 저장·삭제
     // 경로는 참조가 0이 되는 순간 스스로 정리하므로, 여기 걸리는 건 presign만 받고 저장에
     // 도달하지 못한 업로드다.
+    //
+    // 여기서는 바깥 WHERE 반복이 아니라 FOR UPDATE SKIP LOCKED다. 위 메시지 분기의 EPQ
+    // 재평가는 바인딩이 **같은 행의 UPDATE**라서 성립하는데, 노트 쪽 바인딩은 다른 표에
+    // INSERT라 그 행에 KEY SHARE만 걸고 새 튜플 버전을 안 만든다 — EPQ가 돌지 않아 바깥
+    // 조건을 아무리 반복해도 못 거른다(note-attachments.ts의 lockAttachments 참조).
+    // 잠금으로 바꾸면: 저장 중인 첨부는 건너뛰고(다음 회차가 걷는다), 스윕이 먼저 잠근
+    // 행에 들어온 저장은 판정에서 0행을 보고 fail-closed로 거부된다.
     const removedNotes = await tx.$queryRaw<{ key: string }[]>`
       DELETE FROM "NoteAttachment"
       WHERE "id" IN (
         SELECT a."id" FROM "NoteAttachment" a
         WHERE a."createdAt" < ${cutoff}
           AND NOT EXISTS (SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id")
+        ORDER BY a."id"
         LIMIT ${SWEEP_BATCH_SIZE}
+        FOR UPDATE SKIP LOCKED
       )
       RETURNING "key"`;
     const keys = [...removed, ...removedNotes];

@@ -9,7 +9,11 @@ import {
   seedTenants,
 } from '../../../test/db';
 import { createNote, deleteNote, updateNote } from './notes';
-import { createPendingNoteAttachment, resolveNoteAttachmentUrl } from './note-attachments';
+import {
+  createPendingNoteAttachment,
+  resolveNoteAttachmentUrl,
+  syncNoteAttachments,
+} from './note-attachments';
 import { sweepAbandonedPending } from './storage-cleanup';
 
 const owner = { userId: USER_OWNER, isAdmin: false };
@@ -178,10 +182,17 @@ describe('버려진 pending 스윕', () => {
     const noteId = await noteInA();
     const bound = await pending(ORG_A, USER_OWNER);
     await updateNote(ORG_A, noteId, { content: docWithImage(bound.id) }, owner, [bound.id]);
+    // 바인딩된 쪽을 **오래된 것으로** 만든다. 신선한 채로 두면 나이 필터만으로 통과해
+    // '참조가 있으면 안 걷는다'는 조건이 검증되지 않는다 — 그 조건을 지워도 초록이었다.
+    await prisma.noteAttachment.update({
+      where: { id: bound.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
     await pending(ORG_A, USER_OWNER); // 신선한 pending
 
     expect(await sweepAbandonedPending()).toBe(0);
     expect(await prisma.noteAttachment.count()).toBe(2);
+    expect(await prisma.storageCleanup.count()).toBe(0);
   });
 });
 
@@ -366,5 +377,82 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
 
     expect(mine.status).toBe('invalidattachment');
     expect(await refCount(theirPending.id)).toBe(0);
+  });
+
+  it('제목만 고치는 저장은 참조를 건드리지 않는다', async () => {
+    // 이 표를 통째로 비울 수 있는 유일한 경로다 — updateNote는 partial이라 title만 오는
+    // 저장(사이드바 이름 변경)이 실제 경로이고, content 가드가 빠지면 attachmentIds=[]로
+    // sync가 돌아 그 노트의 참조가 전부 끊기고 마지막 참조면 오브젝트까지 지워진다.
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteWithImage(att.id, '노트1');
+
+    const renamed = await updateNote(ORG_A, noteId, { title: '새 제목' }, owner);
+
+    expect(renamed.status).toBe('ok');
+    expect(await isRefBy(noteId, att.id)).toBe(true);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
+  });
+
+  it('같은 이미지를 한 문서에 두 번 넣어도 저장된다', async () => {
+    // 수집기가 Set이라 지금은 중복이 안 오지만, 대조가 호출자의 dedupe에 기대면 수집기가
+    // Set을 잃는 날 그런 문서가 전부 영구 저장 불가가 된다(1 !== 2 → invalidattachment).
+    const att = await pending(ORG_A, USER_OWNER);
+    const image = { type: 'image', attrs: { src: `/api/notes/attachments/${att.id}` } };
+    const doc = JSON.stringify({ type: 'doc', content: [image, image] });
+
+    const outcome = await createNote(ORG_A, USER_OWNER, { title: '두 번', content: doc }, [
+      att.id,
+      att.id,
+    ]);
+
+    expect(outcome.status).toBe('ok');
+    expect(await refCount(att.id)).toBe(1);
+  });
+
+  it('참조를 놓는 저장과 잡는 저장이 겹쳐도 산 참조를 지우지 않는다', async () => {
+    // 판정('참조가 0인가')과 삭제 사이에 다른 노트가 참조를 커밋하면, 잠금이 없을 때
+    // DELETE가 그 참조를 못 보고 ON DELETE CASCADE가 산 참조까지 지운다 — 그 노트는
+    // 본문에 이미지가 있는데 행이 없어 영구히 저장 불가가 된다(KAN-71 증상의 재발).
+    const att = await pending(ORG_A, USER_OWNER);
+    const holder = await noteWithImage(att.id, '노트1');
+    const other = await prisma.note.create({
+      data: { orgId: ORG_A, authorId: USER_OWNER, title: '노트2' },
+    });
+
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let signalBound!: () => void;
+    const bound = new Promise<void>((resolve) => {
+      signalBound = resolve;
+    });
+
+    // 잡는 쪽: 참조를 만들고 커밋하지 않은 채 대기한다.
+    const binder = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, other.id, [att.id]);
+        signalBound();
+        await gate;
+      },
+      { timeout: 20000 },
+    );
+
+    await bound;
+    // 놓는 쪽: 노트1에서 이미지를 뺀다 — 잠금이 있으면 여기서 막혔다가 새 참조를 본다.
+    const releaser = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, holder, []);
+      },
+      { timeout: 20000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    openGate();
+    await Promise.all([binder, releaser]);
+
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await isRefBy(other.id, att.id)).toBe(true);
+    expect(await prisma.storageCleanup.count({ where: { target: att.key } })).toBe(0);
   });
 });
