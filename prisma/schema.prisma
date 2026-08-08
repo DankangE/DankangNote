@@ -62,6 +62,13 @@ model NoteAttachment {
   contentType String
   size        Int
   createdAt   DateTime @default(now())
+  /// refs의 행 수를 그대로 옮겨 둔 것 — **판정의 권위는 refs에 있고 이건 스윕이 후보를
+  /// 좁히는 색인용이다**(KAN-74). 스윕의 '참조 0' 조건이 조인 표에만 있으면 인덱스를 못
+  /// 써서 비용이 쓰레기 양이 아니라 총 누적량에 비례하고, 어느 규모부터 트랜잭션
+  /// 타임아웃으로 영구히 멈춘다. 참조를 바꾸는 트랜잭션이 잠금을 쥔 채 다시 세어 넣으므로
+  /// 정상 경로에서는 어긋나지 않고, 어긋나도 양쪽 다 안전한 방향이다 — 실제보다 크면
+  /// 쓰레기가 남고(안전), 작으면 후보로 올라오지만 삭제문의 NOT EXISTS가 거른다(안전).
+  refCount    Int      @default(0)
 
   organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   refs         NoteAttachmentRef[]

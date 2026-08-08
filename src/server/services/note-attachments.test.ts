@@ -57,6 +57,12 @@ const refCount = (attachmentId: string) =>
 /** 이 노트가 이 첨부를 참조하는가. */
 const isRefBy = async (noteId: string, attachmentId: string) =>
   (await prisma.noteAttachmentRef.count({ where: { noteId, attachmentId } })) === 1;
+/** 첨부 행에 적힌 참조 수 색인 (KAN-74) — 권위는 위 참조 표에 있고 이건 스윕용 색인이다. */
+const refCountColumn = async (attachmentId: string) =>
+  (await prisma.noteAttachment.findUniqueOrThrow({
+    where: { id: attachmentId },
+    select: { refCount: true },
+  })).refCount;
 
 // 본문에 이미지 하나가 든 doc의 저장 문자열.
 const docWithImage = (id: string) =>
@@ -456,6 +462,44 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
 
     expect(outcome.status).toBe('ok');
     expect(await refCount(att.id)).toBe(1);
+  });
+
+  it('참조 수 색인이 참조 표를 따라간다 (KAN-74 — 스윕이 후보를 인덱스로 좁히는 근거)', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    expect(await refCountColumn(att.id)).toBe(0);
+
+    const first = await noteWithImage(att.id, '노트1');
+    expect(await refCountColumn(att.id)).toBe(1);
+
+    const second = await noteWithImage(att.id, '노트2');
+    expect(await refCountColumn(att.id)).toBe(2);
+
+    // 한쪽에서 빼면 1로, 마지막 참조가 사라지면 행 자체가 사라진다.
+    await updateNote(ORG_A, first, { content: '{"type":"doc"}' }, owner, []);
+    expect(await refCountColumn(att.id)).toBe(1);
+
+    expect(await deleteNote(ORG_A, second, owner)).toBe('ok');
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
+  });
+
+  it('색인이 어긋나도 참조가 있으면 스윕이 지우지 않고, 색인을 고쳐 둔다', async () => {
+    // 색인(refCount)은 후보를 좁히는 용도일 뿐 판정의 권위가 아니다. 어긋난 값이 후보를
+    // 만들어도 삭제문의 NOT EXISTS가 막아야 하고, 그대로 두면 매 회차 배치 자리를 차지하므로
+    // 스윕이 고쳐 둬야 한다.
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteWithImage(att.id, '노트1');
+    await prisma.$executeRaw`UPDATE "NoteAttachment" SET "refCount" = 0 WHERE "id" = ${att.id}`;
+    await prisma.noteAttachment.update({
+      where: { id: att.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
+
+    expect(await sweepAbandonedPending()).toBe(0);
+
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await isRefBy(noteId, att.id)).toBe(true);
+    expect(await prisma.storageCleanup.count()).toBe(0);
+    expect(await refCountColumn(att.id)).toBe(1);
   });
 
   it('참조를 놓는 저장과 잡는 저장이 겹쳐도 산 참조를 지우지 않는다', async () => {

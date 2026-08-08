@@ -20,9 +20,34 @@ export async function GET(request: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const swept = await sweepAbandonedPending();
-  const { processed, failed } = await processStorageCleanup();
-  return Response.json({ swept, processed, failed });
+  // 두 단계는 서로의 실패에 묶이지 않는다 (KAN-74). 스윕이 던지면 그대로 500이 되어
+  // **뒤따르는 processStorageCleanup이 아예 호출되지 않았다** — 스윕이 규모 때문에 매번
+  // 실패하는 상태에 빠지면 조직 삭제 프리픽스까지 outbox에 쌓인 채 영구 정체된다.
+  // 하나가 죽어도 다른 하나는 돌리고, 실패는 응답에 실어 스케줄러가 알아채게 한다.
+  const sweep = await attempt(() => sweepAbandonedPending());
+  const outbox = await attempt(() => processStorageCleanup());
+
+  const errors = [sweep, outbox].flatMap((r) => (r.ok ? [] : [r.error]));
+  return Response.json(
+    {
+      swept: sweep.ok ? sweep.value : null,
+      processed: outbox.ok ? outbox.value.processed : null,
+      failed: outbox.ok ? outbox.value.failed : null,
+      errors,
+    },
+    // 실패를 200으로 삼키면 cron 대시보드가 초록으로 남아 정체를 아무도 모른다.
+    { status: errors.length > 0 ? 500 : 200 },
+  );
+}
+
+type Attempt<T> = { ok: true; value: T } | { ok: false; error: string };
+
+async function attempt<T>(run: () => Promise<T>): Promise<Attempt<T>> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (error) {
+    return { ok: false, error: String(error).slice(0, 500) };
+  }
 }
 
 /** 시크릿 비교는 상수 시간으로 — timingSafeEqual은 길이가 다르면 throw라 먼저 거른다. */
