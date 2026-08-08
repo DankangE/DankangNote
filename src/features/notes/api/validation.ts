@@ -1,6 +1,14 @@
 import { z } from '@/lib/zod';
 import { isInlineImage, MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
 import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
+import {
+  clampStart,
+  clampSpan,
+  normalizeAlignment,
+  normalizeAltText,
+  normalizeCodeLanguage,
+  normalizeColwidth,
+} from '@/features/notes/content-limits';
 
 // 액션('use server')과 조회(server-only)가 공유하는 스키마 — 'use server' 모듈은
 // async 함수만 export할 수 있어 스키마를 별도 모듈로 둔다.
@@ -46,19 +54,33 @@ const noteNodeSchema = z.object({
   attrs: z
     .object({
       level: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
-      start: z.number().int().min(1).optional(),
-      language: z.string().max(50).nullish(),
+      // **표시용 attr은 거부하지 않고 접는다** (KAN-72) — 이 블록에서 `src`를 뺀 전부가
+      // 그렇다. 에디터 확장들의 parseHTML은 붙여넣은 HTML의 attr을 검증 없이 받는다:
+      // `<ol start="0">`, `<td rowspan="0">`(유효한 HTML5다), `<td colwidth="auto">`
+      // (parseInt → NaN), 긴 `language`·`alt`. 거부하면 그 블록 하나가 제목까지 포함한
+      // doc 전체의 저장을 막고, 사용자는 어느 블록인지 알 수 없어 편집 세션을 통째로
+      // 잃는다. 접어도 잃는 게 없으므로 검증을 **전역 함수로** 만들어 그 부류를 닫는다.
+      // `src`만 반대다 — 접을 '가까운 올바른 값'이 없어 노드째 떨군다(에디터 parseHTML +
+      // 아래 정규식). 새 attr을 더할 때 물을 것: 잘못된 값을 접을 수 있는가, 아니면
+      // 그 노드가 통째로 무의미해지는가.
+      start: z.unknown().transform(clampStart).optional(),
+      language: z.unknown().transform(normalizeCodeLanguage).nullish(),
       // taskItem — getJSON이 항상 방출한다(기본 false).
       checked: z.boolean().optional(),
       // 표 셀. colwidth는 리사이즈를 껐어도 스키마 attr라 null로 방출된다(nullish 필수 —
       // codeBlock language와 같은 함정).
-      colspan: z.number().int().min(1).max(100).optional(),
-      rowspan: z.number().int().min(1).max(100).optional(),
-      colwidth: z.array(z.number().int().min(1).max(10_000)).max(100).nullish(),
+      colspan: z.unknown().transform(clampSpan).optional(),
+      rowspan: z.unknown().transform(clampSpan).optional(),
+      colwidth: z.unknown().transform(normalizeColwidth).nullish(),
+      // 셀 정렬 — 화이트리스트에 없으면 zod가 strip해 붙여넣은 표의 정렬이 저장에서
+      // 조용히 사라진다(KAN-38 티켓이 경고한 '조용히 잘린다'의 다른 얼굴).
+      align: z.unknown().transform(normalizeAlignment).nullish(),
       // 이미지 src는 우리 첨부 라우트만 — 외부 URL·data:·javascript: 스킴이 저장형
       // XSS/추적 벡터가 되는 것을 형태 수준에서 끊는다(KAN-38). alt는 표시용 텍스트.
       src: z.string().regex(NOTE_ATTACHMENT_SRC_RE, '올바른 이미지 주소가 아닙니다.').optional(),
-      alt: z.string().max(300).nullish(),
+      // alt도 같은 부류다 — 붙여넣은 <img alt>는 길이 제한이 없는데 거부하면 그 이미지
+      // 하나가 제목까지 포함한 저장 전체를 막는다. src만 거부한다(접을 값이 없으므로).
+      alt: z.unknown().transform(normalizeAltText).nullish(),
     })
     .optional(),
   marks: z.array(markSchema).max(12).optional(),

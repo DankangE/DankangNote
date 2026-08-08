@@ -10,10 +10,6 @@ import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
 // 없어 수동으로 동기화한다.
 export const HEADING_LEVELS = [1, 2, 3] as const;
 
-// 편집(에디터)과 뷰(정적 렌더)가 같은 스키마를 쓰도록 확장 목록을 한 곳에서 정의한다.
-// link 비활성화: 저장 JSON의 href는 에디터 입력 규칙의 프로토콜 새니타이즈를 거치지
-// 않아(클라이언트가 액션에 임의 doc을 POST할 수 있으므로) javascript: 등 저장형 XSS
-// 벡터가 된다. MVP 스코프(제목·굵게·기울임·목록·인용)에도 링크는 없다.
 // 이미지 (KAN-38). src는 우리 첨부 라우트만 저장된다 — zod 정규식(validation.ts)이 외부
 // URL·data:·javascript: 를 형태 수준에서 거부하고, 업로드는 attachments.ts의 presign
 // 경로만 있다. base64 인라인은 허용하지 않는다(50KB 본문 상한도 뚫린다).
@@ -44,6 +40,15 @@ const NoteImage = Image.extend({
   },
 });
 
+// 편집(에디터)과 뷰(정적 렌더)가 같은 스키마를 쓰도록 확장 목록을 한 곳에서 정의한다.
+// link 비활성화: 저장 JSON의 href는 에디터 입력 규칙의 프로토콜 새니타이즈를 거치지
+// 않아(클라이언트가 액션에 임의 doc을 POST할 수 있으므로) javascript: 등 저장형 XSS
+// 벡터가 된다. MVP 스코프(제목·굵게·기울임·목록·인용)에도 링크는 없다.
+//
+// 숫자·문자열 attr(`start`·`colspan`·`colwidth`·`language`)은 여기서 손대지 않는다 —
+// 확장들의 parseHTML이 붙여넣은 HTML의 값을 검증 없이 받지만, 그건 저장 쪽 zod가
+// **거부가 아니라 정규화**로 흡수한다(KAN-72, validation.ts). src와 달리 '가까운 올바른
+// 값'이 있어 접을 수 있고, 그렇게 두면 액션에 raw JSON을 직접 POST하는 경로까지 덮인다.
 export const noteEditorExtensions: Extensions = [
   StarterKit.configure({
     link: false,
