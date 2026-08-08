@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { prisma } from '@/server/db';
-import { ORG_A, ORG_B, USER_OWNER, resetDatabase, seedTenants } from '../../../../../../test/db';
+import { ORG_A, ORG_B, USER_OTHER, USER_OWNER, resetDatabase, seedTenants } from '../../../../../../test/db';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
 // 세션만 대역으로 세운다 — Clerk 세션을 HTTP로 만들 수 없어서다. 나머지(DB·서비스·검증)는
@@ -78,6 +78,19 @@ describe('doc 라우트 — 접근 판정', () => {
     const update = Buffer.from(Y.encodeStateAsUpdate(new Y.Doc())).toString('base64');
     expect((await POST(req({ update }), params(note.id))).status).toBe(404);
     expect(await prisma.noteDocUpdate.count()).toBe(0);
+  });
+
+  it('편집 권한이 없으면 404 — 저장 액션과 같은 판정이다', async () => {
+    // UI가 편집 버튼을 숨기는 것은 판정이 아니다. 이 라우트를 직접 치면 통과하던 자리다.
+    const noteId = await noteInA(docWith('원본'));
+    const update = await clientEdit(noteId, '탈취');
+    authState.mockResolvedValue({ userId: USER_OTHER, orgId: ORG_A, isAdmin: false });
+
+    expect((await POST(req({ update }), params(noteId))).status).toBe(404);
+    expect(await prisma.noteDocUpdate.count()).toBe(0);
+
+    // 읽기는 org 전체 공개라 GET은 여전히 열려 있다.
+    expect((await GET(new Request('http://localhost'), params(noteId))).status).toBe(200);
   });
 
   it('없는 문서도 같은 404다', async () => {

@@ -7,12 +7,17 @@ import type { JSONContent } from '@tiptap/core';
 import { prisma } from '@/server/db';
 import { noteEditorExtensions } from '@/features/notes/editor';
 import { noteContentSchema } from '@/features/notes/api/validation';
+import { parseNoteContent } from '@/features/notes/content';
 import {
   NOTE_ATTACHMENT_ROUTE,
   NOTE_ATTACHMENT_SRC_RE,
   collectNoteAttachmentIds,
 } from '@/features/notes/attachments';
-import { syncNoteAttachments } from '@/server/services/note-attachments';
+import {
+  syncNoteAttachments,
+  usableNoteAttachmentWhere,
+} from '@/server/services/note-attachments';
+import { ownedNoteWhere, type NoteActor } from '@/server/services/notes';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
 // 실시간 공동 편집 (KAN-39) — 문서의 진실이 편집 중에는 Yjs 상태로 옮겨간다.
@@ -75,15 +80,23 @@ export async function loadNoteDoc(orgId: string, noteId: string): Promise<NoteDo
  *
  * 서버는 바이트를 해석하지 않는다. CRDT 델타는 부분적으로만 의미가 있어서 한 조각만 보고
  * '이 편집이 허용되는가'를 판정할 수 없기 때문이다 — 검증은 완성된 문서에 대해
- * materializeNoteDoc이 한다. 여기서 판정하는 것은 '이 사람이 이 문서를 편집할 수 있는가'
- * (org 스코프)와 크기뿐이다.
+ * materializeNoteDoc이 한다.
+ *
+ * 편집 권한은 **저장 액션과 같은 where**를 쓴다(ownedNoteWhere — 작성자 또는 admin).
+ * 처음에는 org 스코프만 봤는데, 그러면 updateNote가 forbidden으로 막는 사람이 이 라우트로는
+ * 남의 문서를 고칠 수 있었다. UI가 편집 버튼을 숨기는 것은 판정이 아니다(규약 10).
+ * 노트 **읽기**는 지금도 org 전체 공개라 GET에는 이 조건이 없다.
  */
 export async function appendNoteDocUpdate(
   orgId: string,
   noteId: string,
+  actor: NoteActor,
   update: Uint8Array,
 ): Promise<bigint | null> {
-  const note = await prisma.note.findFirst({ where: { id: noteId, orgId }, select: { id: true } });
+  const note = await prisma.note.findFirst({
+    where: ownedNoteWhere(orgId, noteId, actor),
+    select: { id: true },
+  });
   if (!note) return null;
 
   const row = await prisma.noteDocUpdate.create({
@@ -117,7 +130,11 @@ async function compactIfNeeded(noteId: string): Promise<void> {
     select: { id: true, update: true },
   });
   if (updates.length === 0) return;
-  const upTo = updates[updates.length - 1]!.id;
+  // **읽은 id만** 지운다. id 상한(`lte`)으로 지우면 안 된다 — BIGSERIAL은 시퀀스를 INSERT
+  // 시점에 뽑고 가시성은 커밋 시점에 생기므로, 우리가 읽는 동안 커밋되지 않은 더 낮은 id가
+  // 있을 수 있다. 그걸 상한 아래라는 이유로 지우면 그 편집이 영구히 사라진다(규약 20 —
+  // 시퀀스 값은 커밋 순서가 아니다. 스키마 주석의 'id가 곧 순서'는 틀린 전제였다).
+  const foldedIds = updates.map((row) => row.id);
 
   const doc = new Y.Doc();
   Y.applyUpdate(doc, await ensureDocState(noteId, note));
@@ -128,7 +145,7 @@ async function compactIfNeeded(noteId: string): Promise<void> {
       where: { id: noteId },
       data: { docState: Buffer.from(Y.encodeStateAsUpdate(doc)) },
     }),
-    prisma.noteDocUpdate.deleteMany({ where: { noteId, id: { lte: upTo } } }),
+    prisma.noteDocUpdate.deleteMany({ where: { noteId, id: { in: foldedIds } } }),
   ]);
 }
 
@@ -159,7 +176,11 @@ export async function materializeNoteDoc(
   Y.applyUpdate(doc, snapshot.update);
   const raw = yDocToProsemirrorJSON(doc, NOTE_DOC_FIELD) as JSONContent;
 
-  const parsed = noteContentSchema.safeParse(sanitize(raw));
+  // 쓸 수 없는 첨부를 가리키는 이미지도 **미리 떨군다**. 남겨 두면 syncNoteAttachments가
+  // 던져 트랜잭션째 롤백되고 content가 영원히 옛 값으로 굳는다 — 그 뒤의 정상 편집도 함께
+  // 막힌다. 여기엔 오류를 돌려줄 상대가 없으니 거부는 곧 동결이다.
+  const usable = await usableAttachmentIds(orgId, userId, noteId, collectNoteAttachmentIds(raw));
+  const parsed = noteContentSchema.safeParse(sanitize(raw, usable));
   if (!parsed.success) {
     // 정규화까지 하고도 통과 못 하는 문서는 우리가 만든 적 없는 형태다 — content를 옛
     // 상태로 두는 편이 깨진 본문을 심는 것보다 낫다. 로그로 남겨 원인을 추적한다.
@@ -174,9 +195,38 @@ export async function materializeNoteDoc(
       data: { content },
     });
     if (updated.count === 0) return 'unchanged';
+    // 위에서 쓸 수 있는 것만 남겼으므로 이 호출은 던지지 않는다.
     await syncNoteAttachments(tx, orgId, userId, noteId, collectNoteAttachmentIds(parsed.data));
     return 'ok';
   });
+}
+
+/**
+ * 이 문서가 참조하는 첨부 중 실제로 묶을 수 있는 것.
+ *
+ * 판정 근거는 저장 경로와 같다(usableNoteAttachmentWhere) — 다만 여기서는 '이 노트가 이미
+ * 참조 중인 것'도 함께 살린다. 구체화를 트리거한 사람이 그 이미지를 넣은 사람이 아닐 수
+ * 있어서다(A가 넣고 B의 편집이 구체화를 돌리는 것이 정상 경로다). 그 경우까지 거부하면
+ * 이미 살아 있는 참조가 매 구체화마다 끊겼다 붙었다 한다.
+ */
+async function usableAttachmentIds(
+  orgId: string,
+  userId: string,
+  noteId: string,
+  ids: string[],
+): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.noteAttachment.findMany({
+    where: {
+      id: { in: ids },
+      OR: [
+        usableNoteAttachmentWhere(orgId, userId),
+        { orgId, refs: { some: { noteId } } },
+      ],
+    },
+    select: { id: true },
+  });
+  return new Set(rows.map((row) => row.id));
 }
 
 /**
@@ -197,13 +247,11 @@ async function ensureDocState(
   if (note.docState) return new Uint8Array(note.docState);
 
   const seeded = new Y.Doc();
-  const json = parseContent(note.content);
-  if (json) {
-    Y.applyUpdate(seeded, Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, NOTE_DOC_FIELD)));
-  } else {
-    // 빈 본문도 조각은 만들어 둔다 — 조각이 없으면 첫 편집자의 델타가 붙을 자리가 없다.
-    seeded.getXmlFragment(NOTE_DOC_FIELD);
-  }
+  // **화면이 읽는 것과 같은 파서를 쓴다**(규약 10). 별도 파서를 두었더니 legacy plain
+  // 텍스트·스키마 밖 JSON을 null로 떨궈 빈 문서를 시드했고, 그 노트를 편집기로 여는 것만으로
+  // 본문이 소멸했다(그리고 구체화가 빈 참조 목록으로 돌아 이미지까지 파기했다).
+  const json = parseNoteContent(note.content);
+  Y.applyUpdate(seeded, Y.encodeStateAsUpdate(prosemirrorJSONToYDoc(schema, json, NOTE_DOC_FIELD)));
   const state = Y.encodeStateAsUpdate(seeded);
 
   const claimed = await prisma.note.updateMany({
@@ -219,33 +267,32 @@ async function ensureDocState(
   return winner?.docState ? new Uint8Array(winner.docState) : state;
 }
 
-function parseContent(content: string): JSONContent | null {
-  if (content.trim() === '') return null;
-  try {
-    const parsed: unknown = JSON.parse(content);
-    const result = noteContentSchema.safeParse(parsed);
-    return result.success ? (result.data as JSONContent) : null;
-  } catch {
-    return null;
-  }
-}
+
+/** 이 에디터 스키마가 아는 노드 타입 전부 — 화이트리스트의 근거를 스키마에서 가져온다. */
+const ALLOWED_NODE_TYPES = new Set(Object.keys(schema.nodes));
 
 /**
- * zod가 접을 수 없는 것만 미리 떨군다 — 지금은 우리 첨부 라우트가 아닌 이미지 src 하나다.
- * 그 노드는 '가까운 올바른 값'이 없어서(KAN-72의 구분) 정규화 대상이 아니고, 남겨 두면
- * 문서 전체가 검증에 걸린다.
+ * zod가 접을 수 없는 것을 미리 떨군다. 남겨 두면 문서 **전체**가 검증에 걸리고, 검증 실패는
+ * 곧 content 동결이다(여기엔 사용자에게 오류를 돌려줄 상대가 없다).
+ *
+ * 처음에는 최상위 자식 중 `type === 'image'`인 것만 봤다. 그건 **한 인스턴스만 고치고 부류를
+ * 닫았다고 선언한 것**이었고(규약 25), 리뷰가 세 갈래를 뚫었다: 허용된 이미지의 자식으로 심은
+ * 이미지(재귀를 안 했다), image가 아닌 노드에 붙인 `src`, 스키마에 없는 노드 타입.
+ * 그래서 근거를 스키마에서 가져와 전체를 훑는다 — 모르는 타입과 우리 라우트 밖 `src`는
+ * 어디에 있든 떨군다.
  */
-function sanitize(node: JSONContent): JSONContent {
-  const children = node.content?.flatMap((child) => {
-    if (child.type === 'image') {
-      const src = child.attrs?.src;
-      const ok =
-        typeof src === 'string' &&
-        src.startsWith(NOTE_ATTACHMENT_ROUTE) &&
-        NOTE_ATTACHMENT_SRC_RE.test(src);
-      return ok ? [child] : [];
-    }
-    return [sanitize(child)];
-  });
+function sanitize(node: JSONContent, usable: Set<string>): JSONContent {
+  const children = node.content?.flatMap((child) =>
+    keep(child, usable) ? [sanitize(child, usable)] : [],
+  );
   return children ? { ...node, content: children } : node;
+}
+
+function keep(node: JSONContent, usable: Set<string>): boolean {
+  if (typeof node.type !== 'string' || !ALLOWED_NODE_TYPES.has(node.type)) return false;
+  const src = node.attrs?.src;
+  if (src === undefined || src === null) return true;
+  if (typeof src !== 'string') return false;
+  if (!src.startsWith(NOTE_ATTACHMENT_ROUTE) || !NOTE_ATTACHMENT_SRC_RE.test(src)) return false;
+  return usable.has(src.slice(NOTE_ATTACHMENT_ROUTE.length));
 }

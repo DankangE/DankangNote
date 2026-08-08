@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { prisma } from '@/server/db';
-import { ORG_A, ORG_B, USER_OWNER, resetDatabase, seedTenants } from '../../../test/db';
+import { ORG_A, ORG_B, USER_OTHER, USER_OWNER, resetDatabase, seedTenants } from '../../../test/db';
 import {
   NOTE_DOC_FIELD,
   appendNoteDocUpdate,
@@ -9,6 +9,8 @@ import {
   materializeNoteDoc,
 } from './note-doc';
 import { createPendingNoteAttachment } from './note-attachments';
+
+const owner = { userId: USER_OWNER, isAdmin: false };
 
 beforeEach(async () => {
   await resetDatabase();
@@ -74,7 +76,18 @@ describe('loadNoteDoc — 초기 상태', () => {
   it('빈 본문도 문서로 연다', async () => {
     const noteId = await noteInA('');
     const snapshot = await loadNoteDoc(ORG_A, noteId);
-    expect(textsOf(snapshot!.update)).toEqual([]);
+    // 화면 경로와 같은 파서를 쓰므로 빈 본문은 빈 문단 하나짜리 문서다.
+    expect(textsOf(snapshot!.update)).toEqual(['']);
+  });
+
+  it('legacy 순수 텍스트 본문도 살려서 시드한다', async () => {
+    // 화면 경로(parseNoteContent)는 JSON이 아닌 본문을 문단으로 살린다. 여기서 별도 파서를
+    // 쓰면 그 노트를 편집기로 여는 것만으로 본문이 소멸했다 — 파서는 한 벌이어야 한다.
+    const noteId = await noteInA('예전에 저장된 순수 텍스트 본문');
+
+    const snapshot = await loadNoteDoc(ORG_A, noteId);
+
+    expect(textsOf(snapshot!.update)).toEqual(['예전에 저장된 순수 텍스트 본문']);
   });
 
   it('남의 워크스페이스 문서는 열리지 않는다', async () => {
@@ -90,7 +103,7 @@ describe('appendNoteDocUpdate — 업데이트 로그', () => {
     const noteId = await noteInA(docWith('처음'));
     const update = await edit(noteId, (fragment) => fragment.push([paragraph('덧붙임')]));
 
-    const version = await appendNoteDocUpdate(ORG_A, noteId, update);
+    const version = await appendNoteDocUpdate(ORG_A, noteId, owner, update);
 
     expect(version).not.toBeNull();
     const snapshot = await loadNoteDoc(ORG_A, noteId);
@@ -104,8 +117,8 @@ describe('appendNoteDocUpdate — 업데이트 로그', () => {
     const fromAlice = await edit(noteId, (fragment) => fragment.push([paragraph('앨리스')]));
     const fromBob = await edit(noteId, (fragment) => fragment.push([paragraph('밥')]));
 
-    await appendNoteDocUpdate(ORG_A, noteId, fromAlice);
-    await appendNoteDocUpdate(ORG_A, noteId, fromBob);
+    await appendNoteDocUpdate(ORG_A, noteId, owner, fromAlice);
+    await appendNoteDocUpdate(ORG_A, noteId, owner, fromBob);
 
     const texts = textsOf((await loadNoteDoc(ORG_A, noteId))!.update);
     expect(texts).toContain('앨리스');
@@ -113,11 +126,25 @@ describe('appendNoteDocUpdate — 업데이트 로그', () => {
     expect(texts).toContain('공통');
   });
 
+  it('편집 권한이 없으면 쌓을 수 없다 — 저장 액션과 같은 판정이다', async () => {
+    // UI가 편집 버튼을 숨기는 것은 판정이 아니다. 이 라우트를 직접 치면 통과하던 자리다.
+    const noteId = await noteInA(docWith('원본'));
+    const update = await edit(noteId, (fragment) => fragment.push([paragraph('탈취')]));
+
+    const stranger = { userId: USER_OTHER, isAdmin: false };
+    expect(await appendNoteDocUpdate(ORG_A, noteId, stranger, update)).toBeNull();
+    expect(await prisma.noteDocUpdate.count()).toBe(0);
+
+    // admin은 남의 문서도 고칠 수 있다(ownedNoteWhere와 같은 규칙).
+    const admin = { userId: USER_OTHER, isAdmin: true };
+    expect(await appendNoteDocUpdate(ORG_A, noteId, admin, update)).not.toBeNull();
+  });
+
   it('남의 워크스페이스 문서에는 쌓을 수 없다', async () => {
     const note = await prisma.note.create({
       data: { orgId: ORG_B, authorId: USER_OWNER, title: '남의 문서' },
     });
-    expect(await appendNoteDocUpdate(ORG_A, note.id, new Uint8Array([1, 2]))).toBeNull();
+    expect(await appendNoteDocUpdate(ORG_A, note.id, owner, new Uint8Array([1, 2]))).toBeNull();
     expect(await prisma.noteDocUpdate.count()).toBe(0);
   });
 });
@@ -125,10 +152,7 @@ describe('appendNoteDocUpdate — 업데이트 로그', () => {
 describe('materializeNoteDoc — 화면이 읽는 content로 접기', () => {
   it('Yjs 편집이 content에 반영된다', async () => {
     const noteId = await noteInA(docWith('처음'));
-    await appendNoteDocUpdate(
-      ORG_A,
-      noteId,
-      await edit(noteId, (fragment) => fragment.push([paragraph('나중')])),
+    await appendNoteDocUpdate(ORG_A, noteId, owner, await edit(noteId, (fragment) => fragment.push([paragraph('나중')])),
     );
 
     expect(await materializeNoteDoc(ORG_A, noteId, USER_OWNER)).toBe('ok');
@@ -140,10 +164,7 @@ describe('materializeNoteDoc — 화면이 읽는 content로 접기', () => {
 
   it('구체화는 멱등이다 — 두 번째 호출은 쓰지 않는다', async () => {
     const noteId = await noteInA(docWith('처음'));
-    await appendNoteDocUpdate(
-      ORG_A,
-      noteId,
-      await edit(noteId, (fragment) => fragment.push([paragraph('나중')])),
+    await appendNoteDocUpdate(ORG_A, noteId, owner, await edit(noteId, (fragment) => fragment.push([paragraph('나중')])),
     );
 
     expect(await materializeNoteDoc(ORG_A, noteId, USER_OWNER)).toBe('ok');
@@ -161,7 +182,7 @@ describe('materializeNoteDoc — 화면이 읽는 content로 접기', () => {
       img.setAttribute('src', 'https://evil.example.com/x.png');
       fragment.push([img, paragraph('같이 친 문단')]);
     });
-    await appendNoteDocUpdate(ORG_A, noteId, update);
+    await appendNoteDocUpdate(ORG_A, noteId, owner, update);
 
     expect(await materializeNoteDoc(ORG_A, noteId, USER_OWNER)).toBe('ok');
 
@@ -186,12 +207,40 @@ describe('materializeNoteDoc — 화면이 읽는 content로 접기', () => {
       img.setAttribute('src', `/api/notes/attachments/${attachmentId}`);
       fragment.push([img]);
     });
-    await appendNoteDocUpdate(ORG_A, noteId, update);
+    await appendNoteDocUpdate(ORG_A, noteId, owner, update);
 
     expect(await materializeNoteDoc(ORG_A, noteId, USER_OWNER)).toBe('ok');
     expect(
       await prisma.noteAttachmentRef.count({ where: { noteId, attachmentId } }),
     ).toBe(1);
+  });
+
+  it('중첩·비이미지 노드·모르는 타입에 심은 것도 떨군다 (부류 전체)', async () => {
+    // 처음에는 최상위 image만 봤다 — 리뷰가 세 갈래를 뚫었다. 화이트리스트의 근거를
+    // 에디터 스키마에서 가져와 전체를 훑는다.
+    const noteId = await noteInA(docWith('본문'));
+    const update = await edit(noteId, (fragment) => {
+      const nested = new Y.XmlElement('image');
+      nested.setAttribute('src', '/api/notes/attachments/abc123');
+      const inner = new Y.XmlElement('image');
+      inner.setAttribute('src', 'javascript:alert(1)');
+      nested.push([inner]);
+
+      const badAttr = new Y.XmlElement('paragraph');
+      badAttr.setAttribute('src', 'javascript:alert(1)');
+
+      const unknown = new Y.XmlElement('script');
+
+      fragment.push([nested, badAttr, unknown, paragraph('정상 문단')]);
+    });
+    await appendNoteDocUpdate(ORG_A, noteId, owner, update);
+
+    expect(await materializeNoteDoc(ORG_A, noteId, USER_OWNER)).toBe('ok');
+
+    const note = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+    expect(note.content).not.toContain('javascript:');
+    expect(note.content).not.toContain('script');
+    expect(note.content).toContain('정상 문단');
   });
 
   it('없는 문서는 notfound', async () => {

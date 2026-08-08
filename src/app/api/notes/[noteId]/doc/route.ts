@@ -58,7 +58,7 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ noteId: string }> },
 ) {
-  const { userId, orgId } = await getAuthState();
+  const { userId, orgId, isAdmin } = await getAuthState();
   if (!userId || !orgId) {
     return new Response('Unauthorized', { status: 401 });
   }
@@ -74,7 +74,9 @@ export async function POST(
   }
 
   const { noteId } = await params;
-  const version = await appendNoteDocUpdate(orgId, noteId, update);
+  // 편집 권한이 없는 것과 문서가 없는 것을 구분하지 않는다 — 구분하면 남의 org에 그 id의
+  // 문서가 있는지 알아내는 오라클이 된다(첨부 라우트와 같은 규칙).
+  const version = await appendNoteDocUpdate(orgId, noteId, { userId, isAdmin }, update);
   if (version === null) {
     return new Response('Not Found', { status: 404 });
   }

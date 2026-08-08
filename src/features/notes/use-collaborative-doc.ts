@@ -60,13 +60,22 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
     let pending: Uint8Array[] = [];
     let timer: ReturnType<typeof setTimeout> | null = null;
 
+    /**
+     * 모아 둔 델타를 보낸다. **실패하면 큐에 되돌려 놓는다.**
+     *
+     * 처음에는 fetch 앞에서 큐를 비웠는데, 그러면 실패한 델타 하나로 끝나지 않는다 — Yjs는
+     * 같은 클라이언트의 델타를 인과 순으로만 적용하므로, 빠진 델타 **뒤의 모든 편집**이
+     * 서버에서 통합되지 못한 채 버려진다. 화면에는 멀쩡히 남아 있어 사용자는 알 방법이 없다.
+     */
     async function flush(): Promise<void> {
       timer = null;
       if (pending.length === 0) return;
-      const merged = Y.mergeUpdates(pending);
+      // 배치를 떼어 낸다 — 보내는 동안 들어오는 편집은 새 큐에 쌓인다.
+      const batch = pending;
       pending = [];
+      const merged = Y.mergeUpdates(batch);
       try {
-        await fetch(`/api/notes/${noteId}/doc`, {
+        const response = await fetch(`/api/notes/${noteId}/doc`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -75,11 +84,12 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
           }),
           signal: controller.signal,
         });
+        if (!response.ok) throw new Error(`doc POST ${response.status}`);
       } catch {
-        // 보내지 못한 편집은 되돌리지 않는다 — 화면에는 남아 있고, 다음 편집이 나갈 때
-        // 그 델타까지 함께 실린다(Yjs 상태 벡터가 아니라 델타를 쌓고 있으므로 이번 건이
-        // 유실되면 그 편집은 서버에 없다). 재접속 시 스냅샷을 다시 받아 어긋남을 좁힌다.
-        if (!disposed) queueResync();
+        if (disposed) return;
+        // 되돌린다 — 순서를 지켜 **앞에** 넣는다. 합쳐 둔 하나라 큐가 무한히 자라지 않는다.
+        pending = [merged, ...pending];
+        timer ??= setTimeout(() => void flush(), FLUSH_INTERVAL_MS * 4);
       }
     }
 
@@ -112,11 +122,18 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
     void pullSnapshot()
       .then((ok) => {
         if (disposed) return;
+        if (!ok) {
+          // 401·404·500이 전부 여기다. 빈 Y.Doc을 넘기면 에디터가 **빈 본문으로 뜨고**,
+          // 사용자가 저장을 누르는 순간 그 빈 문서가 저장돼 본문과 이미지 참조가 함께
+          // 날아간다. 문서를 넘기지 않으면 협업 없이 기존 본문으로 편집하게 된다.
+          setStatus('error');
+          return;
+        }
         // 스냅샷을 받은 **뒤에** 로컬 변경을 듣기 시작한다 — 먼저 붙이면 서버 상태 적용이
         // 로컬 변경으로 잡혀 그대로 서버에 되돌아간다.
         ydoc.on('update', onLocalUpdate);
         setDoc(ydoc);
-        setStatus(ok ? 'ready' : 'error');
+        setStatus('ready');
       })
       .catch(() => {
         if (!disposed) setStatus('error');
@@ -124,8 +141,19 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
 
     return () => {
       disposed = true;
-      controller.abort();
       if (timer) clearTimeout(timer);
+      // 창이 닫히기 전에 남은 배치를 흘려보낸다. abort보다 **먼저** 해야 하고, 일반 fetch는
+      // 언마운트 직후 취소되므로 sendBeacon을 쓴다(응답은 못 받지만 도착은 보장된다).
+      if (pending.length > 0 && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+        navigator.sendBeacon(
+          `/api/notes/${noteId}/doc`,
+          new Blob([JSON.stringify({ update: toBase64(Y.mergeUpdates(pending)) })], {
+            type: 'application/json',
+          }),
+        );
+        pending = [];
+      }
+      controller.abort();
       ydoc.off('update', onLocalUpdate);
       channel?.unbind(NOTE_DOC_UPDATE_EVENT, onRemoteUpdate);
       channel?.unbind(NOTE_DOC_RESYNC_EVENT, queueResync);
