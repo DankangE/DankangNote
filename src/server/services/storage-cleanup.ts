@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { prisma } from '@/server/db';
+import { Prisma } from '@/server/generated/prisma/client';
 import {
   deleteObject,
   deleteObjectsUnderPrefix,
@@ -69,23 +70,36 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
     // 경로는 참조가 0이 되는 순간 스스로 정리하므로, 여기 걸리는 건 presign만 받고 저장에
     // 도달하지 못한 업로드다.
     //
-    // 여기서는 바깥 WHERE 반복이 아니라 FOR UPDATE SKIP LOCKED다. 위 메시지 분기의 EPQ
-    // 재평가는 바인딩이 **같은 행의 UPDATE**라서 성립하는데, 노트 쪽 바인딩은 다른 표에
-    // INSERT라 그 행에 KEY SHARE만 걸고 새 튜플 버전을 안 만든다 — EPQ가 돌지 않아 바깥
-    // 조건을 아무리 반복해도 못 거른다(note-attachments.ts의 lockAttachments 참조).
-    // 잠금으로 바꾸면: 저장 중인 첨부는 건너뛰고(다음 회차가 걷는다), 스윕이 먼저 잠근
-    // 행에 들어온 저장은 판정에서 0행을 보고 fail-closed로 거부된다.
-    const removedNotes = await tx.$queryRaw<{ key: string }[]>`
-      DELETE FROM "NoteAttachment"
-      WHERE "id" IN (
-        SELECT a."id" FROM "NoteAttachment" a
-        WHERE a."createdAt" < ${cutoff}
-          AND NOT EXISTS (SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id")
-        ORDER BY a."id"
-        LIMIT ${SWEEP_BATCH_SIZE}
-        FOR UPDATE SKIP LOCKED
-      )
-      RETURNING "key"`;
+    // 여기만 **두 문장**인 이유: 위 메시지 분기의 EPQ 재평가는 바인딩이 같은 행의 UPDATE라
+    // 성립하는데, 노트 쪽 바인딩은 다른 표에 INSERT라 그 행에 KEY SHARE만 걸고 새 튜플
+    // 버전을 안 만든다 — EPQ가 돌지 않아 바깥 조건을 반복해도 못 거른다(규약 26).
+    //
+    // 그렇다고 잠금을 한 문장에 붙이면 여전히 뚫린다: 계획이 `Limit → LockRows → 안티조인`
+    // 이라 NOT EXISTS는 **문장 스냅샷**으로 판정되고 잠금은 그 뒤에 걸린다. 그 사이에
+    // 바인더가 참조를 만들고 커밋해 버리면 도달 시점엔 잠겨 있지도 않아 SKIP LOCKED가
+    // 건너뛸 것이 없고, 스윕은 낡은 판정으로 산 참조를 지운다(실측으로 재현했다 — 표적이
+    // 스캔 끝에 있을 때 창은 10만 행에서 50ms대이고 누적량에 비례해 커진다).
+    //
+    // 그래서 잠그는 문장과 지우는 문장을 나눈다. 잠금을 쥔 채 새 문장이 READ COMMITTED의
+    // 새 스냅샷으로 조건을 다시 보므로, 먼저 커밋된 참조는 보이고 새 참조는 잠금에 막혀
+    // 생기지 못한다. '지운 행'과 '적을 키'의 원자성은 DELETE … RETURNING이 그대로 지킨다.
+    const claimed = await tx.$queryRaw<{ id: string }[]>`
+      SELECT a."id" FROM "NoteAttachment" a
+      WHERE a."createdAt" < ${cutoff}
+        AND NOT EXISTS (SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id")
+      ORDER BY a."id"
+      LIMIT ${SWEEP_BATCH_SIZE}
+      FOR UPDATE SKIP LOCKED`;
+    const removedNotes =
+      claimed.length === 0
+        ? []
+        : await tx.$queryRaw<{ key: string }[]>`
+            DELETE FROM "NoteAttachment" n
+            WHERE n."id" IN (${Prisma.join(claimed.map((row) => row.id))})
+              AND NOT EXISTS (
+                SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = n."id"
+              )
+            RETURNING n."key"`;
     const keys = [...removed, ...removedNotes];
     if (keys.length > 0) {
       await tx.storageCleanup.createMany({

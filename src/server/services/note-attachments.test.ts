@@ -194,6 +194,47 @@ describe('버려진 pending 스윕', () => {
     expect(await prisma.noteAttachment.count()).toBe(2);
     expect(await prisma.storageCleanup.count()).toBe(0);
   });
+
+  it('저장이 붙잡고 있는 첨부는 건너뛴다 (스윕이 산 참조를 지우지 않는다)', async () => {
+    // 24h 넘게 열어 둔 초안 탭이 저장되는 순간 스윕과 겹치는 경우다. 잠금이 없으면 스윕은
+    // 미커밋 참조를 못 보고 그 행을 지우며, cascade가 방금 만든 참조까지 데려간다.
+    const att = await pending(ORG_A, USER_OWNER);
+    await prisma.noteAttachment.update({
+      where: { id: att.id },
+      data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+    });
+    const note = await prisma.note.create({
+      data: { orgId: ORG_A, authorId: USER_OWNER, title: '초안' },
+    });
+
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+
+    const saving = prisma.$transaction(
+      async (tx) => {
+        await syncNoteAttachments(tx, ORG_A, USER_OWNER, note.id, [att.id]);
+        signalLocked();
+        await gate;
+      },
+      { timeout: 20000 },
+    );
+    await locked;
+
+    const swept = await sweepAbandonedPending();
+    openGate();
+    await saving;
+
+    expect(swept).toBe(0);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(1);
+    expect(await isRefBy(note.id, att.id)).toBe(true);
+    expect(await prisma.storageCleanup.count()).toBe(0);
+  });
 });
 
 describe('createPendingNoteAttachment — 업로드 자리', () => {
