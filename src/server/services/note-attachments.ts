@@ -43,9 +43,9 @@ export async function createPendingNoteAttachment(
   // 행을 보장해 이 문장이 필요 없지만, 노트 이미지는 **첫 문서를 저장하기도 전에** 쓰이는
   // 첫 write라 그 보장이 없다.
   //
-  // userSkeleton은 부르지 않는다 — uploaderId에는 FK가 없다(마이그레이션 확인: orgId·noteId
-  // 둘뿐. MessageAttachment도 같다). 부르면 웹훅이 언급한 적도 없는 사용자의 User 미러 행을
-  // presign의 부수효과로 만들게 된다.
+  // userSkeleton은 부르지 않는다 — uploaderId에는 FK가 없다(NoteAttachment의 FK는 orgId
+  // 하나뿐이다. KAN-71이 noteId를 참조 표로 뺀 뒤로도 그대로이고, MessageAttachment도 같다).
+  // 부르면 웹훅이 언급한 적도 없는 사용자의 User 미러 행을 presign의 부수효과로 만들게 된다.
   const row = await prisma.$transaction(async (tx) => {
     await orgSkeleton(orgId, tx);
     return tx.noteAttachment.create({
