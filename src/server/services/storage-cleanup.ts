@@ -40,22 +40,40 @@ export const PROCESS_GRACE_MS = (UPLOAD_TTL_SECONDS + 5 * 60) * 1000;
 const PROCESS_BATCH_SIZE = 200;
 
 /**
- * 전송 없이 버려진 pending 행을 걷어 키를 outbox로 옮긴다. 반환은 옮긴 행 수.
+ * 한 회차가 걷는 행 수. 무제한 DELETE는 첫 도입 시점의 누적 백로그에서 트랜잭션 타임아웃에
+ * 걸려 통째로 롤백되기를 반복한다 — 상한을 두면 실행마다 앞으로 간다.
  *
- * DELETE … RETURNING 한 문장이라 '지운 행'과 '적을 키'가 원자로 일치한다 — findMany 후
- * deleteMany로 가르면 그 사이에 바인딩된 행이 조회에는 잡히고 삭제 조건(messageId null)
- * 에서는 빠져, 산 첨부의 키가 outbox에 들어간다.
- *
- * 배치 상한(LIMIT)이 있는 이유: 무제한 DELETE는 첫 도입 시점의 누적 백로그에서 interactive
- * 트랜잭션 타임아웃에 걸려 통째로 롤백되기를 반복한다 — 상한을 두면 실행마다 앞으로 간다.
- * 바깥 WHERE에 messageId IS NULL을 반복하는 것은 장식이 아니다: 동시에 바인딩된 행을
- * DELETE의 재평가(EPQ)가 이 조건으로 건너뛴다 — 서브쿼리 id 목록은 문장 스냅샷이라
- * 그것만으로는 못 거른다.
+ * 주의: LIMIT은 **지우는 행만** 묶고 스캔은 안 묶는다. 후보 조건이 인덱스를 못 타면 상한이
+ * 있어도 비용은 총 누적량을 따라간다(KAN-74에서 실측하고 고친 자리다).
  */
 const SWEEP_BATCH_SIZE = 1000;
 
+/**
+ * 두 분기를 **각자의 트랜잭션**으로 돌린다 (KAN-74). 한 트랜잭션에 묶여 있으면 노트 분기가
+ * 느려지거나 실패할 때 메시지 정리까지 롤백되고, 노트 분기가 도는 내내 메시지 첨부 행에
+ * 걸린 잠금이 유지돼 **같은 채널의 무관한 전송까지 줄세운다**(첨부 전송이 막히는데 그
+ * 트랜잭션이 이미 Channel 행을 쥐고 있어서). 둘은 서로의 실패·지연에 묶일 이유가 없다.
+ *
+ * 실패는 삼키지 않는다 — 두 분기를 모두 시도한 뒤 던진다. 앞 분기가 커밋한 몫은 남는다.
+ */
 export async function sweepAbandonedPending(now: Date = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - PENDING_MAX_AGE_MS);
+  let swept = 0;
+  const failures: unknown[] = [];
+  for (const branch of [sweepAbandonedMessageAttachments, sweepAbandonedNoteAttachments]) {
+    try {
+      swept += await branch(cutoff);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, '스윕 분기 실패');
+  }
+  return swept;
+}
+
+async function sweepAbandonedMessageAttachments(cutoff: Date): Promise<number> {
   return prisma.$transaction(async (tx) => {
     const removed = await tx.$queryRaw<{ key: string }[]>`
       DELETE FROM "MessageAttachment"
@@ -65,6 +83,13 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
         LIMIT ${SWEEP_BATCH_SIZE}
       )
       RETURNING "key"`;
+    await enqueueKeys(tx, removed);
+    return removed.length;
+  });
+}
+
+async function sweepAbandonedNoteAttachments(cutoff: Date): Promise<number> {
+  return prisma.$transaction(async (tx) => {
     // 노트 이미지(KAN-38)도 같은 규칙으로 걷는다 — 저장 없이 버려진 것. KAN-71 이후
     // 'pending'은 컬럼이 아니라 **참조 0**이다(NoteAttachmentRef 행이 없다). 노트 저장·삭제
     // 경로는 참조가 0이 되는 순간 스스로 정리하므로, 여기 걸리는 건 presign만 받고 저장에
@@ -83,31 +108,51 @@ export async function sweepAbandonedPending(now: Date = new Date()): Promise<num
     // 그래서 잠그는 문장과 지우는 문장을 나눈다. 잠금을 쥔 채 새 문장이 READ COMMITTED의
     // 새 스냅샷으로 조건을 다시 보므로, 먼저 커밋된 참조는 보이고 새 참조는 잠금에 막혀
     // 생기지 못한다. '지운 행'과 '적을 키'의 원자성은 DELETE … RETURNING이 그대로 지킨다.
+    // 후보를 좁히는 조건은 **refCount**다(KAN-74). 참조 0을 조인 표에만 물으면 계획이
+    // 전체 안티조인이라 LIMIT이 지우는 행만 묶고 스캔은 안 묶는다 — 비용이 쓰레기 양이
+    // 아니라 총 누적량에 비례해서 600만 행에서 트랜잭션 타임아웃으로 영구히 멈췄다.
+    // `refCount = 0` 부분 인덱스를 createdAt 순으로 걸으면 훑는 양이 '아직 안 쓰이는 첨부'
+    // 수에 비례한다. **판정의 권위는 여전히 아래 DELETE의 NOT EXISTS에 있다** — 색인이
+    // 어긋나도 산 참조를 지우지 않는다.
     const claimed = await tx.$queryRaw<{ id: string }[]>`
       SELECT a."id" FROM "NoteAttachment" a
-      WHERE a."createdAt" < ${cutoff}
-        AND NOT EXISTS (SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id")
-      ORDER BY a."id"
+      WHERE a."refCount" = 0 AND a."createdAt" < ${cutoff}
+      ORDER BY a."createdAt"
       LIMIT ${SWEEP_BATCH_SIZE}
       FOR UPDATE SKIP LOCKED`;
-    const removedNotes =
-      claimed.length === 0
-        ? []
-        : await tx.$queryRaw<{ key: string }[]>`
-            DELETE FROM "NoteAttachment" n
-            WHERE n."id" IN (${Prisma.join(claimed.map((row) => row.id))})
-              AND NOT EXISTS (
-                SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = n."id"
-              )
-            RETURNING n."key"`;
-    const keys = [...removed, ...removedNotes];
-    if (keys.length > 0) {
-      await tx.storageCleanup.createMany({
-        data: keys.map((row) => ({ kind: 'key', target: row.key })),
-        skipDuplicates: true,
-      });
+    if (claimed.length === 0) return 0;
+    const ids = claimed.map((row) => row.id);
+    const removedNotes = await tx.$queryRaw<{ key: string }[]>`
+      DELETE FROM "NoteAttachment" n
+      WHERE n."id" IN (${Prisma.join(ids)})
+        AND NOT EXISTS (
+          SELECT 1 FROM "NoteAttachmentRef" r WHERE r."attachmentId" = n."id"
+        )
+      RETURNING n."key"`;
+    // 걸러진 후보 = 색인이 실제보다 작았던 행이다. 그대로 두면 매 회차 LIMIT 자리를
+    // 차지해 진짜 쓰레기가 밀리므로 여기서 고쳐 둔다(잠금을 쥐고 있어 안전하다).
+    if (removedNotes.length !== ids.length) {
+      await tx.$executeRaw`
+        UPDATE "NoteAttachment" a
+        SET "refCount" = (
+          SELECT count(*)::int FROM "NoteAttachmentRef" r WHERE r."attachmentId" = a."id"
+        )
+        WHERE a."id" IN (${Prisma.join(ids)})`;
     }
-    return keys.length;
+    await enqueueKeys(tx, removedNotes);
+    return removedNotes.length;
+  });
+}
+
+/** 걷은 키를 outbox에 적는다 — 두 분기가 같은 문장을 쓴다. */
+async function enqueueKeys(
+  tx: Prisma.TransactionClient,
+  rows: { key: string }[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  await tx.storageCleanup.createMany({
+    data: rows.map((row) => ({ kind: 'key', target: row.key })),
+    skipDuplicates: true,
   });
 }
 
