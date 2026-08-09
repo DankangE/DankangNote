@@ -6,6 +6,7 @@ import type { JSONContent } from '@tiptap/core';
 import { Plus, Star } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import {
   createNoteAction,
@@ -24,7 +25,7 @@ import { EditorPresence } from './EditorPresence';
 import { FormError, FormNotice } from './FormError';
 import { NoteComments } from './NoteComments';
 import { createCommentThreadAction } from '@/features/notes/api/comment-actions';
-import { collectCommentThreadIds } from '@/features/notes/comments';
+import { MAX_COMMENT_BODY, collectCommentThreadIds } from '@/features/notes/comments';
 import type { NoteCommentThreadView } from '@/server/services/note-comments';
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
@@ -51,6 +52,11 @@ export function NoteDetail({
   const [error, setError] = useState<string | null>(null);
   // 저장은 됐지만 본문이 요청과 달라졌을 때의 안내 (KAN-73 — 죽은 이미지를 떨궜다).
   const [notice, setNotice] = useState<string | null>(null);
+  // 열려 있는 코멘트 작성기. resolve는 에디터에게 준 약속을 닫는 손잡이다(startComment 주석).
+  const [pendingComment, setPendingComment] = useState<{
+    resolve: (threadId: string | null) => void;
+  } | null>(null);
+  const [commentBody, setCommentBody] = useState('');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -75,21 +81,41 @@ export function NoteDetail({
   );
 
   /**
-   * 스레드를 먼저 만들고 id를 돌려준다 — 그 id로 에디터가 마크를 찍는다. 순서가 이래야
-   * 하는 이유는 저장 정규화가 '가리킬 곳 없는 앵커'를 걷어 가기 때문이다.
+   * 코멘트 작성기를 열고, 사용자가 확정할 때까지 기다렸다가 **새 스레드의 id**를 돌려준다.
+   *
+   * 툴바에 약속한 계약이 'Promise<string | null>'인 이유가 여기 있다 — 스레드가 먼저
+   * 만들어지고 그 id로 마크가 찍혀야 저장 정규화가 앵커를 걷어 가지 않는다. 작성기가 열려
+   * 있는 동안 이 Promise가 미해결로 남고, 확정·취소가 그것을 닫는다.
    */
-  async function startComment(): Promise<string | null> {
-    const body = window.prompt('코멘트를 입력하세요');
-    if (body === null || body.trim() === '') return null;
-    try {
-      const result = await createCommentThreadAction(note.id, body);
-      if (result.ok) return result.data.id;
-      setError(result.error);
-      return null;
-    } catch {
-      setError(GENERIC_ERROR);
-      return null;
-    }
+  function startComment(): Promise<string | null> {
+    setCommentBody('');
+    setError(null);
+    return new Promise((resolve) => setPendingComment({ resolve }));
+  }
+
+  function closeComment(threadId: string | null) {
+    pendingComment?.resolve(threadId);
+    setPendingComment(null);
+    setCommentBody('');
+  }
+
+  function submitComment() {
+    const body = commentBody.trim();
+    if (!body || isPending) return;
+    startTransition(async () => {
+      try {
+        const result = await createCommentThreadAction(note.id, body);
+        if (result.ok) {
+          closeComment(result.data.id);
+        } else {
+          setError(result.error);
+          closeComment(null);
+        }
+      } catch {
+        setError(GENERIC_ERROR);
+        closeComment(null);
+      }
+    });
   }
   const author = authorLabel(note.author);
   const canModify = viewer ? viewer.isAdmin || note.authorId === viewer.userId : false;
@@ -220,6 +246,29 @@ export function NoteDetail({
         {author ? `${author} 작성 · ` : ''}
         {noteDateFormat.format(new Date(optimisticNote.updatedAt))} 수정
       </p>
+
+      {pendingComment ? (
+        <div className="flex flex-col gap-2 rounded-md border p-3">
+          <Label htmlFor="note-comment-draft">고른 범위에 코멘트</Label>
+          <Textarea
+            id="note-comment-draft"
+            autoFocus
+            rows={2}
+            maxLength={MAX_COMMENT_BODY}
+            value={commentBody}
+            placeholder="무엇이 궁금한가요?"
+            onChange={(event) => setCommentBody(event.target.value)}
+          />
+          <div className="flex items-center gap-2">
+            <Button size="sm" disabled={isPending || commentBody.trim() === ''} onClick={submitComment}>
+              코멘트 달기
+            </Button>
+            <Button variant="ghost" size="sm" disabled={isPending} onClick={() => closeComment(null)}>
+              취소
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {isEditing && doc !== null ? (
         <CollaborativeBody

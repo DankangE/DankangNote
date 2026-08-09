@@ -113,18 +113,27 @@ export async function addComment(
 ): Promise<ReplyOutcome> {
   await assertNotTombstoned([orgId, authorId]);
 
-  // createMany가 아니라 조건부 create를 쓰려면 스레드가 이 org의 것인지 먼저 봐야 한다.
-  // 판정과 INSERT 사이의 경합(그 사이 스레드 삭제)은 FK가 막고 트랜잭션이 통째로 죽는다.
+  // 스레드가 이 org의 것인지 먼저 본다 — 남의 워크스페이스 스레드에 답글이 달리지 않게.
   const thread = await prisma.noteCommentThread.findFirst({
     where: { id: threadId, orgId },
     select: { id: true },
   });
   if (!thread) return { status: 'notfound' };
 
-  await prisma.$transaction(async (tx) => {
-    await userSkeleton(authorId, tx);
-    await tx.noteComment.create({ data: { orgId, threadId, authorId, body } });
-  });
+  try {
+    await prisma.$transaction(async (tx) => {
+      await userSkeleton(authorId, tx);
+      await tx.noteComment.create({ data: { orgId, threadId, authorId, body } });
+    });
+  } catch (error) {
+    // 판정과 INSERT 사이에 스레드가 지워지면 FK가 막는다(P2003). 그건 '없는 스레드'와 같은
+    // 상황이므로 같은 결과를 준다 — 그냥 새어 나가게 두면 사용자는 원인을 알 수 없는
+    // 일반 오류를 받고, 재시도해도 영영 같은 결과다.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      return { status: 'notfound' };
+    }
+    throw error;
+  }
 
   const updated = await prisma.noteCommentThread.findFirst({
     where: { id: threadId, orgId },
