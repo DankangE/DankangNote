@@ -86,9 +86,13 @@ export function noteCollabCaret(awareness: Awareness, directory: CaretDirectory)
   return CollaborationCaret.configure({
     // 확장이 요구하는 건 awareness 하나뿐이다(Hocuspocus provider의 그 필드).
     provider: { awareness },
-    // **비워 둔다.** 이 값은 내 awareness 상태에 실려 남들에게 전달되는데, 받는 쪽은
-    // 어차피 자기 프레즌스 명단에서 이름을 찾으므로 여기 뭘 넣어도 쓰이지 않는다.
-    // 넣지 않는 편이 낫다 — 이름을 실어 보내지 않으면 신뢰할지 말지 고민할 값도 없다.
+    // **이름을 싣지 않는다.** 이 값은 내 awareness 상태에 실려 남들에게 전달되지만, 받는
+    // 쪽은 자기 프레즌스 명단에서 이름을 다시 찾으므로 쓰이지 않는다 — 안 실어 보내면
+    // 신뢰할지 말지 고민할 값 자체가 없다.
+    //
+    // 빈 객체를 줘도 확장의 기본값(`{ name: null, color: null }`)은 남는다 — Tiptap의
+    // configure가 깊은 병합이라 없는 키를 지우지 못한다. 실려 나가는 건 그 두 개의 null
+    // 뿐이라 신원이 아니고, 우리 render는 어차피 이 인자를 안 본다.
     user: {},
     ...(renderers as unknown as ConfigurableOptions),
   });
