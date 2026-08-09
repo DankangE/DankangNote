@@ -21,7 +21,7 @@ import { NoteEditor } from './NoteEditor';
 import { useCollaborativeDoc } from '@/features/notes/use-collaborative-doc';
 import { useNoteAwareness } from '@/features/notes/use-note-awareness';
 import { EditorPresence } from './EditorPresence';
-import { FormError } from './FormError';
+import { FormError, FormNotice } from './FormError';
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
 
@@ -43,6 +43,8 @@ export function NoteDetail({
   const [title, setTitle] = useState(note.title);
   const [doc, setDoc] = useState<JSONContent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 저장은 됐지만 본문이 요청과 달라졌을 때의 안내 (KAN-73 — 죽은 이미지를 떨궜다).
+  const [notice, setNotice] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -74,6 +76,7 @@ export function NoteDetail({
   function handleSave() {
     if (isPending || doc === null) return;
     setError(null);
+    setNotice(null);
     startTransition(async () => {
       const trimmedTitle = title.trim();
       if (trimmedTitle) {
@@ -89,6 +92,10 @@ export function NoteDetail({
         if (!result.ok) {
           setError(result.error);
           setIsEditing(true);
+        } else if (result.notice) {
+          // 편집 모드로 되돌리지 않는다 — 저장은 성공했고, 되돌리면 방금 떨궈진 이미지가
+          // 화면에는 아직 남아 있는 버퍼에서 되살아나 같은 안내가 반복된다.
+          setNotice(result.notice);
         }
       } catch {
         setError(GENERIC_ERROR);
@@ -193,6 +200,7 @@ export function NoteDetail({
       )}
 
       <FormError message={error} />
+      <FormNotice message={notice} />
 
       <div className="flex items-center gap-2">
         <Button variant="outline" size="sm" disabled={isPending} onClick={handleCreateChild}>

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { prisma } from '@/server/db';
+import type { Prisma } from '@/server/generated/prisma/client';
 import {
   ORG_A,
   ORG_B,
@@ -12,7 +13,8 @@ import { createNote, deleteNote, updateNote } from './notes';
 import {
   createPendingNoteAttachment,
   resolveNoteAttachmentUrl,
-  syncNoteAttachments,
+  applyNoteAttachments,
+  planNoteAttachments,
 } from './note-attachments';
 import { sweepAbandonedPending } from './storage-cleanup';
 
@@ -71,6 +73,21 @@ const docWithImage = (id: string) =>
     content: [{ type: 'image', attrs: { src: `/api/notes/attachments/${id}` } }],
   });
 
+/**
+ * 저장 경로의 첨부 처리 전부 — 판정(plan)과 적용(apply)은 KAN-73에서 갈라졌지만, 잠금·경합에
+ * 대한 계약은 둘을 이어 붙인 이 순서가 지킨다. 잠금은 plan이 전부 잡는다.
+ */
+async function syncRefs(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  userId: string,
+  noteId: string,
+  ids: string[],
+): Promise<void> {
+  const plan = await planNoteAttachments(tx, orgId, userId, noteId, ids);
+  await applyNoteAttachments(tx, orgId, noteId, plan);
+}
+
 describe('첨부 바인딩 (KAN-38)', () => {
   it('본문이 참조한 내 pending 첨부는 저장과 함께 노트에 묶인다', async () => {
     const noteId = await noteInA();
@@ -82,7 +99,9 @@ describe('첨부 바인딩 (KAN-38)', () => {
     expect(await isRefBy(noteId, att.id)).toBe(true);
   });
 
-  it('다른 org의 첨부 id는 거부되고 본문 저장도 롤백된다', async () => {
+  // KAN-73에서 정책이 바뀌었다: 묶을 수 없는 이미지는 **문서 전체를 거부**하는 대신 그
+  // 노드만 떨군다. 격리 보장은 그대로다 — 참조가 안 생기고 남의 행도 그대로다.
+  it('다른 org의 첨부 id는 그 이미지만 빠지고 나머지는 저장된다', async () => {
     const noteId = await noteInA();
     const foreign = await pending(ORG_B, USER_OTHER);
 
@@ -90,9 +109,10 @@ describe('첨부 바인딩 (KAN-38)', () => {
       ORG_A, noteId, { content: docWithImage(foreign.id) }, owner, [foreign.id],
     );
 
-    expect(outcome.status).toBe('invalidattachment');
+    expect(outcome.status).toBe('ok');
+    expect(outcome.status === 'ok' && outcome.droppedImages).toBe(1);
     const note = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
-    expect(note.content).toBe('');
+    expect(note.content).not.toContain(foreign.id);
     expect(await refCount(foreign.id)).toBe(0);
   });
 
@@ -107,7 +127,7 @@ describe('첨부 바인딩 (KAN-38)', () => {
       ORG_A, noteId, { content: docWithImage(mineElsewhere.id) }, owner, [mineElsewhere.id],
     );
 
-    expect(outcome.status).toBe('invalidattachment');
+    expect(outcome.status === 'ok' && outcome.droppedImages).toBe(1);
     const row = await prisma.noteAttachment.findUniqueOrThrow({ where: { id: mineElsewhere.id } });
     expect(await refCount(mineElsewhere.id)).toBe(0);
     expect(row.orgId).toBe(ORG_B);
@@ -121,7 +141,8 @@ describe('첨부 바인딩 (KAN-38)', () => {
       ORG_A, noteId, { content: docWithImage(others.id) }, owner, [others.id],
     );
 
-    expect(outcome.status).toBe('invalidattachment');
+    expect(outcome.status === 'ok' && outcome.droppedImages).toBe(1);
+    expect(await refCount(others.id)).toBe(0);
   });
 
   it('생성 시에도 바인딩된다 (createNote 경로)', async () => {
@@ -228,7 +249,7 @@ describe('버려진 pending 스윕', () => {
 
     const saving = prisma.$transaction(
       async (tx) => {
-        await syncNoteAttachments(tx, ORG_A, USER_OWNER, note.id, [att.id]);
+        await syncRefs(tx, ORG_A, USER_OWNER, note.id, [att.id]);
         signalLocked();
         await gate;
       },
@@ -429,8 +450,91 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
       ORG_A, USER_OWNER, { title: '내 문서', content: docWithImage(theirPending.id) }, [theirPending.id],
     );
 
-    expect(mine.status).toBe('invalidattachment');
+    expect(mine.status === 'ok' && mine.droppedImages).toBe(1);
     expect(await refCount(theirPending.id)).toBe(0);
+  });
+
+  // ── KAN-73: 참조가 사라진 이미지 하나가 문서 전체의 저장을 막던 경로 ──────────────
+  //
+  // 이건 예외 상황이 아니라 **정상 경로**다. 초안을 열어 둔 사이 다른 사람이(또는 본인이
+  // 다른 탭에서) 그 이미지의 마지막 참조를 놓으면 첨부 행이 지워진다(KAN-71의 참조 카운트).
+  // 예전에는 그 뒤 초안 저장이 제목까지 포함해 통째로 거부됐고, 사용자에게는 어느 블록이
+  // 문제인지 보이지 않아 그 편집 세션이 전부 유실됐다.
+
+  it('초안을 여는 사이 이미지가 사라져도 제목과 나머지 본문은 저장된다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const source = await noteWithImage(att.id, '원본');
+    const draft = await noteInA();
+    // 초안이 이 이미지를 인용한 채 열려 있는 동안, 원본에서 이미지를 뺀다 →
+    // 마지막 참조가 끊겨 첨부 행이 지워지고 키가 스윕 대기열에 오른다.
+    await updateNote(ORG_A, source, { content: '' }, owner, []);
+    expect(await prisma.noteAttachment.count({ where: { id: att.id } })).toBe(0);
+
+    const doc = JSON.stringify({
+      type: 'doc',
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: '살아남아야 하는 문단' }] },
+        { type: 'image', attrs: { src: `/api/notes/attachments/${att.id}` } },
+      ],
+    });
+    const saved = await updateNote(ORG_A, draft, { title: '초안 제목', content: doc }, owner, [
+      att.id,
+    ]);
+
+    expect(saved.status).toBe('ok');
+    expect(saved.status === 'ok' && saved.droppedImages).toBe(1);
+    const note = await prisma.note.findUniqueOrThrow({ where: { id: draft } });
+    expect(note.title).toBe('초안 제목');
+    expect(note.content).toContain('살아남아야 하는 문단');
+    expect(note.content).not.toContain(att.id);
+  });
+
+  it('죽은 이미지가 섞여 있어도 살아 있는 이미지는 함께 묶인다', async () => {
+    const alive = await pending(ORG_A, USER_OWNER);
+    const dead = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteInA();
+    // dead를 아무도 참조하지 않은 채 행만 지운다 = 스윕에 걷힌 상태.
+    await prisma.noteAttachment.delete({ where: { id: dead.id } });
+
+    const doc = JSON.stringify({
+      type: 'doc',
+      content: [
+        { type: 'image', attrs: { src: `/api/notes/attachments/${alive.id}` } },
+        { type: 'image', attrs: { src: `/api/notes/attachments/${dead.id}` } },
+      ],
+    });
+    const saved = await updateNote(ORG_A, noteId, { content: doc }, owner, [alive.id, dead.id]);
+
+    expect(saved.status === 'ok' && saved.droppedImages).toBe(1);
+    expect(await isRefBy(noteId, alive.id)).toBe(true);
+    const note = await prisma.note.findUniqueOrThrow({ where: { id: noteId } });
+    expect(note.content).toContain(alive.id);
+    expect(note.content).not.toContain(dead.id);
+  });
+
+  it('생성 경로도 같다 — 죽은 이미지 때문에 새 문서가 통째로 막히지 않는다', async () => {
+    const dead = await pending(ORG_A, USER_OWNER);
+    await prisma.noteAttachment.delete({ where: { id: dead.id } });
+
+    const outcome = await createNote(
+      ORG_A, USER_OWNER, { title: '새 문서', content: docWithImage(dead.id) }, [dead.id],
+    );
+
+    expect(outcome.status).toBe('ok');
+    expect(outcome.status === 'ok' && outcome.droppedImages).toBe(1);
+    expect(outcome.status === 'ok' && outcome.note.content).not.toContain(dead.id);
+  });
+
+  it('멀쩡한 저장은 아무것도 떨구지 않는다 — 안내가 오지 않아야 한다', async () => {
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteInA();
+
+    const saved = await updateNote(ORG_A, noteId, { content: docWithImage(att.id) }, owner, [
+      att.id,
+    ]);
+
+    expect(saved.status === 'ok' && saved.droppedImages).toBe(0);
+    expect(await isRefBy(noteId, att.id)).toBe(true);
   });
 
   it('제목만 고치는 저장은 참조를 건드리지 않는다', async () => {
@@ -449,8 +553,8 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
   });
 
   it('같은 이미지를 한 문서에 두 번 넣어도 저장된다', async () => {
-    // 수집기가 Set이라 지금은 중복이 안 오지만, 대조가 호출자의 dedupe에 기대면 수집기가
-    // Set을 잃는 날 그런 문서가 전부 영구 저장 불가가 된다(1 !== 2 → invalidattachment).
+    // 수집기가 Set이라 지금은 중복이 안 오지만, 판정이 호출자의 dedupe에 기대면 수집기가
+    // Set을 잃는 날 같은 이미지를 두 번 넣은 문서에서 판정이 어긋난다.
     const att = await pending(ORG_A, USER_OWNER);
     const image = { type: 'image', attrs: { src: `/api/notes/attachments/${att.id}` } };
     const doc = JSON.stringify({ type: 'doc', content: [image, image] });
@@ -545,7 +649,7 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
     // 잡는 쪽: 참조를 만들고 커밋하지 않은 채 대기한다.
     const binder = prisma.$transaction(
       async (tx) => {
-        await syncNoteAttachments(tx, ORG_A, USER_OWNER, other.id, [att.id]);
+        await syncRefs(tx, ORG_A, USER_OWNER, other.id, [att.id]);
         signalBound();
         await gate;
       },
@@ -556,7 +660,7 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
     // 놓는 쪽: 노트1에서 이미지를 뺀다 — 잠금이 있으면 여기서 막혔다가 새 참조를 본다.
     const releaser = prisma.$transaction(
       async (tx) => {
-        await syncNoteAttachments(tx, ORG_A, USER_OWNER, holder, []);
+        await syncRefs(tx, ORG_A, USER_OWNER, holder, []);
       },
       { timeout: 20000 },
     );

@@ -8,15 +8,9 @@ import { prisma } from '@/server/db';
 import { noteEditorExtensions } from '@/features/notes/editor';
 import { noteContentSchema } from '@/features/notes/api/validation';
 import { parseNoteContent } from '@/features/notes/content';
-import {
-  NOTE_ATTACHMENT_ROUTE,
-  NOTE_ATTACHMENT_SRC_RE,
-  collectNoteAttachmentIds,
-} from '@/features/notes/attachments';
-import {
-  syncNoteAttachments,
-  usableNoteAttachmentWhere,
-} from '@/server/services/note-attachments';
+import { collectNoteAttachmentIds } from '@/features/notes/attachments';
+import { applyNoteAttachments, planNoteAttachments } from '@/server/services/note-attachments';
+import { sanitizeNoteDoc } from '@/server/services/note-sanitize';
 import { ownedNoteWhere, type NoteActor } from '@/server/services/notes';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
@@ -176,57 +170,29 @@ export async function materializeNoteDoc(
   Y.applyUpdate(doc, snapshot.update);
   const raw = yDocToProsemirrorJSON(doc, NOTE_DOC_FIELD) as JSONContent;
 
-  // 쓸 수 없는 첨부를 가리키는 이미지도 **미리 떨군다**. 남겨 두면 syncNoteAttachments가
-  // 던져 트랜잭션째 롤백되고 content가 영원히 옛 값으로 굳는다 — 그 뒤의 정상 편집도 함께
-  // 막힌다. 여기엔 오류를 돌려줄 상대가 없으니 거부는 곧 동결이다.
-  const usable = await usableAttachmentIds(orgId, userId, noteId, collectNoteAttachmentIds(raw));
-  const parsed = noteContentSchema.safeParse(sanitize(raw, usable));
-  if (!parsed.success) {
-    // 정규화까지 하고도 통과 못 하는 문서는 우리가 만든 적 없는 형태다 — content를 옛
-    // 상태로 두는 편이 깨진 본문을 심는 것보다 낫다. 로그로 남겨 원인을 추적한다.
-    console.error('[note-doc] 구체화 실패', { noteId, error: parsed.error.message });
-    return 'unchanged';
-  }
-  const content = JSON.stringify(parsed.data);
-
   return prisma.$transaction(async (tx) => {
+    // 판정을 트랜잭션 **안**으로 넣는다 (KAN-73). 예전에는 밖에서 미리 훑었는데, 그 사이
+    // 마지막 참조가 끊겨 첨부가 사라지면 안쪽 동기화가 던져 구체화가 롤백됐다 — 여기엔
+    // 오류를 돌려줄 상대가 없으니 거부는 곧 content 동결이고, 그 뒤의 정상 편집까지 막힌다.
+    // plan은 첨부를 잠그고 판정하므로 그 창 자체가 없어진다.
+    const plan = await planNoteAttachments(tx, orgId, userId, noteId, collectNoteAttachmentIds(raw));
+    const parsed = noteContentSchema.safeParse(sanitizeNoteDoc(raw, plan.usable));
+    if (!parsed.success) {
+      // 정규화까지 하고도 통과 못 하는 문서는 우리가 만든 적 없는 형태다 — content를 옛
+      // 상태로 두는 편이 깨진 본문을 심는 것보다 낫다. 로그로 남겨 원인을 추적한다.
+      console.error('[note-doc] 구체화 실패', { noteId, error: parsed.error.message });
+      return 'unchanged';
+    }
+    const content = JSON.stringify(parsed.data);
+
     const updated = await tx.note.updateMany({
       where: { id: noteId, orgId, content: { not: content } },
       data: { content },
     });
     if (updated.count === 0) return 'unchanged';
-    // 위에서 쓸 수 있는 것만 남겼으므로 이 호출은 던지지 않는다.
-    await syncNoteAttachments(tx, orgId, userId, noteId, collectNoteAttachmentIds(parsed.data));
+    await applyNoteAttachments(tx, orgId, noteId, plan);
     return 'ok';
   });
-}
-
-/**
- * 이 문서가 참조하는 첨부 중 실제로 묶을 수 있는 것.
- *
- * 판정 근거는 저장 경로와 같다(usableNoteAttachmentWhere) — 다만 여기서는 '이 노트가 이미
- * 참조 중인 것'도 함께 살린다. 구체화를 트리거한 사람이 그 이미지를 넣은 사람이 아닐 수
- * 있어서다(A가 넣고 B의 편집이 구체화를 돌리는 것이 정상 경로다). 그 경우까지 거부하면
- * 이미 살아 있는 참조가 매 구체화마다 끊겼다 붙었다 한다.
- */
-async function usableAttachmentIds(
-  orgId: string,
-  userId: string,
-  noteId: string,
-  ids: string[],
-): Promise<Set<string>> {
-  if (ids.length === 0) return new Set();
-  const rows = await prisma.noteAttachment.findMany({
-    where: {
-      id: { in: ids },
-      OR: [
-        usableNoteAttachmentWhere(orgId, userId),
-        { orgId, refs: { some: { noteId } } },
-      ],
-    },
-    select: { id: true },
-  });
-  return new Set(rows.map((row) => row.id));
 }
 
 /**
@@ -265,34 +231,4 @@ async function ensureDocState(
     select: { docState: true },
   });
   return winner?.docState ? new Uint8Array(winner.docState) : state;
-}
-
-
-/** 이 에디터 스키마가 아는 노드 타입 전부 — 화이트리스트의 근거를 스키마에서 가져온다. */
-const ALLOWED_NODE_TYPES = new Set(Object.keys(schema.nodes));
-
-/**
- * zod가 접을 수 없는 것을 미리 떨군다. 남겨 두면 문서 **전체**가 검증에 걸리고, 검증 실패는
- * 곧 content 동결이다(여기엔 사용자에게 오류를 돌려줄 상대가 없다).
- *
- * 처음에는 최상위 자식 중 `type === 'image'`인 것만 봤다. 그건 **한 인스턴스만 고치고 부류를
- * 닫았다고 선언한 것**이었고(규약 25), 리뷰가 세 갈래를 뚫었다: 허용된 이미지의 자식으로 심은
- * 이미지(재귀를 안 했다), image가 아닌 노드에 붙인 `src`, 스키마에 없는 노드 타입.
- * 그래서 근거를 스키마에서 가져와 전체를 훑는다 — 모르는 타입과 우리 라우트 밖 `src`는
- * 어디에 있든 떨군다.
- */
-function sanitize(node: JSONContent, usable: Set<string>): JSONContent {
-  const children = node.content?.flatMap((child) =>
-    keep(child, usable) ? [sanitize(child, usable)] : [],
-  );
-  return children ? { ...node, content: children } : node;
-}
-
-function keep(node: JSONContent, usable: Set<string>): boolean {
-  if (typeof node.type !== 'string' || !ALLOWED_NODE_TYPES.has(node.type)) return false;
-  const src = node.attrs?.src;
-  if (src === undefined || src === null) return true;
-  if (typeof src !== 'string') return false;
-  if (!src.startsWith(NOTE_ATTACHMENT_ROUTE) || !NOTE_ATTACHMENT_SRC_RE.test(src)) return false;
-  return usable.has(src.slice(NOTE_ATTACHMENT_ROUTE.length));
 }

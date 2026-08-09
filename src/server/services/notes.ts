@@ -6,11 +6,24 @@ import type { Note, User } from '@/server/generated/prisma/client';
 import { assertNotTombstoned } from '@/server/services/clerk-tombstone';
 import { orgSkeleton, userSkeleton } from '@/server/services/skeleton';
 import {
+  applyNoteAttachments,
   collectUnreferenced,
-  InvalidNoteAttachmentError,
   lockNoteAttachments,
-  syncNoteAttachments,
+  planNoteAttachments,
 } from '@/server/services/note-attachments';
+import { sanitizeNoteDoc } from '@/server/services/note-sanitize';
+import { parseNoteContent, serializeNoteContent } from '@/features/notes/content';
+
+/**
+ * 묶을 수 없는 첨부를 가리키는 이미지 노드를 본문에서 떨군다 (KAN-73).
+ *
+ * 저장 경로가 이걸 하는 이유는 **거부의 대가가 문서 전체**이기 때문이다 — 검증은 doc 하나를
+ * 통째로 보고, 사용자에게는 어느 블록이 문제인지 보이지 않는다(규약 25). 공동 편집 경로
+ * (note-doc.ts)와 같은 함수를 부른다(규약 10).
+ */
+function dropDeadImages(content: string | undefined, usable: ReadonlySet<string>): string {
+  return serializeNoteContent(sanitizeNoteDoc(parseNoteContent(content ?? ''), usable));
+}
 
 export interface NoteInput {
   title: string;
@@ -52,12 +65,12 @@ export function getNote(orgId: string, id: string): Promise<NoteWithAuthor | nul
   });
 }
 
-// 생성 결과 — 부모 지정(KAN-37)의 '그 부모가 이 org에 없다', 이미지(KAN-38)의 '본문이
-// 참조한 첨부를 이 노트에 묶을 수 없다'가 실패 경로다.
+// 생성 결과 — 부모 지정(KAN-37)의 '그 부모가 이 org에 없다'가 유일한 실패 경로다.
+// 묶을 수 없는 이미지는 실패가 아니라 **떨궈진 개수**로 돌아온다(KAN-73) — 액션이 그 수를
+// 사용자에게 알린다. 조용히 지우는 것과 문서 전체를 거부하는 것 사이의 자리다.
 export type CreateOutcome =
-  | { status: 'ok'; note: NoteWithAuthor }
-  | { status: 'invalidparent' }
-  | { status: 'invalidattachment' };
+  | { status: 'ok'; note: NoteWithAuthor; droppedImages: number }
+  | { status: 'invalidparent' };
 
 // 생성은 org/작성자 스켈레톤 생성(create-if-absent)과 한 트랜잭션 — webhook이 아직
 // 미러를 채우기 전이어도 FK가 성립한다(부트스트랩 경합 회피, KAN-11 멤버십과 동일 패턴).
@@ -102,26 +115,28 @@ export async function createNote(
   });
   const position = (_max.position ?? -1) + 1;
 
-  let note: NoteWithAuthor;
-  try {
-    // KAN-38에서 배열 → 대화형 트랜잭션으로: 첨부 바인딩(syncNoteAttachments)이 생성과
-    // 원자적이어야 한다. 스켈레톤 헬퍼는 tx 클라이언트를 받는다(skeleton.ts 주석).
-    note = await prisma.$transaction(async (tx) => {
-      await orgSkeleton(orgId, tx);
-      await userSkeleton(authorId, tx);
-      const created = await tx.note.create({
-        data: { title, content, parentId, position, orgId, authorId },
-        include: { author: { select: AUTHOR_SELECT } },
-      });
-      await syncNoteAttachments(tx, orgId, authorId, created.id, attachmentIds);
-      return created;
+  // KAN-38에서 배열 → 대화형 트랜잭션으로: 첨부 바인딩이 생성과 원자적이어야 한다.
+  // 스켈레톤 헬퍼는 tx 클라이언트를 받는다(skeleton.ts 주석).
+  const { note, droppedImages } = await prisma.$transaction(async (tx) => {
+    await orgSkeleton(orgId, tx);
+    await userSkeleton(authorId, tx);
+    // 판정이 먼저다 — 묶을 수 없는 이미지를 본문에서 떨군 **뒤에** 노트를 만든다(KAN-73).
+    // 노트가 아직 없으므로 기존 참조도 없다(noteId=null).
+    const plan = await planNoteAttachments(tx, orgId, authorId, null, attachmentIds);
+    const created = await tx.note.create({
+      data: {
+        title,
+        content: plan.dropped.length > 0 ? dropDeadImages(content, plan.usable) : content,
+        parentId,
+        position,
+        orgId,
+        authorId,
+      },
+      include: { author: { select: AUTHOR_SELECT } },
     });
-  } catch (error) {
-    if (error instanceof InvalidNoteAttachmentError) {
-      return { status: 'invalidattachment' };
-    }
-    throw error;
-  }
+    await applyNoteAttachments(tx, orgId, created.id, plan);
+    return { note: created, droppedImages: plan.dropped.length };
+  });
 
   // post-check — 방금 되살렸을 수 있는 것들을 자가 정리(org 삭제는 cascade로 노트까지).
   // post-check가 tombstone 커밋보다 앞서는 문장 단위 인터리빙은 delete 핸들러의 커밋 후
@@ -130,16 +145,15 @@ export async function createNote(
     await prisma.note.deleteMany({ where: { id: note.id } });
   });
 
-  return { status: 'ok', note };
+  return { status: 'ok', note, droppedImages };
 }
 
 // 수정·삭제 결과 — 권한 없음(forbidden)과 미존재(notfound)를 구분해 액션이 알맞은 문구를
 // 준다. 보안 경계는 아래 where의 소유권 조건(원자 write)이고, 이 구분은 메시지용이다.
 export type UpdateOutcome =
-  | { status: 'ok'; note: NoteWithAuthor }
+  | { status: 'ok'; note: NoteWithAuthor; droppedImages: number }
   | { status: 'forbidden' }
-  | { status: 'notfound' }
-  | { status: 'invalidattachment' };
+  | { status: 'notfound' };
 
 export type DeleteOutcome = 'ok' | 'forbidden' | 'notfound';
 
@@ -158,22 +172,45 @@ export async function updateNote(
     // 첨부 바인딩·미참조 정리는 본문 저장과 원자적이어야 한다 — 그래서 KAN-38에서 단문
     // update를 대화형 트랜잭션으로 바꿨다. 바인딩 문장만 조건부다(제목만 바꾸는 수정은
     // 참조 목록을 들고 오지 않으므로, 돌렸다간 멀쩡한 첨부를 미참조로 보고 지운다).
-    const note = await prisma.$transaction(async (tx) => {
+    const { note, droppedImages } = await prisma.$transaction(async (tx) => {
+      // 권한 선검사 — 첨부 판정이 본문 쓰기보다 앞서게 되면서(아래) 권한 없는 요청이 첨부
+      // 행 잠금을 먼저 잡게 됐다. 판정은 아래 update의 where가 원자적으로 다시 하므로 이건
+      // 보안 경계가 아니라 **비용을 안 태우게 하는 문지기**다(KAN-57과 같은 방향).
+      if (input.content !== undefined) {
+        const allowed = await tx.note.findFirst({
+          where: ownedNoteWhere(orgId, id, actor),
+          select: { id: true },
+        });
+        if (!allowed) {
+          throw new Prisma.PrismaClientKnownRequestError('note not found or not owned', {
+            code: 'P2025',
+            clientVersion: Prisma.prismaVersion.client,
+          });
+        }
+      }
+      // 본문을 쓰기 **전에** 판정한다 (KAN-73) — 묶을 수 없는 이미지는 문서 전체를 거부하는
+      // 대신 그 노드만 떨군다. 초안을 열어 둔 사이 다른 사람이 그 이미지의 마지막 참조를
+      // 놓는 건 정상 경로이고, 거부하면 제목까지 포함해 그 편집 세션이 통째로 유실된다.
+      const plan =
+        input.content === undefined
+          ? null
+          : await planNoteAttachments(tx, orgId, actor.userId, id, attachmentIds);
+      const data =
+        plan && plan.dropped.length > 0 && input.content !== undefined
+          ? { ...input, content: dropDeadImages(input.content, plan.usable) }
+          : input;
       const updated = await tx.note.update({
         where: ownedNoteWhere(orgId, id, actor),
-        data: input,
+        data,
         include: { author: { select: AUTHOR_SELECT } },
       });
-      if (input.content !== undefined) {
-        await syncNoteAttachments(tx, orgId, actor.userId, id, attachmentIds);
+      if (plan) {
+        await applyNoteAttachments(tx, orgId, id, plan);
       }
-      return updated;
+      return { note: updated, droppedImages: plan?.dropped.length ?? 0 };
     });
-    return { status: 'ok', note };
+    return { status: 'ok', note, droppedImages };
   } catch (error) {
-    if (error instanceof InvalidNoteAttachmentError) {
-      return { status: 'invalidattachment' };
-    }
     // P2025: 조건에 맞는 레코드 없음. 소유권 때문인지(권한) 노트가 없어서인지(미존재) 구분.
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
       const exists = await prisma.note.findFirst({ where: { id, orgId }, select: { id: true } });

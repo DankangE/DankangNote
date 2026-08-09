@@ -11,6 +11,18 @@ import { collectNoteAttachmentIds } from '@/features/notes/attachments';
 import type { ActionResult, Note } from '@/features/notes/types';
 import { createNoteInputSchema, moveNoteTargetSchema, noteIdSchema, noteInputSchema } from './validation';
 
+/**
+ * 참조가 사라진 이미지를 떨구고 저장했을 때의 안내 (KAN-73).
+ *
+ * 저장을 거부하면 제목까지 포함해 그 편집 세션이 통째로 유실되고, 아무 말도 안 하면 본문이
+ * 조용히 달라진다. 몇 개가 빠졌는지만 알려 주면 사용자가 다시 넣을지 판단할 수 있다 —
+ * 어느 블록인지까지 짚어 주는 건 에디터가 노드 위치를 받아야 하므로 별개의 일이다.
+ */
+function droppedImagesNotice(count: number): string | undefined {
+  if (count <= 0) return undefined;
+  return `이미지 ${count}개는 더 이상 사용할 수 없어 본문에서 빼고 저장했습니다.`;
+}
+
 // 쓰기 커밋 이후의 revalidate 실패는 뮤테이션 실패가 아니다 — 실패로 오보고하면
 // 재시도가 중복 생성/유령 삭제를 만든다. 로그만 남기고 성공으로 처리한다.
 // 'layout' 스코프인 이유: 트리 사이드바(KAN-37)가 notes/layout.tsx에서 조회되므로
@@ -52,11 +64,8 @@ export async function createNoteAction(input: unknown): Promise<ActionResult<Not
     if (outcome.status === 'invalidparent') {
       return { ok: false, error: '상위 문서를 찾을 수 없습니다.' };
     }
-    if (outcome.status === 'invalidattachment') {
-      return { ok: false, error: '본문의 이미지를 확인할 수 없습니다. 이미지를 다시 넣어 주세요.' };
-    }
     revalidateNotes('createNote');
-    return { ok: true, data: outcome.note };
+    return { ok: true, data: outcome.note, notice: droppedImagesNotice(outcome.droppedImages) };
   });
 }
 
@@ -161,9 +170,6 @@ export async function updateNoteAction(
         ? collectNoteAttachmentIds(parsedInput.data.content)
         : [],
     );
-    if (outcome.status === 'invalidattachment') {
-      return { ok: false, error: '본문의 이미지를 확인할 수 없습니다. 이미지를 다시 넣어 주세요.' };
-    }
     if (outcome.status === 'forbidden') {
       return { ok: false, error: '이 노트를 수정할 권한이 없습니다. 작성자 또는 관리자만 수정할 수 있습니다.' };
     }
@@ -172,7 +178,7 @@ export async function updateNoteAction(
     }
 
     revalidateNotes('updateNote');
-    return { ok: true, data: outcome.note };
+    return { ok: true, data: outcome.note, notice: droppedImagesNotice(outcome.droppedImages) };
   });
 }
 
