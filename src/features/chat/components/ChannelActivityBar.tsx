@@ -1,7 +1,8 @@
 'use client';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { typingLabel, type PresentMember, type TypingEntry } from '@/features/chat/presence';
+import { typingLabel, type TypingEntry } from '@/features/chat/presence';
+import type { PresentMember } from '@/features/realtime/presence-members';
 
 // 얼굴은 다섯까지만 세운다 — 그 이상은 겹쳐 봐야 누군지 못 알아보고 폭만 먹는다.
 const MAX_FACES = 5;

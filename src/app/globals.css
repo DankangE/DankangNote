@@ -214,3 +214,37 @@ body {
     text-decoration: line-through;
   }
 }
+
+/* 공동 편집 커서 (KAN-75) — y-prosemirror가 본문 안에 심는 위젯이라 prose 서식 밖에서
+   따로 잡는다. 색은 인라인 style로 온다(사람마다 다르므로 클래스로 못 세운다). */
+@layer components {
+  .collaboration-carets__caret {
+    position: relative;
+    /* 폭이 0인 세로선 — 글자 사이에 끼어들어 본문 흐름을 밀지 않아야 한다. */
+    margin-left: -1px;
+    margin-right: -1px;
+    border-left: 1px solid;
+    border-right: 1px solid;
+    word-break: normal;
+    pointer-events: none;
+  }
+  .collaboration-carets__label {
+    position: absolute;
+    top: -1.4em;
+    left: -1px;
+    /* 라벨이 본문 위에 겹쳐 뜨므로 줄 높이를 차지하지 않게 둔다. */
+    font-size: 0.75rem;
+    line-height: 1.2;
+    font-weight: 600;
+    white-space: nowrap;
+    border-radius: 0.25rem 0.25rem 0.25rem 0;
+    padding: 0.1rem 0.3rem;
+    color: #fff;
+    user-select: none;
+    /* 팔레트가 L 0.55로 묶여 있어 흰 글자가 두 테마 모두에서 AA를 넘는다
+       (collab-identity.ts). */
+  }
+  .collaboration-carets__selection {
+    border-radius: 0.15rem;
+  }
+}

@@ -19,7 +19,11 @@ import type { Note, NoteViewer } from '@/features/notes/types';
 import { NoteContent } from './NoteContent';
 import { NoteEditor } from './NoteEditor';
 import { useCollaborativeDoc } from '@/features/notes/use-collaborative-doc';
+import { useNoteAwareness } from '@/features/notes/use-note-awareness';
+import { EditorPresence } from './EditorPresence';
 import { FormError } from './FormError';
+import type * as Y from 'yjs';
+import type { Awareness } from 'y-protocols/awareness';
 
 const GENERIC_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
 
@@ -251,19 +255,58 @@ function CollaborativeBody({
   doc: JSONContent;
   onChange: (next: JSONContent) => void;
 }) {
-  const { doc: collabDoc, status } = useCollaborativeDoc(noteId);
+  const { doc: collabDoc, awareness, status } = useCollaborativeDoc(noteId);
 
   // 로딩 중에 에디터를 먼저 띄우면 Collaboration이 빈 Y.Doc으로 붙었다가 서버 상태가
   // 도착하며 본문이 겹친다. 잠깐 비워 두는 편이 낫다.
   if (status === 'loading') {
     return <p className="text-sm text-muted-foreground">문서를 여는 중…</p>;
   }
+  // 문서 연결이 안 됐으면 커서도 없다 — 훅을 조건부로 부를 수 없어 여기서 갈라 준다.
+  if (!collabDoc || !awareness) {
+    return <NoteEditor doc={doc} onChange={onChange} ariaLabel="문서 내용 편집" />;
+  }
   return (
-    <NoteEditor
+    <CollaborativeEditor
+      noteId={noteId}
+      collabDoc={collabDoc}
+      awareness={awareness}
       doc={doc}
       onChange={onChange}
-      ariaLabel="문서 내용 편집"
-      collabDoc={collabDoc}
     />
+  );
+}
+
+/**
+ * 커서·접속자까지 붙은 편집기 (KAN-75). Y.Doc이 확정된 뒤에만 마운트된다 — awareness는
+ * 그 문서의 좌표를 들고 다니는 값이라 문서보다 먼저 존재할 이유가 없다.
+ */
+function CollaborativeEditor({
+  noteId,
+  collabDoc,
+  awareness,
+  doc,
+  onChange,
+}: {
+  noteId: string;
+  collabDoc: Y.Doc;
+  awareness: Awareness;
+  doc: JSONContent;
+  onChange: (next: JSONContent) => void;
+}) {
+  const { members, directory } = useNoteAwareness(noteId, awareness);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <EditorPresence members={members} />
+      <NoteEditor
+        doc={doc}
+        onChange={onChange}
+        ariaLabel="문서 내용 편집"
+        collabDoc={collabDoc}
+        collabAwareness={awareness}
+        caretDirectory={directory}
+      />
+    </div>
   );
 }

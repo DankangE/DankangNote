@@ -7,6 +7,16 @@
 
 const NOTE_DOC_CHANNEL_PREFIX = 'private-note-';
 
+// 커서·접속자(awareness)는 문서 채널과 **따로** 둔다 (KAN-75) — 규약 22가 채팅에서 세운
+// 것과 같은 이유이고, 여기서는 셋이 더 강하게 갈린다.
+// ① 수명이 다르다 — 문서 델타는 저장되는 값이고 awareness는 접속 중에만 사는 값이다.
+// ② 경로가 다르다 — 델타는 서버를 거쳐 저장·브로드캐스트되지만 커서는 클라이언트끼리
+//    직접 오간다(아래 NOTE_AWARENESS_EVENT 주석). 한 채널에 섞으면 저장되는 것과
+//    안 되는 것이 같은 이름으로 흘러 수신 측이 페이로드 모양으로 갈라야 한다.
+// ③ 실패의 무게가 다르다 — 프레즌스 채널에는 멤버 상한이 있어 거절될 수 있다.
+//    합쳐 두면 그 순간 본문 동기화까지 함께 죽는다.
+const NOTE_PRESENCE_CHANNEL_PREFIX = 'presence-note-';
+
 /** 다른 편집자의 Yjs 업데이트. 페이로드는 base64로 감싼 델타다. */
 export const NOTE_DOC_UPDATE_EVENT = 'note:update';
 
@@ -18,8 +28,30 @@ export const NOTE_DOC_UPDATE_EVENT = 'note:update';
  */
 export const NOTE_DOC_RESYNC_EVENT = 'note:resync';
 
+/**
+ * 커서·선택 범위(Yjs awareness). **`client-` 접두사라 서버를 거치지 않고 브라우저끼리
+ * 직접 오간다** (KAN-75).
+ *
+ * 규약 22는 "클라이언트가 직접 쏘는 이벤트 대신 서버를 거치게 두면 판정할 자리가 남는다"
+ * 고 했다. 그건 판정할 자리가 **구독 시점에 없을 때**의 이야기다 — 여기서는 프레즌스 채널
+ * 구독 자체가 `/api/pusher/auth`의 서명을 받으므로 게이트가 이미 서 있고, Pusher가
+ * 클라이언트 이벤트에 그 서명에서 나온 `user_id`를 붙여 배달한다(수신 측은 그 값만 믿는다).
+ *
+ * 서버를 거치게 두면 잃는 게 크다: 커서는 타건·클릭마다 움직여 초당 수십 건이라
+ * KAN-57의 레이트 리밋과 정면으로 부딪히고, 왕복 지연이 그대로 커서 지연이 되며,
+ * 저장할 이유가 전혀 없는 값이 저장 경로를 지나간다.
+ *
+ * **Pusher 대시보드에서 client events를 켜야 동작한다.** 꺼져 있으면 커서만 안 보이고
+ * 본문 동기화·접속자 목록은 그대로다.
+ */
+export const NOTE_AWARENESS_EVENT = 'client-note:awareness';
+
 export function noteDocChannel(noteId: string): string {
   return `${NOTE_DOC_CHANNEL_PREFIX}${noteId}`;
+}
+
+export function notePresenceChannel(noteId: string): string {
+  return `${NOTE_PRESENCE_CHANNEL_PREFIX}${noteId}`;
 }
 
 /** 채널 인증 요청의 채널명에서 노트 id를 복원한다. 우리 규칙 밖이면 null. */
@@ -28,6 +60,17 @@ export function noteIdFromPusherChannel(pusherChannel: string): string | null {
     return null;
   }
   return pusherChannel.slice(NOTE_DOC_CHANNEL_PREFIX.length) || null;
+}
+
+/**
+ * 프레즌스 채널 이름에서 노트 id를 복원한다. 접두사가 서로의 접두사가 아니므로
+ * (private-note- / presence-note-) 두 복원 함수는 겹치지 않는다.
+ */
+export function noteIdFromPresenceChannel(pusherChannel: string): string | null {
+  if (!pusherChannel.startsWith(NOTE_PRESENCE_CHANNEL_PREFIX)) {
+    return null;
+  }
+  return pusherChannel.slice(NOTE_PRESENCE_CHANNEL_PREFIX.length) || null;
 }
 
 /**

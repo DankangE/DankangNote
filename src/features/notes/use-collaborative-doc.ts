@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 import {
   acquirePusher,
   releasePusher,
@@ -13,6 +14,7 @@ import {
   NOTE_DOC_UPDATE_EVENT,
   noteDocChannel,
 } from '@/features/notes/realtime';
+import { toBase64, toBytes } from '@/features/notes/binary';
 
 /**
  * 로컬 편집을 모아 보내는 간격 (KAN-39). 타건마다 보내면 요청이 초당 수십 건 나가고,
@@ -33,12 +35,22 @@ export type CollabStatus = 'loading' | 'ready' | 'error';
  * 원격에서 온 업데이트는 origin을 붙여 적용한다. 안 그러면 받은 업데이트가 다시 로컬 변경
  * 으로 잡혀 서버로 되돌아가고, 두 편집자 사이에서 무한히 왕복한다.
  */
-export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status: CollabStatus } {
+export function useCollaborativeDoc(noteId: string): {
+  doc: Y.Doc | null;
+  awareness: Awareness | null;
+  status: CollabStatus;
+} {
   const [doc, setDoc] = useState<Y.Doc | null>(null);
+  // 커서·접속자가 쓰는 awareness (KAN-75). 문서를 만드는 자리에서 함께 만든다 — 수명이
+  // 정확히 같고(Awareness 생성자가 doc의 destroy에 자기 정리를 건다), 무엇보다 둘이 같은
+  // 시점에 상태로 나가야 에디터가 커서 확장을 처음부터 달고 뜬다. 오가는 경로는 여전히
+  // 완전히 다르다 — 채널도 이벤트도 저장 여부도(realtime.ts).
+  const [awareness, setAwareness] = useState<Awareness | null>(null);
   const [status, setStatus] = useState<CollabStatus>('loading');
 
   useEffect(() => {
     const ydoc = new Y.Doc();
+    const localAwareness = new Awareness(ydoc);
     const controller = new AbortController();
     const client = acquirePusher();
     const channelName = noteDocChannel(noteId);
@@ -133,6 +145,7 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
         // 로컬 변경으로 잡혀 그대로 서버에 되돌아간다.
         ydoc.on('update', onLocalUpdate);
         setDoc(ydoc);
+        setAwareness(localAwareness);
         setStatus('ready');
       })
       .catch(() => {
@@ -155,6 +168,9 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
       }
       controller.abort();
       ydoc.off('update', onLocalUpdate);
+      // 내 커서를 내린다. destroy는 아래 ydoc.destroy()가 어차피 부르지만, 그 전에
+      // 프레즌스 훅이 핸들러를 떼도록 상태를 먼저 비운다.
+      localAwareness.setLocalState(null);
       channel?.unbind(NOTE_DOC_UPDATE_EVENT, onRemoteUpdate);
       channel?.unbind(NOTE_DOC_RESYNC_EVENT, queueResync);
       if (client) {
@@ -165,18 +181,5 @@ export function useCollaborativeDoc(noteId: string): { doc: Y.Doc | null; status
     };
   }, [noteId]);
 
-  return { doc, status };
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function toBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return bytes;
+  return { doc, awareness, status };
 }

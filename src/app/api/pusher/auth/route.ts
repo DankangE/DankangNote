@@ -8,7 +8,10 @@ import {
   channelIdFromPusherChannel,
 } from '@/features/chat/realtime';
 import { notificationTargetFromChannel } from '@/features/notifications/realtime';
-import { noteIdFromPusherChannel } from '@/features/notes/realtime';
+import {
+  noteIdFromPresenceChannel,
+  noteIdFromPusherChannel,
+} from '@/features/notes/realtime';
 
 /**
  * 이 세션이 이 Pusher 채널을 구독해도 되는가. 채널 종류마다 판정이 다르다.
@@ -28,7 +31,12 @@ async function maySubscribe(
 
   // 문서 공동 편집 채널 (KAN-39). 노트는 org 전체 공개라 판정이 'org 안에 있는가' 하나다 —
   // getNote와 같은 근거이고, 없는 노트와 남의 org 노트가 똑같이 false다(존재 오라클 방지).
-  const noteId = noteIdFromPusherChannel(pusherChannel);
+  //
+  // 커서·접속자 채널(KAN-75)도 같은 판정을 통과한다 — 문서를 볼 수 있으면 거기 누가 와
+  // 있는지도 볼 수 있고, 볼 수 없으면 둘 다 안 된다(KAN-34가 채팅에서 세운 것과 같다).
+  // 두 판정이 갈리는 순간 그 차이가 곧 유출 경로다.
+  const noteId =
+    noteIdFromPusherChannel(pusherChannel) ?? noteIdFromPresenceChannel(pusherChannel);
   if (noteId) {
     return noteService.noteExistsInOrg(session.orgId, noteId);
   }
@@ -55,7 +63,12 @@ async function presenceData(
   pusherChannel: string,
   userId: string,
 ): Promise<Pusher.PresenceChannelData | undefined> {
-  if (!channelIdFromPresenceChannel(pusherChannel)) {
+  // 채팅 채널과 문서 편집 채널 둘 다 프레즌스다. 문서 쪽에서는 이 user_info가 커서
+  // 이름표의 **유일한 출처**다 — awareness 페이로드의 이름은 수신 측이 버린다(KAN-75).
+  if (
+    !channelIdFromPresenceChannel(pusherChannel) &&
+    !noteIdFromPresenceChannel(pusherChannel)
+  ) {
     return undefined;
   }
   const viewer = await getViewerIdentity();
