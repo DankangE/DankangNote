@@ -106,12 +106,32 @@ export async function resolveNoteAttachmentUrl(
   return presignAttachmentDownload(row.key, row.fileName, row.contentType, inline);
 }
 
-/** 본문 참조와 첨부 행을 못 맞춘 저장 — 액션이 판별 에러로 변환한다. */
-export class InvalidNoteAttachmentError extends Error {
-  constructor() {
-    super('본문이 참조하는 이미지가 이 노트에 바인딩될 수 없다');
-  }
-}
+/**
+ * 이 저장이 첨부에 대해 할 일 — 판정(plan)과 적용(apply)을 나눈 이유가 KAN-73이다.
+ *
+ * 예전에는 하나였고, 묶을 수 없는 id가 하나라도 있으면 트랜잭션째 던졌다. 그런데 참조가
+ * 사라지는 건 **정상 경로에서 일어난다** — 내가 초안을 열어 둔 사이 다른 사람이 그 이미지의
+ * 마지막 참조를 놓으면 첨부 행이 지워진다(KAN-71의 참조 카운트). 그러면 그 초안은 제목까지
+ * 포함해 **문서 전체가 거부되고**, 사용자에게는 어느 블록이 문제인지 보이지 않아 그 편집
+ * 세션이 통째로 유실됐다.
+ *
+ * 그래서 **거부 대신 그 노드만 떨군다** — KAN-72가 attr에서 세운 노선을 노드 단위로 옮긴 것이고,
+ * 공동 편집 경로(note-doc.ts)는 이미 그렇게 하고 있었다. 판정을 떼어 내야 호출자가 본문을
+ * 쓰기 **전에** 무엇을 떨굴지 알 수 있다.
+ */
+export type NoteAttachmentPlan = {
+  /** 본문에 남길 수 있는 첨부. 이 노트에 참조로 묶일 것들이다. */
+  usable: Set<string>;
+  /** 본문에서 떨궈야 하는 첨부 id — 사라졌거나, 이 사람이 이 org에서 쓸 수 없는 것. */
+  dropped: string[];
+  /**
+   * 판정 시점에 이 노트가 이미 참조하던 것. apply가 '무엇을 끊을지'를 여기서만 고른다 —
+   * 그때 다시 읽으면 **우리가 잠그지 않은 참조**까지 후보에 들어온다(같은 노트를 동시에
+   * 저장하는 다른 트랜잭션이 그 사이 새 참조를 커밋할 수 있다). 잠근 것만 건드린다는 규칙이
+   * 깨지면 collectUnreferenced가 잠금 없이 남의 첨부를 지우게 된다.
+   */
+  previous: string[];
+};
 
 /**
  * 판정하려는 첨부 행을 잠근다 — '참조가 몇 개인가'를 읽고 그에 따라 지우기 **전에**.
@@ -153,58 +173,76 @@ async function lockAttachments(
 // 임의 순서로 잠가 정렬 순서로 잡는 저장과 교착할 수 있다.
 
 /**
- * 저장 트랜잭션 안에서 본문의 첨부 참조와 참조 행을 일치시킨다.
+ * 저장 트랜잭션 안에서 **무엇을 묶을 수 있는지** 판정한다. 본문을 쓰기 전에 부른다.
  *
- * ⓪ 잠금 — 이 노트가 건드릴 첨부(새로 참조할 것 + 이미 참조 중인 것)를 한 번에 잠근다.
- *    나눠 잡으면 두 저장이 서로 다른 순서로 잡아 교착한다.
- * ① 참조 가능 판정 — usableNoteAttachmentWhere. 다운로드 판정과 같은 where를 쓴다.
- * ② 검증 — 참조 전부가 통과했는지 센다. 모자라면 남의 org 또는 남의 저장 전 pending id를
- *    실어 온 것이므로 throw로 트랜잭션째 거부한다(fail-closed, KAN-35의 count 불일치 롤백).
- * ③ 참조 갱신 — 이 노트의 참조를 본문과 맞춘다(추가는 skipDuplicates, 빠진 것은 삭제).
- * ④ 정리 — 그 결과 **참조가 0이 된** 첨부만 행을 지우며 키를 outbox(KAN-70)에 적는다.
- *    cascade가 아니라 여기서 지우는 이유: 행만 사라지면 '지울 좌표'도 함께 사라진다.
- *    참조가 남아 있으면 지우지 않는다 — 그게 KAN-71이 고친 데이터 유실의 핵심이다.
- *    단 한 번도 참조된 적 없는 pending은 여기 걸리지 않는다(애초에 이 노트의 참조가 아니다).
+ * ⓪ 잠금 — 이 노트가 건드릴 첨부(새로 참조할 것 + 이미 참조 중인 것)를 **한 번에** 잠근다.
+ *    나눠 잡으면 두 저장이 서로 다른 순서로 잡아 교착한다. 그래서 판정을 떼어 낸 지금도
+ *    잠금은 여기 한 곳에서 전부 잡고, applyNoteAttachments는 다시 잡지 않는다.
+ * ① 참조 가능 판정 — usableNoteAttachmentWhere. 다운로드 판정과 같은 where를 쓴다(규약 10).
+ * ② 통과 못 한 것은 dropped로 돌려준다 — 예전에는 여기서 던졌다(NoteAttachmentPlan 주석).
  */
-export async function syncNoteAttachments(
+export async function planNoteAttachments(
   tx: Prisma.TransactionClient,
   orgId: string,
   userId: string,
-  noteId: string,
+  /** null이면 아직 만들어지지 않은 노트 — 기존 참조가 있을 수 없다(createNote 경로). */
+  noteId: string | null,
   referencedIds: string[],
-): Promise<void> {
-  // 중복은 여기서 접는다 — ②의 길이 대조가 호출자의 dedupe에 기대면, 수집기가 순서 보존
-  // 같은 이유로 Set을 잃는 날 같은 이미지를 두 번 넣은 문서가 전부 저장 불가가 된다.
-  // 채팅의 쌍둥이 대조도 서비스 안에서 접는다(chat.ts).
+): Promise<NoteAttachmentPlan> {
+  // 중복은 여기서 접는다 — 호출자의 dedupe에 기대면, 수집기가 순서 보존 같은 이유로 Set을
+  // 잃는 날 같은 이미지를 두 번 넣은 문서에서 판정이 어긋난다(채팅의 쌍둥이 대조도 서비스
+  // 안에서 접는다, chat.ts).
   const wanted = [...new Set(referencedIds)];
-  const existing = await tx.noteAttachmentRef.findMany({
-    where: { noteId },
-    select: { attachmentId: true },
-  });
+  const existing =
+    noteId === null
+      ? []
+      : await tx.noteAttachmentRef.findMany({ where: { noteId }, select: { attachmentId: true } });
   const existingIds = existing.map((row) => row.attachmentId);
   const touched = [...new Set([...wanted, ...existingIds])].sort();
   await lockAttachments(tx, orgId, touched);
 
-  if (wanted.length > 0) {
-    const usable = await tx.noteAttachment.findMany({
-      where: { id: { in: wanted }, ...usableNoteAttachmentWhere(orgId, userId) },
-      select: { id: true },
-    });
-    if (usable.length !== wanted.length) {
-      throw new InvalidNoteAttachmentError();
-    }
+  if (wanted.length === 0) {
+    return { usable: new Set(), dropped: [], previous: existingIds };
+  }
+  const rows = await tx.noteAttachment.findMany({
+    where: { id: { in: wanted }, ...usableNoteAttachmentWhere(orgId, userId) },
+    select: { id: true },
+  });
+  const usable = new Set(rows.map((row) => row.id));
+  return { usable, dropped: wanted.filter((id) => !usable.has(id)), previous: existingIds };
+}
+
+/**
+ * 판정한 대로 이 노트의 참조를 본문과 맞춘다. **본문을 쓴 뒤** 같은 트랜잭션에서 부른다.
+ *
+ * ① 참조 갱신 — 추가는 skipDuplicates, 본문에서 빠진 것은 삭제.
+ * ② 정리 — 그 결과 **참조가 0이 된** 첨부만 행을 지우며 키를 outbox(KAN-70)에 적는다.
+ *    cascade가 아니라 여기서 지우는 이유: 행만 사라지면 '지울 좌표'도 함께 사라진다.
+ *    참조가 남아 있으면 지우지 않는다 — 그게 KAN-71이 고친 데이터 유실의 핵심이다.
+ *    단 한 번도 참조된 적 없는 pending은 여기 걸리지 않는다(애초에 이 노트의 참조가 아니다).
+ *
+ * 잠금은 planNoteAttachments가 이미 전부 잡았다 — 그 짝으로만 부른다.
+ */
+export async function applyNoteAttachments(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  noteId: string,
+  plan: NoteAttachmentPlan,
+): Promise<void> {
+  const keep = [...plan.usable];
+  if (keep.length > 0) {
     await tx.noteAttachmentRef.createMany({
-      data: usable.map((row) => ({ noteId, attachmentId: row.id })),
+      data: keep.map((attachmentId) => ({ noteId, attachmentId })),
       skipDuplicates: true,
     });
   }
 
   // 이 노트가 더는 참조하지 않는 것들 — 그 첨부가 다른 곳에서도 안 쓰이면 그때 지운다.
-  const dropped = existingIds.filter((id) => !wanted.includes(id));
-  if (dropped.length === 0) return;
+  const unlinked = plan.previous.filter((id) => !plan.usable.has(id));
+  if (unlinked.length === 0) return;
 
-  await tx.noteAttachmentRef.deleteMany({ where: { noteId, attachmentId: { in: dropped } } });
-  await collectUnreferenced(tx, orgId, dropped);
+  await tx.noteAttachmentRef.deleteMany({ where: { noteId, attachmentId: { in: unlinked } } });
+  await collectUnreferenced(tx, orgId, unlinked);
 }
 
 /**

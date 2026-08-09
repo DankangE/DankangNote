@@ -1,8 +1,12 @@
 import { z } from '@/lib/zod';
 
 // Server Action의 표준 반환 계약 — 실패는 사용자에게 그대로 보여줄 한 줄 문구만 담는다.
+//
+// notice는 **성공했지만 요청한 그대로는 아닌** 경우에 쓴다(KAN-73의 첫 사용처: 참조가
+// 사라진 이미지를 떨구고 저장). 실패로 돌리면 사용자의 편집이 통째로 유실되고, 아무 말도
+// 안 하면 본문이 조용히 달라진다 — 둘 사이의 자리다. 화면이 안 읽어도 무해하도록 선택적이다.
 export type ActionResult<T> =
-  | { ok: true; data: T }
+  | { ok: true; data: T; notice?: string }
   | { ok: false; error: string };
 
 export const GENERIC_ACTION_ERROR = '요청을 처리하지 못했습니다. 잠시 후 다시 시도해주세요.';
