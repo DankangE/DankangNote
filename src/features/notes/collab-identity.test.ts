@@ -123,6 +123,19 @@ describe('커서 신원 해석 (KAN-75)', () => {
     expect(directory.hasMember('user_9')).toBe(false);
   });
 
+  it('clear는 명단과 주인 기록을 함께 비운다 — 문서를 옮길 때 옛 번호가 남지 않게', () => {
+    const directory = new CaretDirectory();
+    directory.replaceMembers([member('user_1', '단 강')]);
+    directory.bind([11], 'user_1');
+
+    directory.clear();
+
+    expect(directory.resolve(11)).toBeNull();
+    expect(directory.hasMember('user_1')).toBe(false);
+    // 비운 뒤에는 같은 번호를 다른 사람이 잡을 수 있다.
+    expect(directory.bind([11], 'user_2')).toEqual([]);
+  });
+
   it('사라진 clientId는 잊는다 — 재접속하면 새 번호로 다시 잡힌다', () => {
     const directory = new CaretDirectory();
     directory.replaceMembers([member('user_1', '단 강')]);

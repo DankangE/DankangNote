@@ -61,6 +61,16 @@ export class CaretDirectory {
     this.members = new Map(list.map((member) => [member.id, member]));
   }
 
+  /**
+   * 전부 잊는다. 훅이 구독을 놓을 때 부른다 — 이 객체는 컴포넌트 수명을 살아서, 문서가
+   * 바뀌어도 옛 clientId 기록이 남는다. 새 문서의 번호와 겹칠 확률은 낮지만(32비트 난수)
+   * '겹칠 리 없다'에 기대는 것과 비워 두는 것은 다르다.
+   */
+  clear(): void {
+    this.owners.clear();
+    this.members.clear();
+  }
+
   addMember(member: PresentMember): void {
     this.members.set(member.id, member);
   }

@@ -117,7 +117,15 @@ export function useNoteAwareness(
       if (typeof payload?.update !== 'string') return;
 
       applied = [];
-      applyAwarenessUpdate(local, toBytes(payload.update), REMOTE);
+      try {
+        applyAwarenessUpdate(local, toBytes(payload.update), REMOTE);
+      } catch {
+        // base64가 아니거나 awareness 프레임이 아니면 atob·디코더가 던진다. 이건 남이
+        // 보낸 값이라 **얼마든지 망가져 있을 수 있다** — 막지 않으면 그 한 건이 핸들러를
+        // 통째로 넘어뜨려 이후 커서가 전부 멈춘다. 못 읽은 프레임은 그냥 버린다:
+        // awareness는 절대 상태라 다음 틱이 최신값을 다시 싣는다(규약 12).
+        return;
+      }
       // 내 번호는 주인을 기록하지 않는다. 남이 내 clientID를 실어 보내면 y-protocols가
       // 상태 자체는 막지 않는데(지우는 것만 막는다), 그걸 그대로 묶으면 내 번호의 주인이
       // 남이 된다. 내 커서는 어차피 안 그려지므로(y-tiptap이 자기 번호를 거른다) 여기서
@@ -153,7 +161,11 @@ export function useNoteAwareness(
       directory.addMember(parsed);
       setMembers((prev) => withMember(prev, parsed));
       // 새로 온 사람은 내 커서를 모른다. 같은 이유로 이쪽에서 다시 알린다.
-      send();
+      //
+      // 즉시 보내지 않고 창에 넣는다 — 회의 시작처럼 여럿이 한꺼번에 들어오면 이 핸들러가
+      // 연달아 불린다. 그때마다 쏘면 Pusher의 클라이언트 이벤트 초당 상한에 우리가 스스로
+      // 걸려, 정작 마지막(=최신) 상태가 버려질 수 있다.
+      scheduleSend();
     }
 
     function onMemberRemoved(member: PusherMember): void {
@@ -189,6 +201,7 @@ export function useNoteAwareness(
       }
       // 구독이 끊긴 뒤에도 남아 있으면 방금 떠난 문서의 접속자가 그대로 보인다.
       setMembers([]);
+      directory.clear();
     };
   }, [noteId, local, directory]);
 

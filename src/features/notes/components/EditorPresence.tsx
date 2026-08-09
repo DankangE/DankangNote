@@ -33,12 +33,9 @@ export function EditorPresence({ members }: { members: readonly PresentMember[] 
               {member.imageUrl ? (
                 // 아바타는 Clerk CDN(원격)이라 next/image의 도메인 설정을 타지 않게
                 // 그대로 img를 쓴다 — 24px 고정이라 최적화 이득도 없다.
+                // alt는 비운다 — 이름은 아래 sr-only가 읽어 준다(둘 다 두면 두 번 읽힌다).
                 // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={member.imageUrl}
-                  alt={member.name}
-                  className="size-full rounded-full object-cover"
-                />
+                <img src={member.imageUrl} alt="" className="size-full rounded-full object-cover" />
               ) : (
                 <span aria-hidden>{firstLetter(member.name)}</span>
               )}
