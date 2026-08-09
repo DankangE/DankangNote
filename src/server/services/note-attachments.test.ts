@@ -537,6 +537,48 @@ describe('이미지를 여러 문서가 함께 참조한다 (KAN-71)', () => {
     expect(await isRefBy(noteId, att.id)).toBe(true);
   });
 
+  it('저장은 첨부를 잠그기 **전에** 노트 행을 잠근다 (deleteNote와 같은 순서)', async () => {
+    // KAN-73이 첨부 판정을 본문 쓰기보다 앞으로 옮기면서 이 순서가 뒤집힐 뻔했다.
+    // deleteNote는 노트 → 첨부 순으로 잠근다. 저장이 반대가 되면 같은 노트를 한쪽이 지우고
+    // 한쪽이 저장할 때 교착한다.
+    //
+    // '동시에 불러 보고 안 죽더라'는 이 순서를 고정하지 못한다 — 교착은 두 트랜잭션이
+    // 정확히 맞물릴 때만 나고, 문장이 빠르면 대개 한쪽이 먼저 끝난다(실측으로 확인했다:
+    // 잠금을 빼도 그 테스트는 통과했다). 그래서 **순서 자체**를 본다.
+    const att = await pending(ORG_A, USER_OWNER);
+    const noteId = await noteWithImage(att.id, '대상');
+
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // 첨부 행을 붙잡고 있는 트랜잭션 — 저장은 판정 단계에서 여기 막힌다.
+    const holder = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "NoteAttachment" WHERE "id" = ${att.id} FOR UPDATE`;
+        await held;
+      },
+      { timeout: 20000 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const saving = updateNote(ORG_A, noteId, { content: docWithImage(att.id) }, owner, [att.id]);
+    // 저장이 첨부 잠금에 막힐 때까지 기다린다.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // 이 시점에 저장이 노트 행을 이미 쥐고 있어야 한다(순서가 옳다면). NOWAIT은 못 잡으면
+    // 즉시 던지므로, **던지는 것이 통과**다. 순서가 뒤집혀 있으면 저장은 노트 행에 아직
+    // 손도 못 댄 상태라 이 잠금이 성립해 버린다.
+    const grabNoteRow = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Note" WHERE "id" = ${noteId} FOR UPDATE NOWAIT`;
+    });
+    await expect(grabNoteRow).rejects.toThrow();
+
+    release();
+    await holder;
+    expect((await saving).status).toBe('ok');
+  });
+
   it('제목만 고치는 저장은 참조를 건드리지 않는다', async () => {
     // 이 표를 통째로 비울 수 있는 유일한 경로다 — updateNote는 partial이라 title만 오는
     // 저장(사이드바 이름 변경)이 실제 경로이고, content 가드가 빠지면 attachmentIds=[]로

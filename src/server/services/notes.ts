@@ -173,16 +173,22 @@ export async function updateNote(
     // update를 대화형 트랜잭션으로 바꿨다. 바인딩 문장만 조건부다(제목만 바꾸는 수정은
     // 참조 목록을 들고 오지 않으므로, 돌렸다간 멀쩡한 첨부를 미참조로 보고 지운다).
     const { note, droppedImages } = await prisma.$transaction(async (tx) => {
-      // 권한 선검사 — 첨부 판정이 본문 쓰기보다 앞서게 되면서(아래) 권한 없는 요청이 첨부
-      // 행 잠금을 먼저 잡게 됐다. 판정은 아래 update의 where가 원자적으로 다시 하므로 이건
-      // 보안 경계가 아니라 **비용을 안 태우게 하는 문지기**다(KAN-57과 같은 방향).
+      // 노트 행을 **먼저** 잠근다 — deleteNote와 같은 순서(노트 → 첨부)여야 한다.
+      //
+      // KAN-73에서 첨부 판정이 본문 쓰기보다 앞으로 오면서 이 순서가 뒤집힐 뻔했다:
+      // 판정이 첨부를 잠그므로, 노트 행을 안 잡으면 이 경로만 '첨부 → 노트'가 되어
+      // deleteNote(노트 잠금 → lockNoteAttachments)와 정확히 반대가 된다. 같은 노트를
+      // 한쪽이 지우고 한쪽이 저장하면 서로가 쥔 것을 기다려 교착한다.
+      //
+      // 잠금은 id·orgId로만 잡고 **소유권은 아래 update의 where가 판정한다**(규약 10 —
+      // 정책을 두 곳에 적으면 갈라진다). 그 사이 행은 이미 잠겨 있어 TOCTOU가 없다.
       if (input.content !== undefined) {
-        const allowed = await tx.note.findFirst({
-          where: ownedNoteWhere(orgId, id, actor),
-          select: { id: true },
-        });
-        if (!allowed) {
-          throw new Prisma.PrismaClientKnownRequestError('note not found or not owned', {
+        const locked = await tx.$queryRaw<{ id: string }[]>`
+          SELECT "id" FROM "Note" WHERE "id" = ${id} AND "orgId" = ${orgId} FOR UPDATE`;
+        if (locked.length === 0) {
+          // 없는 노트다 — 첨부를 잠그기 전에 끊는다. 아래 update가 어차피 P2025로 죽지만,
+          // 그때는 이미 첨부 잠금을 쥔 뒤다.
+          throw new Prisma.PrismaClientKnownRequestError('note not found', {
             code: 'P2025',
             clientVersion: Prisma.prismaVersion.client,
           });

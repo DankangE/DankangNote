@@ -171,6 +171,12 @@ export async function materializeNoteDoc(
   const raw = yDocToProsemirrorJSON(doc, NOTE_DOC_FIELD) as JSONContent;
 
   return prisma.$transaction(async (tx) => {
+    // 노트 행을 **먼저** 잠근다 — deleteNote·updateNote와 같은 순서(노트 → 첨부)여야 한다.
+    // 아래 판정이 첨부를 잠그므로, 여기서 안 잡으면 이 경로만 순서가 뒤집혀 교착한다.
+    const locked = await tx.$queryRaw<{ id: string }[]>`
+      SELECT "id" FROM "Note" WHERE "id" = ${noteId} AND "orgId" = ${orgId} FOR UPDATE`;
+    if (locked.length === 0) return 'notfound';
+
     // 판정을 트랜잭션 **안**으로 넣는다 (KAN-73). 예전에는 밖에서 미리 훑었는데, 그 사이
     // 마지막 참조가 끊겨 첨부가 사라지면 안쪽 동기화가 던져 구체화가 롤백됐다 — 여기엔
     // 오류를 돌려줄 상대가 없으니 거부는 곧 content 동결이고, 그 뒤의 정상 편집까지 막힌다.
