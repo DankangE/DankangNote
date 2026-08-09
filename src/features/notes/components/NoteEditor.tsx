@@ -6,8 +6,11 @@ import type { Editor, JSONContent } from '@tiptap/core';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import type * as Y from 'yjs';
+import type { Awareness } from 'y-protocols/awareness';
 import Collaboration from '@tiptap/extension-collaboration';
 import { buildNoteEditorExtensions } from '@/features/notes/editor';
+import { noteCollabCaret } from '@/features/notes/collab-caret';
+import type { CaretDirectory } from '@/features/notes/collab-identity';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 import { uploadNoteImage } from '@/features/notes/attachments';
 import { SlashCommand } from './SlashCommand';
@@ -23,11 +26,25 @@ type NoteEditorProps = {
    * 컴포넌트 밖의 CRDT 경로가 맡는다.
    */
   collabDoc?: Y.Doc | null;
+  /**
+   * 남의 커서 (KAN-75). collabDoc과 짝으로만 의미가 있다 — 커서는 같은 Y.Doc의 위치를
+   * 가리키는 값이라 문서가 없으면 좌표가 없다.
+   */
+  collabAwareness?: Awareness | null;
+  /** 커서에 붙일 이름·색의 출처. awareness 페이로드가 아니다(collab-identity.ts). */
+  caretDirectory?: CaretDirectory;
 };
 
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
 // 마운트되는 위치(NoteCard의 편집 분기)나 key 교체(NoteComposer)로 재seed한다.
-export function NoteEditor({ doc, onChange, ariaLabel, collabDoc }: NoteEditorProps) {
+export function NoteEditor({
+  doc,
+  onChange,
+  ariaLabel,
+  collabDoc,
+  collabAwareness,
+  caretDirectory,
+}: NoteEditorProps) {
   const fileInputId = useId();
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -49,8 +66,13 @@ export function NoteEditor({ doc, onChange, ariaLabel, collabDoc }: NoteEditorPr
         pickImage: () => document.getElementById(fileInputId)?.click(),
       }),
       ...(collabDoc ? [Collaboration.configure({ document: collabDoc, field: NOTE_DOC_FIELD })] : []),
+      // 커서는 문서 동기화 위에만 올라간다 — awareness의 좌표가 Y.Doc 기준이라
+      // Collaboration 없이 붙이면 가리킬 자리가 없다.
+      ...(collabDoc && collabAwareness && caretDirectory
+        ? [noteCollabCaret(collabAwareness, caretDirectory)]
+        : []),
     ],
-    [fileInputId, collabDoc],
+    [fileInputId, collabDoc, collabAwareness, caretDirectory],
   );
 
   const editor = useEditor({

@@ -13,24 +13,23 @@ import { CHAT_TYPING_EVENT, presenceChannel } from '@/features/chat/realtime';
 import {
   dropTyping,
   noteTyping,
-  presentMember,
   pruneTyping,
+  TYPING_PING_MS,
+  type TypingEntry,
+} from '@/features/chat/presence';
+import {
+  presentMember,
   sortMembers,
   withMember,
   withoutMember,
-  TYPING_PING_MS,
   type PresentMember,
-  type TypingEntry,
-} from '@/features/chat/presence';
+  type PusherMember,
+  type PusherMembers,
+} from '@/features/realtime/presence-members';
 
 // 만료된 '입력 중'을 걷어내는 주기. 만료는 시간이 지났다는 사실만으로 일어나므로 이벤트가
 // 오지 않아도 화면이 스스로 정리돼야 한다. 아무도 입력하지 않는 동안에는 아예 돌지 않는다.
 const PRUNE_INTERVAL_MS = 1_000;
-
-// pusher-js가 프레즌스 이벤트에 싣는 모양. 라이브러리 타입이 느슨해(members: any) 여기서
-// 필요한 만큼만 적어 두고, 값이 정말 그런지는 presentMember가 다시 본다.
-type PusherMember = { id: unknown; info: unknown } | null;
-type PusherMembers = { each: (visit: (member: PusherMember) => void) => void };
 
 /**
  * 채널 프레즌스 · 타이핑 인디케이터 (KAN-34).
