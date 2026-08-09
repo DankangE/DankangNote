@@ -45,6 +45,7 @@ model Note {
   favorites    NoteFavorite[]
   attachmentRefs NoteAttachmentRef[]
   docUpdates     NoteDocUpdate[]
+  commentThreads NoteCommentThread[]
 
   // 트리 조회·형제 그룹 재작성은 전부 (orgId, parentId) 스코프로 온다.
   @@index([orgId, parentId])
@@ -142,6 +143,57 @@ model NoteFavorite {
   @@index([orgId])
 }
 
+/// 인라인 코멘트 스레드 (KAN-40) — 본문의 한 텍스트 범위에 달린 대화 한 묶음.
+///
+/// **앵커는 이 표에 없다.** 범위는 본문 JSON의 `comment` 마크(attrs.threadId)가 들고 있고,
+/// 그래야 공동 편집(KAN-39)에서 앵커가 저절로 따라간다 — 위치를 숫자로 이 표에 적어 두면
+/// 남이 앞 문단에 한 글자만 쳐도 전부 어긋나고, 그걸 맞추는 건 CRDT가 이미 푼 문제를 다시
+/// 푸는 일이다. 대신 '마크가 사라지면 스레드는 위치를 잃는다'는 상태가 생긴다(고아 스레드).
+/// 그때도 행은 남긴다 — 대화 내용은 범위가 지워졌다고 사라져야 할 값이 아니다.
+///
+/// 수명은 노트를 따른다(Cascade). 조직 삭제의 전체 파기는 orgId Cascade가 담당한다(규약 6).
+model NoteCommentThread {
+  id         String    @id @default(cuid())
+  orgId      String
+  noteId     String
+  /// 스레드를 연 사람. 탈퇴 시 null(Note.authorId와 같은 정책).
+  authorId   String?
+  /// 해결 표시. 해결된 스레드는 본문에서 강조를 걷고 목록에서 접는다.
+  resolvedAt DateTime?
+  resolvedBy String?
+  createdAt  DateTime  @default(now())
+
+  organization Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  note         Note          @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  author       User?         @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  comments     NoteComment[]
+
+  // 한 노트의 스레드를 연 순서대로 — 사이드바 목록이 이 인덱스를 탄다.
+  @@index([noteId, createdAt])
+  @@index([orgId])
+  @@index([authorId])
+}
+
+/// 스레드 안의 코멘트 한 건 (KAN-40). 첫 코멘트가 스레드를 여는 글이고 나머지는 답글이다 —
+/// 채팅 스레드(KAN-30)가 부모 메시지를 따로 두는 것과 달리 여기선 전부 같은 표다. 인라인
+/// 코멘트에는 '원본 메시지'에 해당하는 것이 본문의 범위라 따로 승격할 대상이 없다.
+model NoteComment {
+  id        String   @id @default(cuid())
+  orgId     String
+  threadId  String
+  authorId  String?
+  body      String
+  createdAt DateTime @default(now())
+
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  thread       NoteCommentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author       User?             @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([threadId, createdAt])
+  @@index([orgId])
+  @@index([authorId])
+}
+
 // 아래 세 모델은 Clerk의 사용자/조직/소속을 DB에 미러링한 것 — webhook으로만 채워진다.
 // createdAt/updatedAt은 Clerk 원본 시각이 아니라 '이 행을 동기화한 시각'이다.
 
@@ -161,6 +213,8 @@ model User {
   memberships     Membership[]
   notes           Note[]
   noteFavorites   NoteFavorite[]
+  noteCommentThreads NoteCommentThread[]
+  noteComments       NoteComment[]
   boardCards      BoardCard[]
   createdChannels Channel[]
   channelMembers  ChannelMember[]
@@ -181,6 +235,8 @@ model Organization {
   notes           Note[]
   noteFavorites   NoteFavorite[]
   noteAttachments NoteAttachment[]
+  noteCommentThreads NoteCommentThread[]
+  noteComments       NoteComment[]
   boardColumns    BoardColumn[]
   boardCards   BoardCard[]
   chatMessages  ChatMessage[]

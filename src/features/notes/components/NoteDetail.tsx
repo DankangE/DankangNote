@@ -22,6 +22,10 @@ import { useCollaborativeDoc } from '@/features/notes/use-collaborative-doc';
 import { useNoteAwareness } from '@/features/notes/use-note-awareness';
 import { EditorPresence } from './EditorPresence';
 import { FormError, FormNotice } from './FormError';
+import { NoteComments } from './NoteComments';
+import { createCommentThreadAction } from '@/features/notes/api/comment-actions';
+import { collectCommentThreadIds } from '@/features/notes/comments';
+import type { NoteCommentThreadView } from '@/server/services/note-comments';
 import type * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
 
@@ -33,10 +37,12 @@ export function NoteDetail({
   note,
   viewer,
   favorited,
+  threads,
 }: {
   note: Note;
   viewer: NoteViewer | null;
   favorited: boolean;
+  threads: readonly NoteCommentThreadView[];
 }) {
   const router = useRouter();
   const [isEditing, setIsEditing] = useState(false);
@@ -61,6 +67,30 @@ export function NoteDetail({
   );
 
   const viewDoc = useMemo(() => parseNoteContent(optimisticNote.content), [optimisticNote.content]);
+  // 본문에 앵커가 남아 있는 스레드 (KAN-40). 편집 중에는 아직 저장 안 된 버퍼가 진실이라
+  // 그쪽을 본다 — 방금 단 코멘트가 저장 전까지 '위치를 잃음'으로 보이면 안 된다.
+  const anchored = useMemo(
+    () => new Set(collectCommentThreadIds(isEditing && doc ? doc : viewDoc)),
+    [isEditing, doc, viewDoc],
+  );
+
+  /**
+   * 스레드를 먼저 만들고 id를 돌려준다 — 그 id로 에디터가 마크를 찍는다. 순서가 이래야
+   * 하는 이유는 저장 정규화가 '가리킬 곳 없는 앵커'를 걷어 가기 때문이다.
+   */
+  async function startComment(): Promise<string | null> {
+    const body = window.prompt('코멘트를 입력하세요');
+    if (body === null || body.trim() === '') return null;
+    try {
+      const result = await createCommentThreadAction(note.id, body);
+      if (result.ok) return result.data.id;
+      setError(result.error);
+      return null;
+    } catch {
+      setError(GENERIC_ERROR);
+      return null;
+    }
+  }
   const author = authorLabel(note.author);
   const canModify = viewer ? viewer.isAdmin || note.authorId === viewer.userId : false;
 
@@ -192,7 +222,12 @@ export function NoteDetail({
       </p>
 
       {isEditing && doc !== null ? (
-        <CollaborativeBody noteId={note.id} doc={doc} onChange={setDoc} />
+        <CollaborativeBody
+          noteId={note.id}
+          doc={doc}
+          onChange={setDoc}
+          onStartComment={startComment}
+        />
       ) : optimisticNote.content ? (
         <NoteContent doc={viewDoc} />
       ) : (
@@ -201,6 +236,8 @@ export function NoteDetail({
 
       <FormError message={error} />
       <FormNotice message={notice} />
+
+      <NoteComments threads={threads} anchored={anchored} viewer={viewer} />
 
       <div className="flex items-center gap-2">
         <Button variant="outline" size="sm" disabled={isPending} onClick={handleCreateChild}>
@@ -258,10 +295,12 @@ function CollaborativeBody({
   noteId,
   doc,
   onChange,
+  onStartComment,
 }: {
   noteId: string;
   doc: JSONContent;
   onChange: (next: JSONContent) => void;
+  onStartComment: () => Promise<string | null>;
 }) {
   const { doc: collabDoc, awareness, status } = useCollaborativeDoc(noteId);
 
@@ -272,7 +311,14 @@ function CollaborativeBody({
   }
   // 문서 연결이 안 됐으면 커서도 없다 — 훅을 조건부로 부를 수 없어 여기서 갈라 준다.
   if (!collabDoc || !awareness) {
-    return <NoteEditor doc={doc} onChange={onChange} ariaLabel="문서 내용 편집" />;
+    return (
+      <NoteEditor
+        doc={doc}
+        onChange={onChange}
+        ariaLabel="문서 내용 편집"
+        onStartComment={onStartComment}
+      />
+    );
   }
   return (
     <CollaborativeEditor
@@ -281,6 +327,7 @@ function CollaborativeBody({
       awareness={awareness}
       doc={doc}
       onChange={onChange}
+      onStartComment={onStartComment}
     />
   );
 }
@@ -295,12 +342,14 @@ function CollaborativeEditor({
   awareness,
   doc,
   onChange,
+  onStartComment,
 }: {
   noteId: string;
   collabDoc: Y.Doc;
   awareness: Awareness;
   doc: JSONContent;
   onChange: (next: JSONContent) => void;
+  onStartComment: () => Promise<string | null>;
 }) {
   const { members, directory } = useNoteAwareness(noteId, awareness);
 
@@ -314,6 +363,7 @@ function CollaborativeEditor({
         collabDoc={collabDoc}
         collabAwareness={awareness}
         caretDirectory={directory}
+        onStartComment={onStartComment}
       />
     </div>
   );

@@ -11,18 +11,37 @@ import {
   lockNoteAttachments,
   planNoteAttachments,
 } from '@/server/services/note-attachments';
-import { sanitizeNoteDoc } from '@/server/services/note-sanitize';
+import { sanitizeNoteDoc, type LiveRefs } from '@/server/services/note-sanitize';
+import { liveThreadIds } from '@/server/services/note-comments';
+import { collectCommentThreadIds } from '@/features/notes/comments';
 import { parseNoteContent, serializeNoteContent } from '@/features/notes/content';
 
 /**
- * 묶을 수 없는 첨부를 가리키는 이미지 노드를 본문에서 떨군다 (KAN-73).
+ * 가리킬 곳 없는 것을 본문에서 떨군다 (KAN-73: 이미지, KAN-40: 코멘트 앵커).
  *
  * 저장 경로가 이걸 하는 이유는 **거부의 대가가 문서 전체**이기 때문이다 — 검증은 doc 하나를
- * 통째로 보고, 사용자에게는 어느 블록이 문제인지 보이지 않는다(규약 25). 공동 편집 경로
+ * 통째로 보고, 사용자에게는 어느 블록이 문제인지 보이지 않는다(규약 25·29). 공동 편집 경로
  * (note-doc.ts)와 같은 함수를 부른다(규약 10).
  */
-function dropDeadImages(content: string | undefined, usable: ReadonlySet<string>): string {
-  return serializeNoteContent(sanitizeNoteDoc(parseNoteContent(content ?? ''), usable));
+function dropDeadRefs(content: string | undefined, live: LiveRefs): string {
+  return serializeNoteContent(sanitizeNoteDoc(parseNoteContent(content ?? ''), live));
+}
+
+/**
+ * 본문이 가리키는 것 중 실제로 살아 있는 것을 판정한다. 첨부는 호출자가 이미 잠그고
+ * 판정했으므로(plan) 여기서는 스레드만 본다.
+ */
+async function resolveLive(
+  tx: Prisma.TransactionClient,
+  orgId: string,
+  noteId: string | null,
+  content: string | undefined,
+  attachments: ReadonlySet<string>,
+): Promise<LiveRefs> {
+  // 새 노트에는 스레드가 있을 수 없다 — 스레드는 노트가 생긴 뒤에만 열린다.
+  if (noteId === null || content === undefined) return { attachments, threads: new Set() };
+  const referenced = collectCommentThreadIds(parseNoteContent(content));
+  return { attachments, threads: await liveThreadIds(tx, orgId, noteId, referenced) };
 }
 
 export interface NoteInput {
@@ -123,10 +142,12 @@ export async function createNote(
     // 판정이 먼저다 — 묶을 수 없는 이미지를 본문에서 떨군 **뒤에** 노트를 만든다(KAN-73).
     // 노트가 아직 없으므로 기존 참조도 없다(noteId=null).
     const plan = await planNoteAttachments(tx, orgId, authorId, null, attachmentIds);
+    // 새 노트라 스레드는 있을 수 없다 — 앵커가 실려 왔다면 남의 문서 것이므로 떨군다.
+    const live = await resolveLive(tx, orgId, null, content, plan.usable);
     const created = await tx.note.create({
       data: {
         title,
-        content: plan.dropped.length > 0 ? dropDeadImages(content, plan.usable) : content,
+        content: content === undefined ? content : dropDeadRefs(content, live),
         parentId,
         position,
         orgId,
@@ -202,8 +223,14 @@ export async function updateNote(
           ? null
           : await planNoteAttachments(tx, orgId, actor.userId, id, attachmentIds);
       const data =
-        plan && plan.dropped.length > 0 && input.content !== undefined
-          ? { ...input, content: dropDeadImages(input.content, plan.usable) }
+        plan && input.content !== undefined
+          ? {
+              ...input,
+              content: dropDeadRefs(
+                input.content,
+                await resolveLive(tx, orgId, id, input.content, plan.usable),
+              ),
+            }
           : input;
       const updated = await tx.note.update({
         where: ownedNoteWhere(orgId, id, actor),

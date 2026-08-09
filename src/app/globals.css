@@ -248,3 +248,15 @@ body {
     border-radius: 0.15rem;
   }
 }
+
+/* 인라인 코멘트 앵커 (KAN-40) — 편집기와 정적 뷰가 같은 마크업을 내므로 한 곳에서 잡힌다.
+   밑줄이 아니라 옅은 배경인 이유: 밑줄은 링크로 읽히고, 이 프로젝트에 링크 마크가 없어
+   (editor.ts) 그 오해를 만들 이유가 없다. 색은 warning 토큰이라 두 테마를 함께 따라간다. */
+@layer components {
+  .note-comment-anchor {
+    background-color: color-mix(in oklch, var(--warning) 18%, transparent);
+    box-shadow: inset 0 -2px 0 0 color-mix(in oklch, var(--warning) 55%, transparent);
+    border-radius: 0.15rem;
+    cursor: pointer;
+  }
+}
