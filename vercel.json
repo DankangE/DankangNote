@@ -1,4 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "pnpm prisma migrate deploy && pnpm build"
+  "buildCommand": "pnpm prisma migrate deploy && pnpm build",
+  "crons": [
+    {
+      "path": "/api/cron/storage-cleanup",
+      "schedule": "0 18 * * *"
+    }
+  ]
 }
