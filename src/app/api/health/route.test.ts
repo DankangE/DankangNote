@@ -23,7 +23,19 @@ describe('/api/health (KAN-77)', () => {
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
-    expect(body).toMatchObject({ status: 'ok', migrations: applied });
+    // 같은 수가 아니라 **이상**인 것은 테스트 DB가 체크아웃 간 전역 공유이기 때문이다 —
+    // 옆 브랜치가 테스트를 한 번 돌리면 그 브랜치의 마이그레이션이 남아 정확히 같은 수가
+    // 되지 않는다. 잡아야 하는 실패는 'DB가 저장소보다 뒤처짐'이고 그건 이 부등호가 잡는다.
+    expect(body.migrations).toBeGreaterThanOrEqual(applied);
+    expect(body).toMatchObject({ status: 'ok' });
+  });
+
+  it('응답이 캐시되지 않는다', async () => {
+    // 캐시되면 깨진 배포 앞에서 옛 커밋의 ok를 돌려준다 — 헬스체크가 없는 것보다 나쁘다.
+    // Next는 이 라우트에 Cache-Control을 붙이지 않으므로(실측) 우리가 붙인다.
+    const response = await GET();
+
+    expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
   it('DB가 죽으면 503이고 원인은 본문에 싣지 않는다', async () => {
@@ -40,5 +52,7 @@ describe('/api/health (KAN-77)', () => {
     expect(response.status).toBe(503);
     expect(body).toEqual({ status: 'error' });
     expect(JSON.stringify(body)).not.toContain('s3cret');
+    // 캐시된 503은 DB가 돌아온 뒤에도 남아 복구를 못 보게 한다.
+    expect(response.headers.get('cache-control')).toBe('no-store');
   });
 });

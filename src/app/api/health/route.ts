@@ -11,6 +11,11 @@ import { prisma } from '@/server/db';
  * 부하가 쿼리 하나에 그치게 한다(cron 라우트와 달리 여기서 fail-closed는 자해다 —
  * 헬스체크가 401이면 배포 상태를 볼 수단 자체가 사라진다).
  */
+// 캐시되면 이 엔드포인트는 거짓말을 한다 — 깨진 배포 앞에서 **옛 커밋의 `ok`**를 돌려주고,
+// 그건 헬스체크가 없는 것보다 나쁘다. Next는 이 라우트에 Cache-Control을 아예 붙이지 않아
+// (실측: 헤더 없음) 중간 프록시의 휴리스틱 캐시에 노출된다. 여기서 명시적으로 끊는다.
+const NO_STORE = { 'cache-control': 'no-store' } as const;
+
 export async function GET() {
   try {
     // count(*)는 bigint로 돌아오고 JSON.stringify는 bigint에서 throw한다 — SQL에서 int로
@@ -21,15 +26,18 @@ export async function GET() {
       WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL
     `;
 
-    return Response.json({
-      status: 'ok',
-      migrations: rows[0]?.count ?? 0,
-      commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
-    });
+    return Response.json(
+      {
+        status: 'ok',
+        migrations: rows[0]?.count ?? 0,
+        commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+      },
+      { headers: NO_STORE },
+    );
   } catch (error) {
     // 원인은 로그에만 남긴다 — 연결 문자열이 통째로 실린 예외를 공개 엔드포인트가 그대로
     // 돌려주면 자격증명이 샌다. 200이 아닌 것이 신호고, 무엇이 틀렸는지는 배포 로그에서 본다.
     console.error('[health]', error);
-    return Response.json({ status: 'error' }, { status: 503 });
+    return Response.json({ status: 'error' }, { status: 503, headers: NO_STORE });
   }
 }

@@ -18,7 +18,9 @@ export default defineConfig({
     // 주입하는데, 우리가 다른 이름을 쓰면 그 키는 Vercel에 손으로 박은 고정값이 된다 —
     // 프리뷰 앱은 프리뷰 브랜치 DB를 보면서 그 빌드는 스테이징 DB를 마이그레이션하는
     // 엇갈림이 생긴다. 주입되는 이름을 그대로 읽으면 짝이 절대 어긋나지 않는다.
-    url: process.env["DATABASE_URL_UNPOOLED"] ?? process.env["DATABASE_URL"],
+    // ??가 아니라 ||인 것은 빈 문자열 때문이다 — .env에서 키를 값 없이 남겨 두는 것이
+    // '끄는' 동작으로 읽히는데, ??는 ""를 유효한 값으로 넘겨 prisma가 엉뚱하게 죽는다.
+    url: process.env["DATABASE_URL_UNPOOLED"] || process.env["DATABASE_URL"],
     // migrate diff/dev가 마이그레이션 재생에 쓰는 격리 DB. 없으면 기존 동작 그대로다.
     // 공유 dev DB에 병행 브랜치의 마이그레이션이 섞여 있을 때 reset 없이 diff하려면 필요.
     shadowDatabaseUrl: process.env["SHADOW_DATABASE_URL"],
