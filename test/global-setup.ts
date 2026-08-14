@@ -6,7 +6,10 @@ import { testDatabaseUrl } from './database-url';
 export default function setup() {
   const url = testDatabaseUrl();
   execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-    env: { ...process.env, DATABASE_URL: url },
+    // DATABASE_URL_UNPOOLED도 반드시 함께 덮는다 (KAN-77). prisma.config.ts가 그 키를
+    // **먼저** 보는데, 배포 환경을 붙여 본 개발자의 .env에는 스테이징 직결 문자열이 들어
+    // 있다 — DATABASE_URL만 덮으면 `pnpm test` 한 번이 스테이징에 migrate deploy를 날린다.
+    env: { ...process.env, DATABASE_URL: url, DATABASE_URL_UNPOOLED: url },
     stdio: 'inherit',
   });
 }
