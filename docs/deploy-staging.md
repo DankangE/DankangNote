@@ -1,8 +1,9 @@
 # 스테이징 배포 절차 (KAN-27)
 
-계정이 붙는 순간 **값만 채우면 배포되도록** 미리 확정해 둔 문서다(KAN-59에서 절차,
-KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 중 실제 배포에서 확인된 것은
-아직 없고, 확인되면 이 문서를 고친다.
+계정이 붙는 순간 **값만 채우면 배포되도록** 미리 확정해 둔 문서였고(KAN-59에서 절차,
+KAN-77·KAN-78에서 코드), **2026-08-15 첫 배포가 실제로 떴다** —
+<https://dankang-note.vercel.app>. 아래는 그 배포에서 확인된 사실과, 그때 실제로 걸린
+함정을 반영한 판본이다. 아직 안 밟은 항목은 6절 체크리스트에 빈 칸으로 남아 있다.
 
 배포가 필요한 이유는 하나다. **Clerk 웹훅은 localhost로 직접 받을 수 없어** 미러 동기화
 (KAN-11)와 순서 역전 가드(KAN-12)가 실환경에서 한 번도 안 돌았다.
@@ -29,6 +30,15 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
    - PR 프리뷰 배포에는 `preview/<브랜치명>` Neon 브랜치를 새로 떠서 그 짝을 준다.
      → **프리뷰가 스테이징 DB를 건드리지 않는다.** 이걸 안 쓰면 아래 "정해 둔 판단"의
      프리뷰 문제를 손으로 풀어야 한다.
+   - **연결 대화상자의 `Custom Environment Variable Prefix`는 반드시 비운다.** 여기에 뭘
+     적으면 변수가 `<접두사>_DATABASE_URL`로 생겨 우리가 읽는 이름과 어긋나고, 빌드가
+     `Error: Connection url is empty`로 죽는다. **첫 배포에서 실제로 걸린 자리다** —
+     접두사는 연결할 때만 정할 수 있어 나중에 못 고치므로, 잘못 붙었으면 끊고 다시 붙인다:
+     ```bash
+     vercel integration resource disconnect <리소스명> <프로젝트명> --yes
+     vercel integration resource connect    <리소스명> <프로젝트명> -e production -e preview --yes
+     ```
+     `--prefix`를 주지 않으면 기본 이름(`DATABASE_URL` · `DATABASE_URL_UNPOOLED`)으로 붙는다.
 3. 두 키는 **Vercel 환경변수에 손으로 넣지 않는다.** 통합이 배포별로 주입하는 값이라,
    손으로 박으면 고정값이 되어 프리뷰 앱은 프리뷰 DB를 보는데 그 빌드는 스테이징 DB를
    마이그레이션하는 엇갈림이 난다(`prisma.config.ts` 주석).
@@ -57,6 +67,11 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
    시작하지 못한다. 앱 시크릿이 아니라 **빌드 설정**이라 `.env.example`에는 없다.
 5. 나머지 환경변수를 등록한다 — 키 목록과 각 값의 출처는 [`.env.example`](../.env.example)에
    있다. **DB 두 키만 빼고** Production · Preview 스코프 양쪽에 필요하다.
+6. **값이 없는 키를 빈 문자열로 미리 만들어 두지 않는다.** 없는 것과 빈 것은 다르게 동작한다 —
+   `S3_*`는 5종이 다 있어야 켜지므로 빈 값이 곧 '꺼짐'이라 안전하지만(`storage.ts`),
+   Clerk 키가 빈 값이면 `clerkMiddleware()`가 **모든 요청에서 던져 앱 전체가 500**이 된다.
+   첫 배포에서 `/api/health`가 503(우리 핸들러)이 아니라 500(핸들러에 닿기 전)으로 답한
+   원인이 이것이었다 — 런타임 로그에 `@clerk/nextjs: Missing publishableKey`가 찍힌다.
 
 ## 3. Clerk 웹훅 실연동
 
@@ -71,8 +86,8 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
    - **도메인이 있으면** 프로덕션 인스턴스를 만들고 그 키를 쓴다. 그때는 OAuth 자격증명도
      직접 발급해야 한다(공용 자격증명은 프로덕션에서 안 준다).
 2. 대시보드 > Webhooks > **Add Endpoint**:
-   - URL: `https://<배포 도메인>/api/webhooks/clerk` — **프로덕션 도메인**을 쓴다.
-     프리뷰 URL은 배포마다 바뀌어 엔드포인트로 등록할 수 없다.
+   - URL: `https://dankang-note.vercel.app/api/webhooks/clerk` — **프로덕션 도메인**을 쓴다.
+     배포마다 바뀌는 URL(`dankang-note-<해시>-…`)은 엔드포인트로 등록할 수 없다.
    - 구독 이벤트 **9종** (`src/app/api/webhooks/clerk/route.ts`가 처리하는 전부):
      `user.created` · `user.updated` · `user.deleted` ·
      `organization.created` · `organization.updated` · `organization.deleted` ·
@@ -115,8 +130,8 @@ R2 버킷 하나를 만들고 API 토큰을 발급해 `.env.example`의 `S3_*` 5
 ## 5. 배포 직후 스모크 (KAN-77)
 
 ```bash
-curl -s https://<배포 도메인>/api/health
-# {"status":"ok","migrations":23,"commit":"7b233a7"}
+curl -s https://dankang-note.vercel.app/api/health
+# {"status":"ok","migrations":24,"commit":"16b6839"}   ← 2026-08-15 첫 배포 실측
 ```
 
 빌드가 초록이어도 런타임 `DATABASE_URL`이 틀리면 첫 사용자 요청에서야 드러난다. 이 한 줄이
@@ -130,11 +145,16 @@ curl -s https://<배포 도메인>/api/health
 
 ## 6. 배포 후 검증 체크리스트
 
-KAN-27이 닫히려면 아래가 실제 배포에서 통과해야 한다.
+KAN-27이 닫히려면 아래가 실제 배포에서 통과해야 한다. `[x]`는 2026-08-15 첫 배포에서 실측했다.
 
-- [ ] 빌드 로그의 설치 단계가 **pnpm 10.34.5**를 집었다 (다른 버전이면 Corepack 환경변수가
-      안 걸린 것이다 — 위 2-4)
-- [ ] `/api/health`가 200 + 마이그레이션 수가 저장소와 일치 — 빌드 로그에 `migrate deploy` 성공
+- [x] 빌드 로그의 설치 단계가 **pnpm 10.34.5**를 집었다 (다른 버전이면 Corepack 환경변수가
+      안 걸린 것이다 — 위 2-4) — `Done in 24s using pnpm v10.34.5`
+- [x] `/api/health`가 200 + 마이그레이션 수가 저장소와 일치 — 빌드 로그에 `migrate deploy` 성공
+      (24개 적용, `{"status":"ok","migrations":24,"commit":"16b6839"}`)
+- [x] 응답에 `cache-control: no-store`가 실려 온다 — 캐시된 헬스체크는 깨진 배포 앞에서
+      옛 커밋의 `ok`를 돌려주므로(KAN-77 자체 리뷰) 이 헤더가 없으면 위 확인이 무의미해진다
+- [x] 함수가 **싱가포르에서 실행**된다 — 응답 헤더 `x-vercel-id: icn1::sin1::…`의 **뒤쪽**이
+      실행 리전이다(앞은 요청이 들어온 엣지). `vercel.json`의 `regions`가 먹었는지를 여기서 본다
 - [ ] 로그인 → 조직 생성 → 채널 목록까지 진입
 - [ ] **웹훅 미러**: 사용자·조직·멤버십을 만들면 DB에 행이 생긴다 (KAN-11)
 - [ ] **순서 역전 가드**: 삭제한 뒤 도착하는 지연 이벤트가 행을 되살리지 못한다 —
