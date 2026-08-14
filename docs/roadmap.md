@@ -20,7 +20,8 @@ git 추적본. PDF는 그대로 두고, **상태가 바뀌는 부분은 이 파�
 | UI | 바이올렛 디자인 시스템 + 슬랙형 앱 셸 + 다크 모드 (Phase 5 완료, KAN-23) · Clerk 위젯도 같은 토큰 (KAN-24) |
 | 테넌트 수명 | 조직 삭제 시 노트·메시지·보드 전부 Cascade 파기 (KAN-19로 마지막 구멍 해소) |
 | 안전망 | Vitest 테스트 454건(서비스 계층 · 순수 로직 · 클라이언트 상태 · 에디터 스키마 · 첨부 참조 경합 · 커서 렌더 · 인라인 코멘트) + GitHub Actions CI |
-| 미완 | 스테이징 배포·웹훅 실환경 e2e (KAN-27) — 코드 준비는 KAN-77·KAN-78에서 끝냈고, 계정 연결만 남았다 |
+| 배포 | **스테이징이 실제로 떴다** (2026-08-15) — <https://dankang-note.vercel.app> · Vercel(`sin1`)+Neon(싱가포르)+Clerk 개발 인스턴스 · `/api/health` 200 |
+| 미완 | 웹훅 실환경 e2e·첨부 스토리지(R2) (KAN-27) — 앱은 떴고, Clerk 웹훅 등록과 R2 연결이 남았다 |
 
 ### Phase 6(정리·기반) 진행
 
@@ -30,7 +31,7 @@ git 추적본. PDF는 그대로 두고, **상태가 바뀌는 부분은 이 파�
 | NEW-02 ChatMessage 수명 정렬 | KAN-19 | 완료 (PR #21) |
 | NEW-03 테스트 하네스 | KAN-25 | 완료 (PR #22) |
 | NEW-04 CI 파이프라인 | KAN-26 | 완료 (PR #23) |
-| NEW-05 스테이징 배포 + 웹훅 실연동 | KAN-27 | **대기 — 계정 연결(Vercel·Neon·R2)만 남았다.** 계정 없이 정할 수 있는 준비분은 두 번에 걸쳐 선행: 절차·환경변수 명세는 KAN-59, 코드(마이그레이션 커넥션 분리·`/api/health`·cron 등록·Node 고정)는 KAN-77 → [`deploy-staging.md`](deploy-staging.md) |
+| NEW-05 스테이징 배포 + 웹훅 실연동 | KAN-27 | **진행 중 — 2026-08-15 첫 배포 성공.** 준비분은 세 번에 걸쳐 선행했다: 절차·환경변수 명세는 KAN-59, 코드(마이그레이션 커넥션 분리·`/api/health`·cron 등록·Node 고정)는 KAN-77, pnpm 버전 고정은 KAN-78 → [`deploy-staging.md`](deploy-staging.md). 남은 것은 웹훅 실연동과 R2 |
 | NEW-06 문서·티켓 정합성 | KAN-51 | 완료 (PR #24) · 2차 갱신 KAN-58 = 이 문서 |
 
 ## 남은 계획
@@ -111,7 +112,7 @@ Phase 7에서 갈라져 나온 후속은 아래 [별도](#별도) 표에 있다 
 | ~~KAN-57~~ | ~~고빈도 쓰기 엔드포인트 서버 측 레이트 리밋 — 타이핑 핑이 첫 사용처~~ **완료 (PR #43)** — (userId, 리소스) 최소 간격을 DB 한 문장(INSERT … ON CONFLICT … WHERE)으로 강제, 초과는 조용한 204. 자체 리뷰가 리밋 키를 채널 단위 → **사용자 단위 정적 키**로 정정 — 채널 순회 루프가 상한을 채널 수만큼 곱해 가는 걸 막고, 유계 키는 접근 판정 앞으로 옮겨 스프레이·초과 요청이 채널 조회 비용도 못 태우게. 다음 사용처(메시지 전송·리액션 토글)는 KAN-48의 몫 |
 | KAN-58 | 문서 정합성 2차 갱신 — 이 문서 |
 | ~~KAN-77~~ | ~~배포 전 코드 준비 — 마이그레이션 커넥션 분리·헬스체크·cron 등록 (KAN-27 선행)~~ **완료 (PR #55)** — 스택을 Vercel+Neon+R2로 확정하고, 프리뷰는 켜되 Neon 브랜치로 DB를 가른다. 앱은 풀러·마이그레이션은 직결로 갈랐는데(어드바이저리 락이 풀러 뒤에서 세션을 잃으면 **실패가 아니라 정지**라 빌드가 타임아웃까지 매달린다) 키 이름이 핵심이다 — Neon-Vercel 통합이 풀러/직결을 짝으로 주입하므로 우리 식으로 지으면 그 키만 고정값이 되어 **프리뷰 앱은 프리뷰 DB를 보는데 그 빌드는 스테이징을 마이그레이션한다**. 그 변경이 테스트 하네스에 낸 구멍(`.env`에 직결이 있으면 `pnpm test`가 스테이징에 migrate deploy를 날린다)도 같이 막았다. `/api/health`는 DB 왕복 1회로 '붙는가 + 다 올라갔는가 + 어느 커밋인가'를 답한다 — 인증은 안 걸되(모니터에 시크릿을 쥐여줄 자리가 없다) 실패 원인은 본문에 안 싣는다(연결 예외에 자격증명이 실려 온다). 자체 리뷰가 **응답에 Cache-Control이 아예 없는 것**을 실측으로 잡았다: 캐시된 헬스체크는 깨진 배포 앞에서 옛 커밋의 ok를 돌려줘 없느니만 못하다 | 
-| KAN-78 | **배포 빌드의 pnpm 버전 고정 (KAN-27 선행)** — Vercel은 `packageManager` 필드가 없으면 lockfile로 버전을 추론하는데, `lockfileVersion: 9.0`은 공식 문서상 **pnpm 9 또는 10**이라 우리가 못 정한다. 9가 걸리면 우리 `pnpm-workspace.yaml`(pnpm 10 형식 — `packages:` 없이 설정만 있다)을 워크스페이스 선언으로 읽고 `ERROR packages field missing or empty`로 **설치 단계에서 죽는다**(실측). 필드로 `pnpm@10.34.5`를 박고 Vercel에 `ENABLE_EXPERIMENTAL_COREPACK=1`을 세워 그 필드가 로컬·CI·배포의 유일한 근거가 되게 한다 — CI의 `version: 10`도 지운다(두 곳에 적으면 불일치로 실패한다) |
+| ~~KAN-78~~ | ~~배포 빌드의 pnpm 버전 고정 (KAN-27 선행)~~ **완료 (PR #56)** — Vercel은 `packageManager` 필드가 없으면 lockfile로 버전을 추론하는데, `lockfileVersion: 9.0`은 공식 문서상 **pnpm 9 또는 10**이라 우리가 못 정한다. 9가 걸리면 우리 `pnpm-workspace.yaml`(pnpm 10 형식 — `packages:` 없이 설정만 있다)을 워크스페이스 선언으로 읽고 `ERROR packages field missing or empty`로 **설치 단계에서 죽는다**(실측). 필드로 `pnpm@10.34.5`를 박고 Vercel에 `ENABLE_EXPERIMENTAL_COREPACK=1`을 세워 그 필드가 로컬·CI·배포의 유일한 근거가 되게 한다 — CI의 `version: 10`도 지운다(두 곳에 적으면 불일치로 실패한다) |
 | ~~KAN-70~~ | ~~첨부 스토리지 오브젝트 정리 — 행 cascade가 못 지우는 고아 오브젝트 (KAN-35 후속)~~ **완료 (PR #41)** — '지울 좌표'를 outbox(StorageCleanup)로 삭제 트랜잭션에서 먼저 적고, 스토리지 호출은 cron 스윕이 재시도한다. 조직 삭제=프리픽스·채널 삭제=키·버려진 pending=24h 스윕, 처리 유예는 presign TTL+5분. cron 등록(`/api/cron/storage-cleanup` + `CRON_SECRET`)은 KAN-27에서 |
 
 ## 새 기능이 상속해야 할 규약
