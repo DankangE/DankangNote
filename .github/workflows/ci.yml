@@ -47,9 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # 버전을 여기 적지 않는다 — action-setup이 package.json의 packageManager를 읽는다.
+      # 두 곳에 적으면 불일치로 실패하고, 무엇보다 로컬·CI·배포가 같은 한 줄을 근거로
+      # 삼아야 배포 환경만 다른 pnpm을 집는 일이 없다 (KAN-78).
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v5
         with:

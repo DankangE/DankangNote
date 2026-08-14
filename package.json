@@ -2,6 +2,10 @@
   "name": "dankangnote",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "dev": "next dev",
     "postinstall": "prisma generate",
