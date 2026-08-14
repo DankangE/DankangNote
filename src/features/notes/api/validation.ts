@@ -1,6 +1,7 @@
 import { z } from '@/lib/zod';
 import { isInlineImage, MAX_ATTACHMENT_BYTES } from '@/lib/attachments';
 import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
+import { COMMENT_MARK, COMMENT_THREAD_ID_RE, MAX_COMMENT_BODY } from '@/features/notes/comments';
 import {
   clampStart,
   clampSpan,
@@ -40,9 +41,28 @@ const NODE_TYPES = [
   'image',
 ] as const;
 
-const MARK_TYPES = ['bold', 'italic', 'strike', 'code', 'underline'] as const;
+// KAN-40에서 comment가 붙었다 — 인라인 코멘트의 앵커다. 노드 화이트리스트와 같은 규칙:
+// 여기서 빠지면 그 마크가 저장에서 조용히 잘린다(= 코멘트가 본문에서 위치를 잃는다).
+const MARK_TYPES = ['bold', 'italic', 'strike', 'code', 'underline', COMMENT_MARK] as const;
 
-const markSchema = z.object({ type: z.enum(MARK_TYPES) });
+/**
+ * 마크는 오래 attrs 없이 살았다(서식 마크는 전부 attr이 없다). comment가 처음으로 값을
+ * 들고 오는데, **attrs를 안 적으면 zod object가 통째로 strip한다** — 마크는 남고 threadId만
+ * 사라져 '어느 스레드인지 모르는 강조'가 저장된다. 노드 쪽 attr에서 여러 번 밟은 함정이
+ * 마크에도 그대로 있다(KAN-38의 align이 같은 이유로 잘렸다).
+ *
+ * threadId는 형태만 본다 — **그 스레드가 실제로 이 노트의 것인지는 zod가 알 수 없다**
+ * (DB를 봐야 한다). 그 판정은 저장 경로의 정규화가 맡고(note-sanitize.ts), 여기서는 우리가
+ * 만든 적 없는 모양을 끊는 것까지다. 에디터의 parseHTML이 같은 정규식을 본다(규약 25).
+ */
+const markSchema = z.object({
+  type: z.enum(MARK_TYPES),
+  attrs: z
+    .object({
+      threadId: z.string().regex(COMMENT_THREAD_ID_RE).optional(),
+    })
+    .optional(),
+});
 
 // 노드는 자기 자신을 content로 포함하는 재귀 구조 — zod 4의 getter로 표현한다.
 // attrs는 알려진 안전한 키만 남기고(zod object의 기본 strip) 나머지는 버린다.
@@ -134,6 +154,23 @@ export const noteInputSchema = z.object({
 });
 
 export const noteIdSchema = z.string().min(1, '노트 id가 필요합니다.');
+
+// 인라인 코멘트 (KAN-40).
+//
+// threadId는 본문 마크와 **같은 정규식**을 본다 — 액션으로 들어오는 id와 본문에 저장되는
+// id가 다른 규칙을 쓰면, 한쪽으로 만든 것을 다른 쪽이 못 알아보는 자리가 생긴다(규약 25).
+export const commentThreadIdSchema = z
+  .string()
+  .regex(COMMENT_THREAD_ID_RE, '코멘트 스레드 id가 올바르지 않습니다.');
+export const commentIdSchema = z.string().min(1, '코멘트 id가 필요합니다.');
+
+// 코멘트 본문은 서식 없는 한 줄 텍스트다 — 본문 doc과 달리 마크·노드가 없어 zod 화이트리스트가
+// 필요 없다. 렌더도 textContent로 하므로 저장형 XSS 표면이 아니다.
+export const commentBodySchema = z
+  .string()
+  .trim()
+  .min(1, '내용을 입력해주세요.')
+  .max(MAX_COMMENT_BODY, `코멘트는 ${MAX_COMMENT_BODY}자를 넘을 수 없습니다.`);
 
 // 생성 전용 — parentId는 update 스키마(partial)에 섞지 않는다. 부모 변경은 사이클
 // 검사가 붙는 moveNote 경로만 쓴다(KAN-37).

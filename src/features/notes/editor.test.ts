@@ -6,6 +6,7 @@ import { generateJSON } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import { noteEditorExtensions } from './editor';
 import { noteInputSchema } from './api/validation';
+import { COMMENT_MARK, collectCommentThreadIds } from './comments';
 import {
   clampStart,
   CODE_LANGUAGE_MAX_LEN,
@@ -217,5 +218,66 @@ describe('표시용 attr은 무엇이 와도 저장을 막지 않는다 (부류 
     expect(normalizeAlignment('justify')).toBeNull();
     expect(normalizeAlignment(42)).toBeNull();
     expect(normalizeAlignment('center')).toBe('center');
+  });
+});
+
+// 인라인 코멘트 앵커 (KAN-40) — 규약 25가 요구하는 정합을 마크에 대해 고정한다.
+// 마크는 오래 attrs 없이 살았고, comment가 처음으로 값을 들고 온다. zod object는 적지 않은
+// 키를 **조용히 strip**하므로, 마크는 남고 threadId만 사라지는 실패가 가능하다 —
+// 그러면 '어느 스레드인지 모르는 강조'가 본문에 굳는다.
+describe('코멘트 앵커의 저장 정합 (KAN-40)', () => {
+  const save = (doc: JSONContent) => noteInputSchema.safeParse({ title: '제목', content: doc });
+  const anchorsIn = (doc: JSONContent): { threadId?: unknown }[] => {
+    const found: { threadId?: unknown }[] = [];
+    const stack: JSONContent[] = [doc];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      for (const mark of node.marks ?? []) {
+        if (mark.type === COMMENT_MARK) found.push(mark.attrs ?? {});
+      }
+      for (const child of node.content ?? []) stack.push(child);
+    }
+    return found;
+  };
+
+  it('붙여넣은 앵커의 threadId가 저장까지 살아남는다 (attrs가 strip되지 않는다)', () => {
+    const parsed = save(paste('<p><span data-comment-thread="abc123">검토</span></p>'));
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(anchorsIn(parsed.data.content as JSONContent)).toEqual([{ threadId: 'abc123' }]);
+  });
+
+  it('형태가 아닌 threadId는 마크 자체가 안 생긴다 — 들어오는 자리에서 끊는다', () => {
+    // 에디터의 parseHTML이 거부하므로 generateJSON 단계에서 이미 마크가 없다.
+    const doc = paste('<p><span data-comment-thread="../../evil">검토</span></p>');
+
+    expect(anchorsIn(doc)).toEqual([]);
+    // 그래도 **본문은 남는다** — 이미지와 달리 앵커는 노드가 아니라 마크다.
+    expect(JSON.stringify(doc)).toContain('검토');
+  });
+
+  it('수집기는 형태가 맞는 앵커만 센다', () => {
+    expect(collectCommentThreadIds(paste('<p><span data-comment-thread="abc123">a</span></p>'))).toEqual([
+      'abc123',
+    ]);
+    // 같은 스레드를 두 번 가리켜도 한 번만 — 저장 정규화의 조회가 이 목록을 그대로 쓴다.
+    expect(
+      collectCommentThreadIds(
+        paste(
+          '<p><span data-comment-thread="abc123">a</span>' +
+            '<span data-comment-thread="abc123">b</span></p>',
+        ),
+      ),
+    ).toEqual(['abc123']);
+  });
+
+  it('앵커가 서식 마크와 겹칠 수 있다 — 한 구간에 둘 다 붙는다', () => {
+    const doc = paste('<p><strong><span data-comment-thread="abc123">굵고 코멘트</span></strong></p>');
+    const parsed = save(doc);
+
+    expect(parsed.success).toBe(true);
+    expect(anchorsIn(doc)).toEqual([{ threadId: 'abc123' }]);
+    expect(JSON.stringify(doc)).toContain('bold');
   });
 });

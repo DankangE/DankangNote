@@ -4,6 +4,10 @@ import { requireOrg, requireOrgId } from '@/server/auth';
 import * as notesService from '@/server/services/notes';
 import { listNoteTree } from '@/server/services/note-tree';
 import { listFavoriteNoteIds } from '@/server/services/note-favorites';
+import {
+  listCommentThreads,
+  type NoteCommentThreadView,
+} from '@/server/services/note-comments';
 import type { Note, NoteTreeNode } from '@/features/notes/types';
 import { noteIdSchema } from './validation';
 
@@ -21,6 +25,17 @@ export async function fetchNoteTree(): Promise<NoteTreeNode[]> {
 export async function fetchFavoriteNoteIds(): Promise<string[]> {
   const { orgId, userId } = await requireOrg();
   return listFavoriteNoteIds(orgId, userId);
+}
+
+// 이 노트의 인라인 코멘트 스레드 (KAN-40). 노트가 org 전체 공개라 판정도 orgId 하나다 —
+// fetchNote와 같은 근거를 쓰고, 없는 노트면 빈 배열이라 존재 오라클이 되지 않는다.
+export async function fetchCommentThreads(noteId: string): Promise<NoteCommentThreadView[]> {
+  const orgId = await requireOrgId();
+  const parsed = noteIdSchema.safeParse(noteId);
+  if (!parsed.success) {
+    return [];
+  }
+  return listCommentThreads(orgId, parsed.data);
 }
 
 export async function fetchNote(id: string): Promise<Note | null> {

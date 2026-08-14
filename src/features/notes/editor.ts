@@ -2,8 +2,14 @@ import StarterKit from '@tiptap/starter-kit';
 import { TaskItem, TaskList } from '@tiptap/extension-list';
 import { TableKit } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
+import { Mark, mergeAttributes } from '@tiptap/core';
 import type { Extensions } from '@tiptap/core';
 import { NOTE_ATTACHMENT_SRC_RE } from '@/features/notes/attachments';
+import {
+  COMMENT_ID_ATTR,
+  COMMENT_MARK,
+  COMMENT_THREAD_ID_RE,
+} from '@/features/notes/comments';
 
 // 노트 본문에서 허용하는 제목 레벨. api/validation.ts의 zod 화이트리스트(1|2|3)와 값이
 // 일치해야 한다 — validation은 isomorphic이라 여기(StarterKit 런타임 import)에 의존할 수
@@ -40,6 +46,60 @@ const NoteImage = Image.extend({
   },
 });
 
+/**
+ * 인라인 코멘트 앵커 (KAN-40) — 텍스트 범위에 스레드 id를 붙이는 마크.
+ *
+ * 앵커를 마크로 두는 이유는 공동 편집이다(KAN-39). 위치를 숫자로 DB에 적어 두면 남이 앞
+ * 문단에 한 글자만 쳐도 전부 어긋나고, 그걸 맞추는 건 CRDT가 이미 푼 문제를 다시 푸는
+ * 일이다. 마크는 텍스트와 함께 움직이므로 Yjs가 앵커를 공짜로 유지해 준다.
+ *
+ * `inclusive: false` — 강조 구간의 **끝에 이어 치는 글자**가 코멘트에 딸려 들어가지 않게
+ * 한다. 기본값(true)이면 문장 끝에 코멘트를 달고 이어 쓸 때 새 글자가 계속 범위에 먹힌다.
+ *
+ * parseHTML은 형태를 검사한다 — 저장 쪽 zod와 **같은 정규식**을 본다(규약 25). 붙여넣은
+ * HTML의 임의 문자열이 threadId 자리에 앉으면, 저장은 정규화가 막아 주더라도 그때까지의
+ * 화면에는 존재하지 않는 스레드를 가리키는 강조가 떠 있게 된다.
+ */
+const CommentMark = Mark.create({
+  name: COMMENT_MARK,
+  // 코멘트 범위는 겹칠 수 있다 — 한 문장에 두 사람이 각자 스레드를 달 수 있어야 한다.
+  excludes: '',
+  inclusive: false,
+
+  addAttributes() {
+    return {
+      threadId: {
+        default: null,
+        parseHTML: (element: HTMLElement) => {
+          const value = element.getAttribute(COMMENT_ID_ATTR);
+          return value !== null && COMMENT_THREAD_ID_RE.test(value) ? value : null;
+        },
+        renderHTML: (attributes: Record<string, unknown>) => {
+          const threadId = attributes.threadId;
+          return typeof threadId === 'string' ? { [COMMENT_ID_ATTR]: threadId } : {};
+        },
+      },
+    };
+  },
+
+  parseHTML() {
+    return [
+      {
+        tag: `span[${COMMENT_ID_ATTR}]`,
+        // getAttrs가 false면 규칙이 적용되지 않아 마크 자체가 안 생긴다(NoteImage와 같은 장치).
+        getAttrs: (element: HTMLElement) => {
+          const value = element.getAttribute(COMMENT_ID_ATTR);
+          return value !== null && COMMENT_THREAD_ID_RE.test(value) ? null : false;
+        },
+      },
+    ];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ['span', mergeAttributes(HTMLAttributes, { class: 'note-comment-anchor' }), 0];
+  },
+});
+
 // 편집(에디터)과 뷰(정적 렌더)가 같은 스키마를 쓰도록 확장 목록을 한 곳에서 정의한다.
 // link 비활성화: 저장 JSON의 href는 에디터 입력 규칙의 프로토콜 새니타이즈를 거치지
 // 않아(클라이언트가 액션에 임의 doc을 POST할 수 있으므로) javascript: 등 저장형 XSS
@@ -69,6 +129,9 @@ export function buildNoteEditorExtensions(options?: { undoRedo?: boolean }): Ext
     // 사람에게 그대로 강요되고, MVP에 드래그 리사이즈 UX까지 얹을 이유가 없다.
     TableKit,
     NoteImage,
+    // 인라인 코멘트 앵커 (KAN-40). 정적 뷰도 같은 마크를 알아야 저장된 강조가 읽기 화면에서
+    // 사라지지 않는다 — 그래서 편집 전용이 아니라 공용 목록에 있다.
+    CommentMark,
   ];
 }
 

@@ -9,8 +9,10 @@ import { noteEditorExtensions } from '@/features/notes/editor';
 import { noteContentSchema } from '@/features/notes/api/validation';
 import { parseNoteContent } from '@/features/notes/content';
 import { collectNoteAttachmentIds } from '@/features/notes/attachments';
+import { collectCommentThreadIds } from '@/features/notes/comments';
 import { applyNoteAttachments, planNoteAttachments } from '@/server/services/note-attachments';
 import { sanitizeNoteDoc } from '@/server/services/note-sanitize';
+import { liveThreadIds } from '@/server/services/note-comments';
 import { ownedNoteWhere, type NoteActor } from '@/server/services/notes';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 
@@ -182,7 +184,12 @@ export async function materializeNoteDoc(
     // 오류를 돌려줄 상대가 없으니 거부는 곧 content 동결이고, 그 뒤의 정상 편집까지 막힌다.
     // plan은 첨부를 잠그고 판정하므로 그 창 자체가 없어진다.
     const plan = await planNoteAttachments(tx, orgId, userId, noteId, collectNoteAttachmentIds(raw));
-    const parsed = noteContentSchema.safeParse(sanitizeNoteDoc(raw, plan.usable));
+    // 코멘트 앵커도 같은 자리에서 본다 (KAN-40) — 스레드가 지워졌거나 다른 문서의 id를
+    // 실어 온 강조는 가리킬 곳이 없다. **마크만 떨구고 문장은 남긴다**(note-sanitize.ts).
+    const threads = await liveThreadIds(tx, orgId, noteId, collectCommentThreadIds(raw));
+    const parsed = noteContentSchema.safeParse(
+      sanitizeNoteDoc(raw, { attachments: plan.usable, threads }),
+    );
     if (!parsed.success) {
       // 정규화까지 하고도 통과 못 하는 문서는 우리가 만든 적 없는 형태다 — content를 옛
       // 상태로 두는 편이 깨진 본문을 심는 것보다 낫다. 로그로 남겨 원인을 추적한다.

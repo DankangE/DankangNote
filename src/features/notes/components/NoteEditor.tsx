@@ -11,6 +11,7 @@ import Collaboration from '@tiptap/extension-collaboration';
 import { buildNoteEditorExtensions } from '@/features/notes/editor';
 import { noteCollabCaret } from '@/features/notes/collab-caret';
 import type { CaretDirectory } from '@/features/notes/collab-identity';
+import { COMMENT_MARK } from '@/features/notes/comments';
 import { NOTE_DOC_FIELD } from '@/features/notes/doc-field';
 import { uploadNoteImage } from '@/features/notes/attachments';
 import { SlashCommand } from './SlashCommand';
@@ -33,6 +34,12 @@ type NoteEditorProps = {
   collabAwareness?: Awareness | null;
   /** 커서에 붙일 이름·색의 출처. awareness 페이로드가 아니다(collab-identity.ts). */
   caretDirectory?: CaretDirectory;
+  /**
+   * 선택 범위에 코멘트를 단다 (KAN-40). **스레드를 먼저 만들고 그 id를 돌려줘야 한다** —
+   * 마크가 가리킬 대상이 없으면 저장 정규화가 걷어 간다(note-sanitize.ts).
+   * null을 돌려주면(실패·취소) 마크를 찍지 않는다.
+   */
+  onStartComment?: () => Promise<string | null>;
 };
 
 // 편집용 Tiptap 에디터. content는 마운트 시 1회만 seed되므로, 편집 진입마다 새로
@@ -44,6 +51,7 @@ export function NoteEditor({
   collabDoc,
   collabAwareness,
   caretDirectory,
+  onStartComment,
 }: NoteEditorProps) {
   const fileInputId = useId();
   const [uploading, setUploading] = useState(false);
@@ -121,7 +129,12 @@ export function NoteEditor({
 
   return (
     <div className="flex flex-col gap-2">
-      <EditorToolbar editor={editor} uploading={uploading} onPickImage={openImagePicker} />
+      <EditorToolbar
+        editor={editor}
+        uploading={uploading}
+        onPickImage={openImagePicker}
+        onStartComment={onStartComment}
+      />
       <input
         id={fileInputId}
         type="file"
@@ -143,10 +156,12 @@ function EditorToolbar({
   editor,
   uploading,
   onPickImage,
+  onStartComment,
 }: {
   editor: Editor;
   uploading: boolean;
   onPickImage: () => void;
+  onStartComment?: () => Promise<string | null>;
 }) {
   const active = useEditorState({
     editor,
@@ -162,8 +177,18 @@ function EditorToolbar({
       code: editor.isActive('code'),
       taskList: editor.isActive('taskList'),
       table: editor.isActive('table'),
+      // 코멘트는 '고른 범위'에만 달 수 있다 — 커서만 있는 자리에 달면 앵커의 폭이 0이라
+      // 화면에 아무것도 표시되지 않고, 그 스레드는 만들자마자 위치를 잃은 것처럼 보인다.
+      hasSelection: !editor.state.selection.empty,
     }),
   });
+
+  async function handleComment() {
+    if (!onStartComment) return;
+    const threadId = await onStartComment();
+    if (threadId === null) return;
+    editor.chain().focus().setMark(COMMENT_MARK, { threadId }).run();
+  }
 
   return (
     <div className="flex flex-wrap gap-1">
@@ -229,6 +254,17 @@ function EditorToolbar({
       <Button variant="ghost" size="sm" aria-label="이미지 넣기" disabled={uploading} onClick={onPickImage}>
         {uploading ? '업로드 중…' : '이미지'}
       </Button>
+      {onStartComment ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label="코멘트 달기"
+          disabled={!active.hasSelection}
+          onClick={() => void handleComment()}
+        >
+          코멘트
+        </Button>
+      ) : null}
     </div>
   );
 }
