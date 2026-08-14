@@ -47,7 +47,14 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
    저장소가 아니라 대시보드가 진실이 되어 이 문서가 거짓말이 된다.
 3. Node 버전은 **건드릴 필요가 없다**. `package.json`의 `engines.node`(`22.x`)가 대시보드
    설정을 덮는다. (Vercel은 `.node-version` 파일을 읽지 않는다 — 그 파일은 로컬 fnm용이다.)
-4. 나머지 환경변수를 등록한다 — 키 목록과 각 값의 출처는 [`.env.example`](../.env.example)에
+4. **환경변수 `ENABLE_EXPERIMENTAL_COREPACK=1`을 반드시 등록한다** (Production · Preview 양쪽,
+   KAN-78). 이게 있어야 Vercel이 `package.json`의 `packageManager`(`pnpm@10.34.5`)를 읽는다.
+   없으면 lockfile로 버전을 추론하는데, `lockfileVersion: 9.0`은 공식 문서상 **pnpm 9 또는 10**
+   이라 어느 쪽이 걸릴지 우리가 못 정한다. 9가 걸리면 우리 `pnpm-workspace.yaml`(pnpm 10 형식 —
+   `packages:` 없이 설정만 있다)을 워크스페이스 선언으로 읽고 거부한다:
+   `ERROR packages field missing or empty` — 설치 단계에서 죽으므로 마이그레이션도 빌드도
+   시작하지 못한다. 앱 시크릿이 아니라 **빌드 설정**이라 `.env.example`에는 없다.
+5. 나머지 환경변수를 등록한다 — 키 목록과 각 값의 출처는 [`.env.example`](../.env.example)에
    있다. **DB 두 키만 빼고** Production · Preview 스코프 양쪽에 필요하다.
 
 ## 3. Clerk 웹훅 실연동
@@ -115,6 +122,8 @@ curl -s https://<배포 도메인>/api/health
 
 KAN-27이 닫히려면 아래가 실제 배포에서 통과해야 한다.
 
+- [ ] 빌드 로그의 설치 단계가 **pnpm 10.34.5**를 집었다 (다른 버전이면 Corepack 환경변수가
+      안 걸린 것이다 — 위 2-4)
 - [ ] `/api/health`가 200 + 마이그레이션 수가 저장소와 일치 — 빌드 로그에 `migrate deploy` 성공
 - [ ] 로그인 → 조직 생성 → 채널 목록까지 진입
 - [ ] **웹훅 미러**: 사용자·조직·멤버십을 만들면 DB에 행이 생긴다 (KAN-11)
