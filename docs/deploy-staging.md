@@ -21,8 +21,8 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
 
 ## 1. 데이터베이스 (Neon)
 
-1. Neon 프로젝트를 만든다. **리전은 Vercel 함수 리전과 맞춘다** — 엇갈리면 쿼리마다
-   대륙을 왕복한다. Vercel 쪽 리전은 프로젝트 Settings > Functions에서 확인한다.
+1. Neon 프로젝트를 만든다. **리전은 Singapore (`aws-ap-southeast-1`)** — `vercel.json`의
+   `regions: ["sin1"]`과 짝이다(아래 "정해 둔 판단"). 엇갈리면 쿼리마다 대륙을 왕복한다.
 2. **Neon 콘솔 > Integrations > Vercel**로 통합을 설치하고 Vercel 프로젝트와 잇는다.
    이 통합이 하는 일이 이 문서에서 가장 중요하다:
    - 배포마다 `DATABASE_URL`(풀러 경유)과 `DATABASE_URL_UNPOOLED`(직결)를 **짝으로** 주입한다.
@@ -43,8 +43,9 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
 ## 2. Vercel 프로젝트
 
 1. GitHub 저장소를 연결한다. Framework Preset은 Next.js로 자동 감지된다.
-2. **Build Command는 손대지 않는다** — `vercel.json`이 이미 덮고 있고, 대시보드에서 또 덮으면
-   저장소가 아니라 대시보드가 진실이 되어 이 문서가 거짓말이 된다.
+2. **Build Command와 Function Region은 손대지 않는다** — `vercel.json`이 이미 둘 다 덮고
+   있다(`buildCommand` · `regions: ["sin1"]`). 대시보드에서 또 덮으면 저장소가 아니라
+   대시보드가 진실이 되어 이 문서가 거짓말이 된다.
 3. Node 버전은 **건드릴 필요가 없다**. `package.json`의 `engines.node`(`22.x`)가 대시보드
    설정을 덮는다. (Vercel은 `.node-version` 파일을 읽지 않는다 — 그 파일은 로컬 fnm용이다.)
 4. **환경변수 `ENABLE_EXPERIMENTAL_COREPACK=1`을 반드시 등록한다** (Production · Preview 양쪽,
@@ -59,7 +60,16 @@ KAN-77에서 코드). 아직 배포된 환경은 없다 — 여기 적힌 것 �
 
 ## 3. Clerk 웹훅 실연동
 
-1. 배포용 인스턴스의 키를 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` · `CLERK_SECRET_KEY`에 넣는다.
+1. 키를 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` · `CLERK_SECRET_KEY`에 넣는다. **어느 인스턴스의
+   키인지는 도메인이 정한다** — Clerk 프로덕션 인스턴스는 *소유한 도메인 + DNS 레코드 추가*
+   가 전제라(공식 문서의 prerequisites), `*.vercel.app`처럼 DNS를 못 건드리는 주소로는
+   만들 수 없다.
+   - **도메인이 없으면 개발 인스턴스 키(`pk_test_…`/`sk_test_…`)를 그대로 쓴다.** 개발
+     인스턴스도 웹훅 엔드포인트를 등록할 수 있으므로 이 문서의 목적(웹훅 미러·순서 역전
+     가드의 실환경 확인)은 그대로 달성된다. 대신 개발 인스턴스의 제한(사용자 수 상한,
+     Clerk UI의 개발 배너, 공용 OAuth 자격증명)을 그대로 안는다 — 스테이징이라 괜찮다.
+   - **도메인이 있으면** 프로덕션 인스턴스를 만들고 그 키를 쓴다. 그때는 OAuth 자격증명도
+     직접 발급해야 한다(공용 자격증명은 프로덕션에서 안 준다).
 2. 대시보드 > Webhooks > **Add Endpoint**:
    - URL: `https://<배포 도메인>/api/webhooks/clerk` — **프로덕션 도메인**을 쓴다.
      프리뷰 URL은 배포마다 바뀌어 엔드포인트로 등록할 수 없다.
@@ -141,6 +151,13 @@ KAN-27이 닫히려면 아래가 실제 배포에서 통과해야 한다.
 
 ## 정해 둔 판단
 
+- **리전은 셋 다 싱가포르로 모았다.** Vercel 함수 `sin1` · Neon `aws-ap-southeast-1` ·
+  Pusher `ap3`. 앱↔DB는 한 요청에 여러 번 왕복하므로 **같은 리전이 아니면 안 되고**,
+  Neon에는 서울도 도쿄도 없다(2026-08 기준 AWS 8개 리전, 아시아는 싱가포르·시드니뿐).
+  한국에서 가장 가까운 짝이 싱가포르다. Vercel 신규 프로젝트 기본값은 `iad1`(버지니아)라
+  그냥 두면 모든 요청이 태평양을 건넌다. 대시보드가 아니라 `vercel.json`에 적은 것은
+  `buildCommand`와 같은 이유다 — 저장소가 진실이어야 이 문서가 거짓말을 안 한다.
+  Hobby 플랜은 함수 리전이 **1개**로 제한되므로 목록도 하나다(초과하면 빌드 전에 실패).
 - **마이그레이션을 빌드에 붙였다.** 배포 단위가 하나뿐이고 별도 릴리스 훅이 없다. 대가는
   빌드가 성공하고 배포가 실패해도 **스키마만 앞서 나간다**는 것 — 그래서 파괴적 변경은
   expand → contract 2단계로 나눠야 한다(`prisma/migrations/20260803120000_message_commit_order_seq`
